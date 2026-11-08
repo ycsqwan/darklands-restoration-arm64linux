@@ -66,6 +66,13 @@ public interface IInput
         return false;
     }
 
+    /// <summary>
+    /// True once for each Ctrl-Break (Ctrl+Pause) since the last call, asked at the game's looks and reads of the keyboard: the host has
+    /// emptied its key buffer, as the BIOS does; the game then finds the key word 0000h and its Ctrl-Break flag set. Hosts without
+    /// one say no.
+    /// </summary>
+    bool TakeCtrlBreak() => false;
+
     /// <summary>Puts the mouse pointer at a screen pixel (the mouse driver's function 4, as the game's cursor keys do); hosts that cannot move it ignore it.</summary>
     void MovePointer(int x, int y)
     {
@@ -113,6 +120,15 @@ public interface IAudio
     /// <summary>Driver command 5: the number last played (the driver's word [CA60h] in ASOUND.DC); −1 without a driver.</summary>
     // orig: root 047C:078A asm - number 5 is not stored: it returns the last number stored (ASOUND.DC image 20D0h..20D8h)
     int RequestCurrentPiece() => PlayMusicNow(5);
+
+    /// <summary>
+    /// A notice that the game is about to show a card (its number; -1 when music is off), for a sound pack's music per card
+    /// (docs/PACKS.md). Read-only: nothing in the game reads it back, the drivers never see it and no game state changes.
+    /// </summary>
+    // New code (replacement sound, not part of the game): the original has no such call; the default does nothing
+    void CardShown(int card)
+    {
+    }
 }
 
 /// <summary>Real time.</summary>

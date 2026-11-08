@@ -10,9 +10,9 @@ using Darklands.Presentation.Graphics;
 namespace Darklands.Presentation;
 
 // orig: R036+0x0082 (1462:0082) draft (unmatched: register allocation), with R036+0x082C on leaving the reference; tests: CampAndSheetRulesTests (the stay), visual
-// orig: the music: DS:9C3D = thunk 09C0:18F1(5), then thunk 09C0:18F1(0x15) in the wild (mode 1), else rand_mod(2) ? 9 : 10 (a draw of the
+// orig: the music: DS:9C3D = thunk 09C0:18F1(5), then thunk 09C0:18F1(0x15) in the wild (mode 1), else roll-below(2) ? 9 : 10 (a draw of the
 //   game's generator before anything else of the stay); R036+0x082C plays DS:9C3D back on leaving; tests: MusicTests
-// C: the menu bar (menu_bar_run) comes with every GameUi.Poll (MenuBar).
+// C: the menu bar (menu-bar-loop) comes with every GameUi.Poll (MenuBar).
 // DIVERGENCE: the redraw after the menu bar is not part of this screen.
 /// <summary>
 /// The camp screen: an inn room, other lodging, a camp in the wild or the streets. The party
@@ -66,13 +66,17 @@ public sealed class CampScreen(GameUi ui, PartyPanel panel, IReadOnlyList<Formul
     public Action<int>? SaveAndLoad { get; set; }
 
     /// <summary>A stay as cards open it (<see cref="CampPlace"/> numbering).</summary>
-    // C: the stay (R036+0x0082) begins with DS:9920 = DS:9934 = 2 (no Save Game, no Load Saved Game while the stay is up) and its clean-up
-    //   R036+0x082C ends with DS:9920 = DS:9934 = 1, whatever they were before; a stay left by a click on an empty party row skips the
-    //   clean-up and leaves them at 2
+    // orig: R036+0x0082 (1462:0082) draft; the clean-up R036+0x082C (1462:082C) draft
+    // C: the stay begins with DS:9920 = DS:9934 = 2 (no Save Game, no Load Saved Game while the stay is up) and its clean-up R036+0x082C
+    //   ends with DS:9920 = DS:9934 = 1, whatever they were before
+    // BUG: a stay left by a click on an empty party row (R036+0x059F returns at once) skips the clean-up and leaves them at 2: Save Game
+    //   and Load Saved Game stay off (Alt-S / Alt-L do nothing, the menu items grey) until a screen that sets them to 1 is left (a
+    //   character sheet R031+0x08F6, the inn's roster, barter); seen in the original at the inn and in a camp (vis10 comm-inn-save,
+    //   comm-camp-save); kept (not data-damaging: no save is lost or changed)
     public void Stay(GameState state, int mode)
     {
         SaveAndLoad?.Invoke(2);
-        // orig: R036+0x0082: DS:9C3D = music_play(5); `if (mode == 1) music_play(0x15); else if (rand_mod(2)) music_play(9); else music_play(10);`
+        // orig: R036+0x0082: DS:9C3D = music-start(5); `if (mode == 1) music-start(0x15); else if (roll-below(2)) music-start(9); else music-start(10);`
         ui.SaveMusic();
         ui.PlayMusic((CampPlace)mode == CampPlace.Wilderness ? WildMusic : state.Random.Below(2) != 0 ? 9 : 10);
         _s = state;
@@ -84,7 +88,7 @@ public sealed class CampScreen(GameUi ui, PartyPanel panel, IReadOnlyList<Formul
         {
             if (Run())
             {
-                // orig: R036+0x082C: the unfinished brews lost (event_remove(0x1D, ...)), the fonts back, music_play(DS:9C3D)
+                // orig: R036+0x082C: the unfinished brews lost (event-delete(0x1D, ...)), the fonts back, music-start(DS:9C3D)
                 Brewing.AbandonAll(state);
                 ui.RestoreMusic();
                 SaveAndLoad?.Invoke(1);
@@ -98,7 +102,7 @@ public sealed class CampScreen(GameUi ui, PartyPanel panel, IReadOnlyList<Formul
     }
 
     // orig: R036+0x0000 (1462:0000) draft (bytes match), called through thunk 09C0:1FF9 by the map's C key and F8
-    // C: event_new(-2, -1, 0, 0x61, 0, risk, 0, rand_mod(0x30) + 0xC, 0, 0).
+    // C: event-create(-2, -1, 0, 0x61, 0, risk, 0, roll-below(0x30) + 0xC, 0, 0).
     /// <summary>
     /// Camping from the map ('C'): the risk starts from the last camp's (none while camping is
     /// safe), grows by <paramref name="dailyRisk"/> a day, and is remembered for 12..59 hours.

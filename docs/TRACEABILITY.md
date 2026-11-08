@@ -49,13 +49,13 @@ One comment per reconstructed operation (class, method or block), on the line ab
 
 ```csharp
 // orig: R044+0x0123 (1838:0123) matched; tests: CardSmokeTests
-// orig: card_load R043+0x0A9A (150B:000A) draft (bytes match); tests: CardSmokeTests
-// orig: random_n root 0410:0008 matched
+// orig: card-run R043+0x0A9A (150B:000A) draft (bytes match); tests: CardSmokeTests
+// orig: roll-n root 0410:0008 matched
 // orig: the prayer screen (thunk 09C0:1EAF), the card table R136+0xD090, DS:EB0A
 ```
 
 The coordinate comes first (a readable name of the function may precede it: names such as
-`card_load` or `party_delete` are ordinary descriptions), then the link-time address for
+`card-run` or `party-member-erase` are ordinary descriptions), then the link-time address for
 overlays, the source status and the tests or oracles that cover it. Prose cites other functions
 the same way ("calls R043+0x09AE"). `tools/source-map/orig_comment.py <coordinate>` prints the
 comment for a coordinate.
@@ -133,13 +133,13 @@ absent. Tests that need reference-side data read `local/reference-map.csv` and p
 * **Overlay thunks.** A call through `thunk 09C0:XXXX` is thunk number `(XXXX - 0x17E3) / 10` of the
   atlas (`data/rtlink/atlas.json`, key `thunks`): its `index` is the record and
   `linked_segment:linked_offset` the target, which the index gives in its `target` column
-  (`thunk 09C0:190F` = `R029+0x54D8`, advance_hours; `thunk 09C0:1FB3`/`thunk 09C0:1FBD` =
+  (`thunk 09C0:190F` = `R029+0x54D8`, pass-hours; `thunk 09C0:1FB3`/`thunk 09C0:1FBD` =
   `R030+0x29BC`/`R030+0x29FA`, compass directions; `thunk 09C0:1FF9` = the camp `R036+0x0000`;
-  `thunk 09C0:18DD` = the start screen `R037+0x9C48`; `thunk 09C0:18F1` = `music_play` `R043+0x09AE`).
+  `thunk 09C0:18DD` = the start screen `R037+0x9C48`; `thunk 09C0:18F1` = `music-start` `R043+0x09AE`).
 * **Disassembling a draft.** Payload bytes of a record are at `payload_raw + offset` in `DARKLAND.EXE`
   (record `payload_raw` in the atlas); 16-bit capstone from that address reads the function. The draft
   C of `R030+0x0C44` and `R030+0x1300` was checked this way.
-* **Time units.** `delay_ticks` (R030 seg 1767) waits on `clock()`; MSC 6 counts it in milliseconds.
+* **Time units.** `wait-ticks` (R030 seg 1767) waits on `clock()`; MSC 6 counts it in milliseconds.
   The PAN player and `root 0410:0302` use the timer driver's tick (about 14.3 ms measured for the PAN
   player); the message-box length of 1000 ms is an approximation.
 * **The graphics driver.** The drawing primitives (palette, text, sprites, saved rectangles, the pointer)
@@ -162,7 +162,14 @@ absent. Tests that need reference-side data read `local/reference-map.csv` and p
   reference's source line of each missed item goes to `local/faithfulness/branches-ref-lines.csv` only.
 * **Never-exercised branches** are closed with oracle cases (the C# must agree), or listed in
   `unreachable.csv` with the verdict (`dormant`, `compiled-form`, `runtime-library`, ...), the reason and the C#
-  place that keeps the branch with its `// DORMANT:` note. A builder may add generated cases guided by coverage
+  place that keeps the branch with its `// DORMANT:` note. Verdicts: `dormant` (no play reaches the branch: a
+  tautology, a repeated test, an unused threshold, a switch default no value reaches; a reason that starts with
+  `callers:` rests on the values every caller passes, one that starts with `data:` on the values the game data
+  holds; both count as `dormant`), `compiled-form` (the compiler's form of a construct), `excluded` and
+  `runtime-library` (code that is not game logic). Many rows of the card records argue about the next-card
+  word (DS:E48A, `following-card` in the reasons): it is written only by the card records themselves and by the card
+  dispatcher (R030 1462:0000); the root code and the helper records R043 and R029 never write it, so a card
+  record that sets it and then tests it is not disturbed in between. A builder may add generated cases guided by coverage
   (`run_unit.CoverageSet`, `coverage_defer` + `commit_coverage`): only those that exercise something new are kept.
 * **Function coverage.** `tools/faithfulness/coverage.py` classifies every original function of the index as
   implemented (its coordinate cited by the C# or the map), excluded (a reviewed pattern of `exclusions.csv`,

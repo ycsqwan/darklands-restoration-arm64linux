@@ -10,7 +10,7 @@ public sealed partial class TacticalBattle
     /// its lock is gone; the wall group behind it is uncovered, and an encounter waiting in that
     /// room comes out (and raises the alarm).
     /// </summary>
-    // orig: door_toggle R023+0x00B8 (1EF8:00B8) draft, checked against the asm
+    // orig: door-flip R023+0x00B8 (1EF8:00B8) draft, checked against the asm
     // (REVEAL, the open flags, the lock byte, the twin); R023+0x03CA (1EF8:03CA) draft
     private void ToggleDoor(int n, int who)
     {
@@ -91,8 +91,18 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>Door n opens or shuts by itself (an enemy walks into it, or a path search tries it), its group uncovered when <paramref name="reveal"/>.</summary>
-    // orig: door_set R023+0x04AC (1EF8:04AC) draft
-    // C: a record without a side flag leaves dir uninitialised in the original; north is used here (DIVERGENCE).
+    // orig: door-assign R023+0x04AC (1EF8:04AC) draft
+    // DORMANT: a door record with none of the four side flags (+8 and +9, bits 0x80 / 0x40) leaves the direction local bp-6 uninitialised in the original
+    //   (R023+0x04C8 .. +0x050B), so the door bits would go to the side the stale stack word names, or to no side when it is not 0..3 (the two switches
+    //   R023+0x0620 / +0x06B8 have no default); north (0) is used here. Proven unreachable: the three callers (R014+0x4924, +0x4B95, +0xDDE1, the only
+    //   calls of the vector 09C0:1D6F) take only records whose word +0 is above 0, and every writer of a door record gives such a record a flag. The
+    //   writers: the level files (all 143 levels of IMAPS.CAT and the 9 of LCASTLE scanned: 479 records, the only 11 flagless ones, IFORTMON.009
+    //   doors 0 and 1 and door 0 of each LCASTLE level, are all-zero, word +0 = 0); the castle generator (R007+0x1234 writes x | 0x80 or y | 0x40 with
+    //   cells below 0x40); the map turn (R004+0x29B0, MapTurn.TurnDoor: it turns only icity and mine sections, whose records all carry flags, and moves
+    //   the four flags among themselves; the fortress and citadel files are never turned, so their zero records keep word +0 = 0); the city's unlock and
+    //   the fortress's room set-up write the lock byte +7 only; no instruction of the EXE stores to +8 / +9 through a door-table displacement (0x1F5C,
+    //   0x1F5D: reads only). A sweep of every battlefield type 0..0x89 with 40 seeds each (5,520 builds, 60,832 door records) found 0 flagless records
+    //   with word +0 above 0.
     private void SetDoor(int n, bool open, bool reveal)
     {
         var at = DoorsAt + 14 * n;
@@ -121,7 +131,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>For an enemy's path search: the unlocked doors that are no twin are opened, and afterwards put back as they were.</summary>
-    // orig: path_find R014+0x481A (12F7:000A) draft (the DS:E0C0 block) and R014+0x4B5A (12F7:034A)
+    // orig: route-search R014+0x481A (12F7:000A) draft (the DS:E0C0 block) and R014+0x4B5A (12F7:034A)
     // matched
     private void OpenDoorsForSearch(bool open)
     {
@@ -155,7 +165,7 @@ public sealed partial class TacticalBattle
     private readonly byte[] _doorsBeforeSearch = new byte[40];
 
     /// <summary>The picker tries the lock at image offset <paramref name="lockAt"/> with his best… first lock picks (item 0x40): skill + quality − 25 + 1d10 against the lock.</summary>
-    // orig: lock_pick R023+0x12C0 (1EF8:12C0) draft, checked against the asm
+    // orig: lock-picking R023+0x12C0 (1EF8:12C0) draft, checked against the asm
     // C: without lock picks the quality is read from the slot after the last item (or item 0 of an empty pack), but it is only used
     // when lock picks were found, so nothing depends on it.
     private bool PickLock(int lockAt)
@@ -182,7 +192,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>Member who opens the chest of his region: the lid art turns open, the party takes what it wants of the contents and the money.</summary>
-    // orig: chest_open R023+0x13D0 (1EF8:13D0) draft, checked against the asm
+    // orig: chest-opening R023+0x13D0 (1EF8:13D0) draft, checked against the asm
     private void OpenChest(int who)
     {
         var at = RegionsAt + RegionSize * Battle[who].Chest;
@@ -209,15 +219,18 @@ public sealed partial class TacticalBattle
         {
             loot.ChestOffsets[idx] = loot.Append(contents, contents.Count);
         }
-        _view.MapChanged();
-        // C: then combat_draw R014+0x6818, as each tick ends: the draw list (its random draws) and the target cursor.
+        // C: R023+0x1525..0x152A: floor-view-paint(DS:17B0): the view drawn anew around the active member
+        _view.Recentre(Battle.ActiveMember);
+        // C: then fight-draw R014+0x6818 (R023+0x1532), as each tick ends: its R014+0x99F6 (called at R014+0x6926) turns the attackers
+        //   toward their targets, then the draw list (its random draws) and the target cursor.
+        TurnTowardTargets();
         Effects.Drawn(_view);
         RemoveArrivedMissiles();
         RefreshTargetCursor();
     }
 
     /// <summary>Member who disarms the trap of his chest: Artifice − 10 + 1d20 against its difficulty; failing, it goes off at him.</summary>
-    // orig: chest_disarm R023+0x153E (1EF8:153E) matched (checked against the asm:
+    // orig: chest-disarm-trap R023+0x153E (1EF8:153E) matched (checked against the asm:
     // +9 is the difficulty, +0x0A the trap's type and level)
     private bool DisarmTrap(int who)
     {
@@ -240,7 +253,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>The action at a place ordered from the menu.</summary>
-    // orig: cbt_location_action R014+0x2170 (0E76:2170) matched
+    // orig: fighter-goto-action R014+0x2170 (0E76:2170) matched
     // C: every case is a separate if (the action is cancelled at the end of each), so only the first that applies acts.
     private void DoPlaceAction(int i)
     {
@@ -281,10 +294,7 @@ public sealed partial class TacticalBattle
         if (c.Place == PlaceAction.DissolveLock)
         {
             _view.Message(EaterWaterText, 150);
-            if (c.DissolveSlot >= 0 && c.DissolveSlot < c.Items.Count)
-            {
-                Attacks.ConsumeSlot(Battle, i, c.DissolveSlot);
-            }
+            UseUpDissolveSlot(i);
             if (!LockIsDoor)
             {
                 OpenChest(i);
@@ -335,12 +345,12 @@ public sealed partial class TacticalBattle
     /// U outside order mode: the leader (or, travelling together, everybody) takes the stairs, or
     /// the leader uses the door; in order mode the selected member is ordered to.
     /// </summary>
-    // orig: R016+0x1182 (1EF8:1182) matched; the U case of combat_keys for a split party (R016+0x014E)
+    // orig: R016+0x1182 (1EF8:1182) matched; the U case of fight-keys for a split party (R016+0x014E)
     public void UseKey(int selected)
     {
         if (Battle.PartyFloor != Battle.FloorShown)
         {
-            // combat_keys with the party split: only U (and a few keys) work.
+            // fight-keys with the party split: only U (and a few keys) work.
             if (Paused)
             {
                 // R016+0x014E..0x016E: no test of DS:A6B2 (the order is chosen with nobody selected too)
@@ -499,10 +509,19 @@ public sealed partial class TacticalBattle
         if (Menus.On(OrdersItem.DissolveLock))
         {
             _view.Message(EaterWaterText, 150);
-            // C: the slot of the SELECTED member (−1 outside order mode reads before the table) is used up.
-            if (selected >= 0 && Battle[selected].DissolveSlot >= 0 && Battle[selected].DissolveSlot < Battle[selected].Items.Count)
+            // orig: R016+0x0F9A (1EF8:0F9A) matched: use-up-slot 18BF:0FA4 (R014+0xB434) of DS:A6B2 with the byte DS:C7CD (R016+0x0FAF..0x0FBA)
+            if (Battle.Behaviour.FixDissolveKeyMember)
             {
-                Attacks.ConsumeSlot(Battle, selected, Battle[selected].DissolveSlot);
+                // DIVERGENCE: with the fix (data safety, switchable; on in the player's game) the leader's Eater-Water is used up, as by
+                //   his Dissolve Lock order (his own slot byte; the stale-slot fix applies as there).
+                UseUpDissolveSlot(l);
+            }
+            else
+            {
+                // BUG: OriginalBehaviour.FixDissolveKeyMember - R016+0x0FAF..0x0FBA: use-up-slot(DS:A6B2, DS:C7CD): the selected member
+                //   (outside order mode the party member under the pointer, R014+0xB785, else −1, R014+0xB7F5) with member 0's slot byte
+                //   (absolute, not indexed), no test of either: another member's stack, or the entries before the packs.
+                ConsumeSlotAsOriginal((sbyte)selected, Battle[0].DissolveSlot & 0xFF);
             }
             if (LockIsDoor)
             {
@@ -529,8 +548,8 @@ public sealed partial class TacticalBattle
     /// is left behind the party moves (the enemies follow or stay as an encounter); it is placed
     /// round the stairs' spot there.
     /// </summary>
-    // orig: take_exit R023+0x1618 (1EF8:1618) draft
-    // C: the wall group of the stairs is uncovered on the NEW level (doors_opened of that level; the list read from the new image).
+    // orig: use-exit R023+0x1618 (1EF8:1618) draft
+    // C: the wall group of the stairs is uncovered on the NEW level (opened-door-list of that level; the list read from the new image).
     private void TakeExit(int n, int who)
     {
         if (n < 0 || n >= Level.GetByte(StairsCountAt))
@@ -541,13 +560,18 @@ public sealed partial class TacticalBattle
         var at = StairsAt + 14 * n;
         var record = Level.Image.AsSpan(at, 14).ToArray();
         var wall = (sbyte)Level.GetByte(at + 7);
-        // BUG: OriginalBehaviour.FixStairsWallMarkLost - the write below goes to the level's buffer, and level_switch (R024+0x05B4, called
-        // at R023+0x16C7) saves the level it leaves only when DS:D4E4 is set (LevelChanged: any change of the level sets it; level_switch
+        // BUG: OriginalBehaviour.FixStairsWallMarkLost - the write below goes to the level's buffer, and level-change (R024+0x05B4, called
+        // at R023+0x16C7) saves the level it leaves only when DS:D4E4 is set (LevelChanged: any change of the level sets it; level-change
         // and the battle's end R014+0x069A clear it), which this write does not do: after a switch with DS:D4E4 clear the original
         // reloads the old level without the 0xFF (the levels stay in memory here, the mark is taken back by SaveLevelOrLoseUnsaved).
         if (wall != -1 && !Battle.Behaviour.FixStairsWallMarkLost)
         {
             _unsavedLevelBytes.Add((at + 7, (byte)wall));
+        }
+        else if (wall != -1)
+        {
+            // the fix: the level counts as changed, so the mark is saved with it
+            LevelChanged = true;
         }
         Level.SetByte(at + 7, 0xFF);
         int lvl = (sbyte)Level.GetByte(at + 6);
@@ -582,8 +606,9 @@ public sealed partial class TacticalBattle
         PlaceAround(who, spot, record[12]);
         if (Battle.PartyFloor == lvl)
         {
-            ViewOrigin = null;
-            _view.MapChanged();
+            // orig: R023+0x1618 floor-view-paint(who) when the party has gone over: the view's centre becomes the cell of the member who
+            // took the stairs (R017+0x0000 with who, not -1); lockstep dungeon-king-door (local/batch/b32/a7-king)
+            _view.Recentre(who);
         }
         else
         {
@@ -600,8 +625,12 @@ public sealed partial class TacticalBattle
     /// enemy kinds that saw the party follow after a delay; otherwise the weakest are dropped and the
     /// rest wait at the stairs as an encounter.
     /// </summary>
-    // orig: leave_level R023+0x17D2 (1EF8:17D2) draft
-    // C: typ[4] (no kind 4 exists) is read uninitialised for the encounter's first type (with a count of 0): −1 here (DIVERGENCE).
+    // orig: level-exit R023+0x17D2 (1EF8:17D2) draft
+    // DIVERGENCE: the encounter record it adds keeps undefined memory, not modelled. Its kinds (+0x08..+0x0A) are the local words of slots 4..6
+    //   (bp-0x24), written only for a kind with an able enemy (R023+0x1A04..0x1A1A): the first (no kind 4 exists) and a kind with none left hold
+    //   the stack's leftovers, with a count of 0 (here -1 for the first, 0 for the others); the reinforcement part +0x14..+0x1D is not written
+    //   (R023+0x1A27..0x1A9D write +0x00..+0x13 only), so the table slot keeps what it held (here the new group's defaults). These bytes go into
+    //   a battle file saved after the change; the battle-call adapter of R023+0x17D2 takes the original's bytes there (local/batch/b2).
     private void LeaveLevel(int who, byte[] exit)
     {
         var seen = new bool[7];
@@ -686,9 +715,12 @@ public sealed partial class TacticalBattle
         if (kill > 0)
         {
             cnt -= kill;
+            // orig: R023+0x1995 `mov word [bp-0xe],5` sets the victim index once before the loop; R023+0x19A6 resets only the minimum (bp-4).
+            // A pass with no eligible enemy (all ends-battle) therefore kills the previous victim again.
+            var weakest = 5;
             do
             {
-                int r = 999, weakest = 5;
+                var r = 999;
                 for (var i = Combatant.PartySlots; i < Combatant.Count; i++)
                 {
                     var p = Battle[i];
@@ -696,8 +728,9 @@ public sealed partial class TacticalBattle
                     {
                         continue;
                     }
-                    // C: (char)(100 × endurance) / maximum: the product is cut to a signed byte first.
-                    var d = p.MaximumEndurance == 0 ? 0 : (sbyte)(100 * p.Endurance) / p.MaximumEndurance;
+                    // orig: R023+0x19BD..0x19C2 `mov al,0x64; imul byte [si]; cwd; idiv cx`: the whole 16-bit product 100 × endurance over the
+                    // sign-extended maximum (no cut to a byte). A maximum of 0 is a divide error in the original (an able enemy has one).
+                    var d = p.MaximumEndurance == 0 ? 0 : 100 * p.Endurance / p.MaximumEndurance;
                     if (d < r && !p.EndsBattleWhenKilled)
                     {
                         r = d;
@@ -712,6 +745,8 @@ public sealed partial class TacticalBattle
         {
             return;
         }
+        // C: R023+0x1A04..0x1A1A keeps the kinds as words at bp−0x24 + 2 × (slot − 4) and the counts at bp−0x1E + 2 × (slot − 4): an able enemy
+        // in slot 1..3 would add 1 to the kind word of slot 4..6. Enemies only take slots 0 (its words are not read), 5 and 6: not modelled.
         for (var i = Combatant.PartySlots; i < Combatant.Count; i++)
         {
             var p = Battle[i];

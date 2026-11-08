@@ -10,8 +10,8 @@ namespace Darklands.Cards.Scripts;
 /// fight; a lost fight costs the party its goods and standing.
 /// </summary>
 // orig: R057+0x1CA0 (1A02:0000) matched; tests: CardSmokeTests
-// orig: R057+0x27AC (1A02:0B0C) matched (init helper: enables all 20 option lines, installs the 4 item and 4 saint pop-up handlers per member row and empties card_items and card_saints; the card then fills 4 items and 3 saints)
-// DORMANT: R057+0x284E (1A02:0BAE) the init helper points opt_fn[0..19] at this "screwed up." default; lines 0..9 get their own handlers and lines 10..19 stay enabled but the MSG has only 7 lines, so it never runs.
+// orig: R057+0x27AC (1A02:0B0C) matched (init helper: enables all 20 option lines, installs the 4 item and 4 saint pop-up handlers per member row and empties card-item-lines and card-saint-lines; the card then fills 4 items and 3 saints)
+// DORMANT: R057+0x284E (1A02:0BAE) the init helper points card-option-handler[0..19] at this "screwed up." default; lines 0..9 get their own handlers and lines 10..19 stay enabled but the MSG has only 7 lines, so it never runs.
 // DORMANT: option lines 7, 8 and 9 (R057+0x26DC (1A02:0A3C) / R057+0x26E8 (1A02:0A48), R057+0x2720 (1A02:0A80) / R057+0x272C (1A02:0A8C), R057+0x2764 (1A02:0AC4) / R057+0x2770 (1A02:0AD0)): the entry enables them, but the card's text has no line for them, so the menu cannot select them. Each only lets no time pass (the hints say "success is assured"; the last one leaves a dead store of the leader in r.a).
 public sealed class HandbillThugs_Polit01 : Card
 {
@@ -26,11 +26,23 @@ public sealed class HandbillThugs_Polit01 : Card
     private const int PoliticsTag = 2, ThugsBeaten = 0x12, ThugsTruce = 0x13;
 
     /// <summary>
-    /// The chance a potion gets from its pop-up handler: the original handlers never set it, so the
-    /// action receives whatever the stack held (the caller's frame pointer, an address in the upper half
-    /// of the data segment: negative as a signed word). The roll therefore never succeeds.
+    /// The chance a potion gets from its pop-up handler when it is picked: the handlers never set it, so the action rolls against
+    /// the stack word the handler's result lies in, which the display driver's pointer hide has just written: 0x0240 (576). The
+    /// roll (0..99) always succeeds.
     /// </summary>
-    // UNCERTAIN: derived from the stack layout (card_menu's saved BP lies in the handler's unset result word).
+    // C: the loop calls pointer-hide (root 047C:12C3) at R057+0x1E5E and the handler at R057+0x1E6F / 0x1E7D with the same SP; the pointer is
+    //   drawn (pointer-show R057+0x1E47 before the menu, whose hides and shows pair), so 12C3 far-calls slot 15 (047C:052E -> 047C:048A, which
+    //   pops its near return and jumps on) = MGRAPHIC drv+0x023D, whose `call drv+0x0253` pushes its return 0x0240 at SP - 10: the word the
+    //   handler's `enter 4,0` makes [bp-4] (r.a). Only an interrupt in the few instructions between could change it (b32 C-fix).
+    // C: the testers' originals leave another word there: the lockstep tester stubs the driver's slots and the card oracle pointer-hide
+    //   itself (under the card oracle the word is positive too: the potion works there as well).
+    private const int PickedPopupChance = 0x0240;
+
+    /// <summary>The chance the same handler gives a Shift hint over the box (the result word is another call's leftover there).</summary>
+    // C: a Shift hint asks the handler from card-mouse-handler (R043+0x26C4), whose own path left that word 10 bytes below its SP; the
+    //   screen supplies it (OptionHint.UnsetChance, CardScreen.LeftoverChance): 0x1D2E when Shift is pressed over a line, the pointer's x
+    //   (0xFA) when the pointer enters a line with Shift held, 0 when another line's hint was up (vis10 session uncert-polit-popup-hint,
+    //   the original hooked at R043+0x26C4 / 0x27E6). -2 stays for the callers outside a Shift hint (the card oracle's direct calls).
     private const int StalePopupChance = -2;
 
     private const int TalkOption = 1, RunOption = 3;
@@ -96,6 +108,8 @@ public sealed class HandbillThugs_Polit01 : Card
 
     /// <summary>Eats the handbills: a beating, a day's truce, a loss of standing and an hour; the card stays.</summary>
     // orig: R057+0x21DC (1A02:053C) matched
+    // BUG: R057+0x21DC..0x2230 never writes following-card (DS:E48A): after the truce the card is shown again and the line can be chosen again,
+    //   each time injuring the party, lowering the standing and passing an hour.
     private static void EatTheHandbills(CardContext c)
     {
         c.Screen.Text(0x12, TextFrame.BlankPage);
@@ -148,7 +162,7 @@ public sealed class HandbillThugs_Polit01 : Card
         OptionHint.ChanceOf(Math.Clamp(c.Skill(c.Leader, (int)Skill.Streetwise) - c.HereQuery(0) + 100, 0, 99), OptionHint.WholeParty);
 
     /// <summary>The thugs take nine tenths of the purse (counted in 16-bit pfennigs, as the original does).</summary>
-    // C: (unsigned)money_pfennigs(purse) * 9 / 10 is done on the low 16 bits only, so a purse above 7281 pfennigs wraps.
+    // C: (unsigned)purse-in-pfennigs(purse) * 9 / 10 is done on the low 16 bits only, so a purse above 7281 pfennigs wraps.
     private static void PayTheThugs(CardContext c)
     {
         var pfennigs = (ushort)c.State.Party.Purse.TotalPfennigs;
@@ -206,11 +220,11 @@ public sealed class HandbillThugs_Polit01 : Card
     // orig: R057+0x289C (1A02:0BFC) matched (item slot 1; same body)
     // orig: R057+0x28B2 (1A02:0C12) matched (item slot 2; same body)
     // orig: R057+0x28C8 (1A02:0C28) matched (item slot 3; same body)
-    // C: r.a is never assigned in these handlers (see StalePopupChance).
+    // C: r.a is never assigned in these handlers (see PickedPopupChance, StalePopupChance).
     private static OptionHint PotionHint(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        return OptionHint.ChanceOf(StalePopupChance, c.MenuMember);
+        return c.RatingTheChoice ? OptionHint.ChanceOf(PickedPopupChance, c.MenuMember) : OptionHint.UnsetChance(StalePopupChance, c.MenuMember);
     }
 
     // orig: R057+0x2522 (1A02:0882) matched
@@ -249,11 +263,11 @@ public sealed class HandbillThugs_Polit01 : Card
     // orig: R057+0x28DE (1A02:0C3E) matched (saint slot 0)
     // orig: R057+0x2968 (1A02:0CC8) matched (saint slot 1; same body)
     // orig: R057+0x29F8 (1A02:0D58) matched (saint slot 2; same body)
-    // DORMANT: R057+0x2A88 (1A02:0DE8) (saint slot 3; same body): the card has only three saints (card_saints[3] stays empty).
+    // DORMANT: R057+0x2A88 (1A02:0DE8) (saint slot 3; same body): the card has only three saints (card-saint-lines[3] stays empty).
     private static OptionHint SaintHint(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var low = c.SaintChanceLow(c.MenuMember, saint);
         return OptionHint.Say(c.ChanceText(low, c.SaintChanceHigh(c.MenuMember, saint)), c.MenuMember);
     }
@@ -327,7 +341,7 @@ public sealed class HandbillThugs_Polit01 : Card
                 c.Screen.Text(3);
                 c.Events.Create(-2, c.Here, 0, EventKinds.LocationFact, ThugsTruce, 0, 0, 0x18, 0, PoliticsTag);
                 c.KeepItems(Who.Everybody, 50);
-                // C: party_money[0] = 0 clears the florins only.
+                // C: party-purse[0] = 0 clears the florins only.
                 c.State.Party.Purse = c.State.Party.Purse with { Florins = 0 };
                 c.LocationSet(c.Here, 0, -(c.Random(5) - c.StandingSeen) - 2);
                 c.Next = StreetForTheHour(c);

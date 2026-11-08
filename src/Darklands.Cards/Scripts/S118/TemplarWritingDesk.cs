@@ -37,7 +37,8 @@ public sealed class TemplarWritingDesk : Card
             // orig: R118+0x23FA (1A2B:04CA) matched; hint R118+0x2434
             new MenuLine(_ => CallOnASaint(c), () => OptionHint.Say("Select a person and a saint.")),
             // orig: R118+0x246C (1A2B:053C) matched; hint R118+0x247A
-            // UNCERTAIN: "turn and leave" starts a battle (mode 1, -2) with the enemy and seed left from before.
+            // C: "turn and leave" starts a battle (mode 1, -2) with the enemy and seed left from before: R118+0x246C writes only DS:A766 = 1 and DS:E48A = -2;
+            //   CardBattle is the persistent BattleOrders, which keep the enemy, seed and the rest.
             new MenuLine(_ => { c.CardBattle.Mode = 1; c.Next = -2; }, Unknown),
             // DORMANT: lines 5..9 are never enabled. Each (R118+0x24B2, R118+0x250C, R118+0x2566,
             // R118+0x25C0, R118+0x261A) would show text 0, pass no time and close the card (0x62);
@@ -73,7 +74,7 @@ public sealed class TemplarWritingDesk : Card
 
     /// <summary>A successful copy teaches the best Read &amp; Write + Latin member three formulas.</summary>
     // orig: R118+0x21DC (1A2B:02AC) matched; tests: CardSmokeTests
-    // C: party_max_skill_sum is called again (its result unused) to set the best member before the roll.
+    // C: party-ability-top-sum is called again (its result unused) to set the best member before the roll.
     private static void CopyTheSymbol(CardContext c, CardMenu menu, int chance)
     {
         menu[1] = OptionState.Shown;
@@ -94,7 +95,7 @@ public sealed class TemplarWritingDesk : Card
     /// A random formula 0..65, moved on (wrapping) past any whose byte of the formula table
     /// already holds a known formula, then learnt.
     /// </summary>
-    // BUG: the search tests formulas_known[m][n / 3] && 1 << n % 3 (logical, not bitwise): it skips any n
+    // BUG: the search tests known-recipes[m][n / 3] && 1 << n % 3 (logical, not bitwise): it skips any n
     // whose group of three has any formula known, not just n itself. If all groups do, the first n is learnt.
     private static void LearnAFormula(CardContext c, Character scholar)
     {
@@ -120,7 +121,7 @@ public sealed class TemplarWritingDesk : Card
     // orig: R118+0x23FA (1A2B:04CA) matched; tests: CardSmokeTests
     private static void CallOnASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

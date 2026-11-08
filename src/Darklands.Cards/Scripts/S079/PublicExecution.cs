@@ -26,7 +26,7 @@ public sealed class PublicExecution : Card
     {
         c.Screen.Show(MsgName, PictureNames.Of(Picture));
         c.Next = CardNumber;
-        // C: the script's copy of the reputation (cur_rep, DS:EE74); the fight lowers it.
+        // C: the script's copy of the reputation (reputation-now, DS:EE74); the fight lowers it.
         var standing = c.LocationQuery(c.Here, 0);
         c.SetCardItems();
         c.SetCardSaints(5, 0x3F, 0x4E, 0x50);
@@ -67,7 +67,9 @@ public sealed class PublicExecution : Card
     // orig: R079+0x0CF6 (18D8:02F6) asm; tests: CardSmokeTests
     private static void Verdict(CardContext c, int saint, ref int standing)
     {
-        // UNCERTAIN: the abbot's score starts uninitialised when fact (2, 0) holds here; taken as 0.
+        // DIVERGENCE: the abbot's score [bp-0Ah] is zeroed only when fact (2, 0) does not hold here (R079+0x0D17); otherwise it starts
+        //   as the stack leftover of the calls before (1174 after line 1's text, -564 after the menu, under the oracle's stand-ins for
+        //   the menu and the text drawer): not game state; taken as 0.
         var abbot = 0;
         _ = c.Events.Fact(2, 0, c.Here);
         var piety = 0;
@@ -220,7 +222,7 @@ public sealed class PublicExecution : Card
     // orig: R079+0x0B64 (18D8:0164) asm; tests: CardSmokeTests
     private static void FightTheGuards(CardContext c, ref int standing)
     {
-        // C: arguments are evaluated right to left: rand_mod(4) (second group) before rand_mod(2).
+        // C: arguments are evaluated right to left: roll-below(4) (second group) before roll-below(2).
         var third = c.PartyLoreLevel() % 3 + 1;
         var second = c.Random(4) + c.PartyLoreLevel() / 3 + 1;
         var first = c.Random(2) + c.PartyLoreLevel() / 4 + 1;
@@ -280,7 +282,7 @@ public sealed class PublicExecution : Card
     // orig: R079+0x1212 (18D8:0812) asm; R079+0x1386 (18D8:0986) asm; tests: CardSmokeTests
     private static void PrayForDeliverance(CardContext c, ref int standing)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -309,10 +311,10 @@ public sealed class PublicExecution : Card
                 break;
             case 2:
             case 3:
-                c.NameToSlot(1, c.CardSaints[c.MenuSlot], 0);
+                c.NameToSlot(1, c.CardSaints[c.MenuEntrySlot], 0);
                 ShowPicture(c, 355);
                 c.Screen.Text(2);
-                Verdict(c, c.CardSaints[c.MenuSlot], ref standing);
+                Verdict(c, c.CardSaints[c.MenuEntrySlot], ref standing);
                 break;
             default:
                 // DORMANT: no slot outside 0..3.

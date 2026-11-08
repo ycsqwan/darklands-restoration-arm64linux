@@ -50,7 +50,14 @@ The keys and the mouse are the original's: the menu bar with the right button or
 character sheets, F6 for the party, Ctrl-F1–F5 to choose the leader, Alt-S save, Alt-L load, Alt-P pause,
 Alt-O the marching order, Alt-D difficulty, Alt-M music, Alt-F sound effects, Alt-Q quit. Two keys are
 this program's own: **F12** saves a screenshot, and **F11** opens a developer console over the game
-(`help` lists its commands: time, money, attributes, saints, items...).
+(`help` lists its commands: time, money, attributes, saints, items...). **Ctrl-F12** makes a problem report (below).
+
+## Reporting a problem
+
+Something crashed, or differs from the original? The program writes a log of every run, and can pack it with your settings,
+the saved game and a screenshot into a zip you attach to a GitHub issue: type `report` in the console (F11), press Ctrl-F12,
+or use "make a problem report" on the launcher; after a crash the program offers it. Nothing is sent anywhere by the program.
+How, and what the zip holds: [docs/REPORTING.md](docs/REPORTING.md).
 
 ## Sound and music
 
@@ -60,6 +67,21 @@ MT-32 or CM-32L ROM files in the `MT32_ROMS` folder that comes with the program,
 launcher (it shows whether the ROMs of the chosen module are there). Without them the Sound Blaster Pro's FM music
 plays instead, and the program says so. The launcher's sound card (`"card"` in the settings) chooses another card:
 AdLib, Sound Blaster, Sound Blaster Pro 2, MT-32 or CM-32L.
+
+## Picture and sound packs
+
+A pack replaces pictures (PNG files) or music and battle sounds (OGG, WAV or General MIDI files) without changing how the game plays.
+Put a pack's folder in the `packs` folder next to the program and choose it in the launcher's "HD pack" or "Audio pack"
+row (or drop the folder on the launcher). A pack (or a mod) can also give music to a card of the game. MIDI music needs a General MIDI SoundFont (`.sf2`) of your own, in a `SOUNDFONT` folder next to the program or chosen in the launcher's "SoundFont" row; none is included. The release comes with a small example, `packs/audio-pack-example` (generated
+test tones). How to make your own, with the names of all the game's music and sounds: [`docs/PACKS.md`](docs/PACKS.md),
+also beside the program and linked from the launcher ("how to make a pack").
+
+## Mods
+
+A mod adds new cards (scenes with a text and choices) or replaces one of the game's: unlike a pack it changes the game,
+so its saved games are marked modded (a companion file beside the `.SAV`, which itself stays loadable by the original
+game). Mods are played only when named: `--mod <name>` or `"mods"` in the settings. The release comes with a small
+example, `mods/wayside-shrine`; how to write one, card by card: [`docs/MODS.md`](docs/MODS.md), also beside the program.
 
 ## Settings
 
@@ -71,6 +93,9 @@ want:
 | `gameFolder`, `savesFolder` | where your Darklands is; where the saves go |
 | `display.scale`, `display.resolution`, `display.fullscreen` | a bigger window (`2` = 1440x800), any size (`"1600x1000"`), full screen |
 | `sound.card`, `sound.mt32Roms` | the sound card; where the MT-32 ROMs are |
+| `display.hdPack`, `sound.audioPack`, `sound.soundFont` | a picture pack, a sound pack, the SoundFont for its `.mid` files (`docs/PACKS.md`) |
+| `display.cleanDrawing` | false: drawn as the 1992 game, oddities included; true: the cleaner drawing of 0.9.5 |
+| `mods` | mods to play with (`docs/MODS.md`); none by default |
 | `startup.banner`, `startup.intro` | skip the banner or the opening |
 
 Everything else is in `docs/SETTINGS.md`, which also lists the command-line forms (`--fullscreen`,
@@ -79,7 +104,7 @@ Everything else is in `docs/SETTINGS.md`, which also lists the command-line form
 **新玩家入门**：`docs/GAME_GUIDE_ZH.md` 是一份中文游戏指南，含属性、技能、136 位圣徒、
 18 件圣物、330 处地点的对照表（数据逐条提取自游戏本体）。
 
-## Status: version 0.9.4
+## Status: version 1.0.0-rc1 (release candidate)
 
 The whole game plays: character creation, cities and their streets, inns and shops, guilds, banks and
 churches, the world map and its encounters, battles, camping, saints and alchemy, saving and loading.
@@ -130,7 +155,7 @@ not licensed by it; you need your own copy of the game. Third-party components k
 
 ### 效果展示
 
-以下截图来自 v0.9.4 的 win-x64 单文件构建（`--scale` 窗口）。
+以下截图来自 v1.0.0-rc1 的 win-x64 单文件构建（`--scale` 窗口）。
 
 **卡片正文** —— 夜色中的等待卡：正文为 Fusion Pixel 10px 等宽，折行、避头标点与 `$变量` 展开都有专门处理；
 底部时钟条的 `Prime` / `Hours` / `Days` / `Months` 与数字仍是原版英文（属图片内嵌文字）。
@@ -322,6 +347,14 @@ empty `MT32_ROMS` folder beside it, in `artifacts/win-x64`; no .NET installation
 dotnet publish src/Darklands.Host.Sdl -p:PublishProfile=win-x64
 ```
 
+A release for Linux x64 (also the Steam Deck: desktop mode and Steam as a non-Steam game; keyboard and mouse as on Windows) is built the same way, with `libmt32emu.so` beside the program (`artifacts/linux-x64`):
+
+```
+dotnet publish src/Darklands.Host.Sdl -p:PublishProfile=linux-x64
+```
+
+SDL2 is not shipped on Linux: the program uses the system's `libSDL2-2.0.so.0` (Debian/Ubuntu `libsdl2-2.0-0`, already on SteamOS), or a copy placed beside the program. Pack it with `tar` so `DarklandsRP` stays executable (or `chmod +x DarklandsRP`). Without a game folder named, the program looks in Steam's libraries (including the Deck's SD card), Heroic's installed games, the usual GOG/Lutris folders and Wine prefixes (`~/.wine`, `WINEPREFIX`, Lutris, Heroic, Bottles, Proton) before asking. The workflow `.github/workflows/build.yml` builds, tests and publishes both systems.
+
 The launcher shows the release notes: write `releases/<version>/release-notes.md` (beside the repository) before
 publishing, and the build puts it next to the program as `RELEASE_NOTES.md`; without it the launcher only links to the
 release's page, `releases/tag/v<version>` on GitHub, so tag each release `v<version>`.
@@ -351,7 +384,7 @@ game sessions run in the original and in the rewrite side by side, compared afte
 | `src/Darklands.Cards` | the card engine and every card script |
 | `src/Darklands.Content`, `src/Darklands.Persistence` | the game files; saved games |
 | `src/Darklands.Simulation`, `src/Darklands.Presentation` | the game loop; the screens |
-| `src/Darklands.Audio`, `src/Darklands.Audio.Mt32` | the sound drivers in an emulated PC; MT-32 |
+| `src/Darklands.Audio`, `src/Darklands.Audio.Mt32` | the sound drivers in an emulated PC; MT-32; sound packs (docs/PACKS.md) |
 | `src/Darklands.Platform`, `src/Darklands.Host.*` | host interfaces and settings; the SDL and headless hosts |
 | `src/Darklands.DevConsole` | the developer console |
 | `src/Darklands.Rendering` | replacement graphics (HD packs) drawn over the game's frame, for any host |
@@ -373,3 +406,7 @@ Tests that need the original game read its folder from `DARKLANDS_DIR` (or the e
 
 SDL 2, mt32emu, StbTrueTypeSharp, DejaVu Sans Mono and a VGA text font: see `THIRD_PARTY_NOTICES.md`.
 *Darklands* is a 1992 MicroProse game; this project contains none of its files.
+
+## Dedication
+
+This project is dedicated to the memory of Arnold Hendrick, and to everyone at MicroProse who made such a great game possible.

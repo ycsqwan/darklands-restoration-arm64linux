@@ -89,7 +89,7 @@ public sealed class FortressGuardpost : Card
     /// <summary>A heard prayer makes the captain smile (and know the party); otherwise the guards attack (−4).</summary>
     private static void Pray(CardContext c, CardMenu menu)
     {
-        var result = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var result = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (result == -1)
         {
             return;
@@ -100,7 +100,7 @@ public sealed class FortressGuardpost : Card
             c.Screen.Text(4);
             BecomeKnown(c);
             ShowPicture(c, GuardsPicture);
-            // C: only options_block changes; the option flags stay as they were.
+            // C: only settings-block changes; the option flags stay as they were.
             menu.Block = 1;
             return;
         }

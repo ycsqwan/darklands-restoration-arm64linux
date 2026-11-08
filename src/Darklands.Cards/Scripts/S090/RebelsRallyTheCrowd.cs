@@ -35,10 +35,14 @@ public sealed class RebelsRallyTheCrowd : Card
             menu.Block = withMercenaries ? 1 : 0;
             menu[3] = OptionState.Hidden;
         }
-        // orig: R090+0x07C0 (1838:07C0) matched (handlers and card_saints only)
+        // orig: R090+0x07C0 (1838:07C0) matched (handlers and card-saint-lines only)
         c.SetCardSaints(0x0C, 0x7E, 0x36, 0x3D);
         // C: the prayer flag is set after the branch above, so it overrides its 0 (lines 2 and 3).
         menu[2] = c.SaintsUsable();
+        // orig: R090+0x0000 (1838:0000) matched
+        // BUG: the texts of blocks 0 and 1 have no lines 2..5: they read "2" to "5", so the prayer line is offered there as the text "2"
+        //   (the card oracle's run of the original, card 0xB8: menu 0 [1120001] over the block's "2|3|4|5" lines).
+        //   Kept. In play the card is not reached: it belongs to the politics season, which the original never starts (CityPolitics.SetUpCity)
 
         return menu.Run(
             // orig: R090+0x036C (1838:036C); hint R090+0x046C matched
@@ -154,7 +158,7 @@ public sealed class RebelsRallyTheCrowd : Card
         {
             c.Variables.Chosen[0] = c.MenuMember;
         }
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

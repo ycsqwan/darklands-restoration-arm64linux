@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SESSIONS_DIR = HERE / "lockstep-sessions"
 STATE_EVERY = 8
-NO_STATES = {"party", "party2", "gate", "gatem", "rgate", "rmgate"}       # the party menu of the start screen has no game to write until Begin the Adventure
+NO_STATES = {"bkeys", "bheld", "bedge", "bsafe", "party", "party2", "gate", "gatem", "rgate", "rmgate"}       # the party menu of the start screen has no game to write until Begin the Adventure
 
 
 def cut(session: str, until_state: str) -> str:
@@ -633,10 +633,49 @@ def rmenu_alphabet(screen: str):
 
 GATE_START = "\noption:4\nwait:5\nkey:enter\nwait:300"       # the gate guards are attacked: the battle begins paused
 
+# ---- round R2: the travel map (world-map-loop R030+0x02C0, the key handler R030+0x0C44) ----
+def trav_alphabet(rng: random.Random) -> list[str]:
+    """The map from DKSAVE17 (a party by night on the road): clicks that steer the marker, held directions (the keyboard interrupt), buffered arrows,
+    Shift / Ctrl F-keys (the leader), the sheets, the right button with Shift (the coordinates), the portraits, the camp and the cards an encounter shows."""
+    r = rng.random()
+    if r < 0.28:
+        return ["click:%d,%d" % (rng.randrange(66, 318), rng.randrange(24, 192))]
+    if r < 0.40:
+        d = rng.choice(sorted(HELD))
+        return ["kdown:" + HELD[d], "wait:5", "key:x", "wait:60", "kup:" + HELD[d], "wait:5"]
+    if r < 0.48:
+        return ["key:" + rng.choice(ARROWS + ["home", "end", "pgup", "pgdn"])]
+    if r < 0.56:
+        return ["shift:on", "key:f%d" % rng.randrange(1, 6), "shift:off"]
+    if r < 0.60:
+        return ["ctrl:on", "key:f%d" % rng.randrange(1, 6), "ctrl:off"]
+    if r < 0.66:
+        return ["key:f%d" % rng.randrange(1, 6), "wait:30", "key:esc"]
+    if r < 0.72:
+        x, y = rng.randrange(66, 318), rng.randrange(24, 192)
+        # (no key inside the hold: the menu bar's tracking loop, which the held right button starts, takes no key)
+        shift = rng.random() < 0.7
+        return (["shift:on"] if shift else []) + ["rdown:%d,%d" % (x, y), "wait:5", "move:%d,%d" % (x + rng.randrange(-8, 9), y + rng.randrange(-8, 9)), "wait:5", "rup", "wait:5"]             + (["shift:off"] if shift else [])
+    if r < 0.78:
+        return ["click:%d,%d" % (rng.randrange(0, 60), rng.randrange(20, 200))]
+    if r < 0.82:
+        return ["key:c", "wait:60", "key:l", "wait:200"]
+    if r < 0.92:
+        return ["key:enter"]
+    if r < 0.96:
+        return ["key:enter", "wait:60", "key:enter"]
+    return ["move:%d,%d" % (rng.randrange(0, 320), rng.randrange(20, 190))]
+
+
 # name -> (saved game, prefix, alphabet, closing steps)
 SCREENS = {
     "mbar": ("DKSAVE0.SAV", lambda: cut("menubar", "menu"), mbar_alphabet, []),
     "mbarm": ("DKSAVE17.SAV", lambda: cut("mapsave", "map"), mbar_alphabet, []),
+    "trav": ("DKSAVE17.SAV", lambda: cut("mapsave", "map"), trav_alphabet, []),
+    "trav0": ("DKSAVE0.SAV", lambda: cut("pressburg-map", "map"), trav_alphabet, []),
+    "travw": ("synth/DKSAVE17-month0d3.sav", lambda: cut("mapsave", "map"), trav_alphabet, []),
+    "travs": ("synth/DKSAVE17-month6.sav", lambda: cut("mapsave", "map"), trav_alphabet, []),
+    "travn": ("synth/DKSAVE17-month10d1.sav", lambda: cut("mapsave", "map"), trav_alphabet, []),
     "gate": ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + GATE_START, gate_alphabet,
              ["key:space", "wait:20000", "key:l", "wait:300", "key:enter", "wait:300"]),
     "pots": ("synth/Dksave10-pots.sav", lambda: cut("sheet", "sheet"), potions_alphabet(4), ["key:esc", "wait:200"]),
@@ -678,22 +717,258 @@ for _name in ("sheet", "shop", "pawn", "stable", "cache", "roster", "roster2", "
     SCREENS["r" + _name] = (_save, _prefix, right_wrapped(_alpha, "r" + _name), _closing)
 
 
-CAMP_SCREENS = ("stay", "wild")
-BATTLE_SCREENS = ("gate", "gatem", "rgate", "rmgate")        # inputs of a battle are followed by bwait:<passes> (lockstep.py); no state steps inside a battle
+# ---- round B1: the battle's input (keys, held keys, modifiers, the mouse at the view's edges, the party panel, the right button) ----
+HELD = {"up": "48", "down": "50", "left": "4B", "right": "4D", "home": "47", "end": "4F", "pgup": "49", "pgdn": "51"}
+HELD_PAIRS = [("left", "up"), ("left", "down"), ("right", "up"), ("right", "down"), ("up", "down"), ("left", "right"), ("home", "pgdn"), ("end", "pgup")]
+BAT_NAMED = ["enter", "esc", "up", "down", "left", "right", "home", "end", "pgup", "pgdn", "backspace", "tab", "altm", "altf", "altc", "altd"]
+BAT_FKEYS = ["f%d" % k for k in range(1, 11)]
+BAT_LETTERS = "abcdefghijklmnoprtuvwxyz".replace("s", "")            # (no q: Alt-Q is the quit; plain q is harmless but kept out as the Alt hot keys are)
+BAT_ORDERS = "wavbpmfhgcdeiknortulxyz"
+
+
+def pause_run(rng: random.Random, lo: int = 20, hi: int = 120) -> list[str]:
+    """The battle runs for a while (unpaused) and is paused again: members get hurt, missiles fly, orders are carried out."""
+    return ["key:space", "bwait:%d" % rng.randrange(lo, hi), "key:space"]
+
+
+def surrender_steps(rng: random.Random, final: bool = False) -> list[str]:
+    """S asks "Do you really want to surrender?" (R022+0x03E4): other keys / clicks first (the question waits), then N / Esc (the fight goes on) or, last, Y."""
+    out = ["key:s", "bwait:10"]
+    for _ in range(rng.randrange(0, 3)):
+        out += [rng.choice(["key:h", "key:a", "key:1", "key:space", "key:tab", "click:150,100", "move:200,90", "key:up", "key:enter"]), "bwait:6"]
+    out += [("key:y" if final else "key:n"), "bwait:20"]
+    return out
+
+
+def held_steps(rng: random.Random) -> list[str]:
+    """One or two held direction keys (kdown / kup through the game's own keyboard interrupt), with Shift / Ctrl sometimes, for some passes."""
+    mod = rng.random()
+    on = ["shift:on"] if mod < 0.15 else ["ctrl:on"] if mod < 0.27 else []
+    off = ["shift:off"] if mod < 0.15 else ["ctrl:off"] if mod < 0.27 else []
+    if rng.random() < 0.45:
+        a, b = rng.choice(HELD_PAIRS)
+        ks = [HELD[a], HELD[b]]
+    else:
+        ks = [HELD[rng.choice(sorted(HELD))]]
+    out = ["bwait:2"] + on
+    for k in ks:
+        out += ["kdown:" + k, "bwait:2"]
+    out += ["bwait:%d" % rng.randrange(6, 60)]
+    for k in (ks if rng.random() < 0.5 else ks[::-1]):
+        out += ["kup:" + k, "bwait:2"]
+    return out + off + ["bwait:5"]
+
+
+def bat_click(rng: random.Random) -> list[str]:
+    r = rng.random()
+    mod = rng.random()
+    pre = ["ctrl:on"] if mod < 0.10 else ["shift:on"] if mod < 0.18 else []
+    post = ["ctrl:off"] if mod < 0.10 else ["shift:off"] if mod < 0.18 else []
+    if r < 0.55:
+        return ["key:esc"] + pre + ["click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))] + post + ["key:esc", "move:170,100"]
+    # the party panel's rows and its edges (the pointer is put back at the view's middle)
+    return ["key:esc"] + pre + ["click:%d,%d" % (rng.randrange(4, 56), 40 * rng.randrange(0, 4) + rng.randrange(3, 37))] + post + ["key:esc", "move:170,100"]       # (a click on a portrait may open the combat sheet)
+
+
+def bkeys_alphabet(rng: random.Random) -> list[str]:
+    r = rng.random()
+    if r < 0.22:
+        k = rng.choice(BAT_ORDERS)
+        return ["key:" + k] + (["key:esc"] if k == "e" else [])             # (E: the enemy info)
+    if r < 0.30:
+        return ["key:" + rng.choice("1234567890")]
+    if r < 0.42:
+        return ["key:" + rng.choice(BAT_NAMED)]
+    if r < 0.47:
+        return ["key:" + rng.choice(BAT_FKEYS), "key:esc"]
+    if r < 0.56:
+        m = rng.choice(["shift", "ctrl"])
+        return ["%s:on" % m, "key:" + rng.choice(BAT_LETTERS + "1234"), "%s:off" % m]
+    if r < 0.60:
+        m = rng.choice(["shift", "ctrl"])
+        return ["%s:on" % m, "key:" + rng.choice(["up", "down", "left", "right", "home", "end", "pgup", "pgdn", "enter", "tab", "space"]), "%s:off" % m]
+    if r < 0.75:
+        return held_steps(rng)
+    if r < 0.88:
+        return bat_click(rng)
+    if r < 0.92:
+        return right_steps(rng, "gate")
+    if r < 0.95:
+        return pause_run(rng)
+    if r < 0.97:
+        return surrender_steps(rng)
+    return ["move:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))]
+
+
+def bheld_alphabet(rng: random.Random) -> list[str]:
+    """Held keys mostly, around orders and member selections and runs of the battle."""
+    r = rng.random()
+    if r < 0.5:
+        return held_steps(rng)
+    if r < 0.62:
+        return ["key:" + rng.choice("1234")]
+    if r < 0.74:
+        return ["key:" + rng.choice(BAT_ORDERS[:8])]
+    if r < 0.82:
+        return pause_run(rng)
+    if r < 0.90:
+        return ["key:esc"]
+    if r < 0.95:
+        return ["key:enter"]
+    return bat_click(rng)
+
+
+def bedge_alphabet(rng: random.Random) -> list[str]:
+    """The pointer at the view's edges and the screen's edges (the original scrolls the view there), clicks there, then back to the middle."""
+    r = rng.random()
+    side = rng.randrange(8)
+    x = [0, 319, rng.randrange(0, 320), rng.randrange(0, 320), 1, 318, rng.randrange(60, 80), rng.randrange(300, 320)][side]
+    y = [rng.randrange(0, 200), rng.randrange(0, 200), 0, 199, rng.randrange(0, 12), rng.randrange(188, 200), rng.randrange(0, 200), rng.randrange(0, 200)][side]
+    if r < 0.55:
+        return ["move:%d,%d" % (x, y), "bwait:%d" % rng.randrange(4, 40), "move:170,100", "bwait:3"]
+    if r < 0.75:
+        return ["key:esc", "click:%d,%d" % (x, y), "key:esc", "move:170,100"]
+    if r < 0.85:
+        return ["move:%d,%d" % (x, y), "bwait:%d" % rng.randrange(4, 30), "key:" + rng.choice("1234wavbpm"), "move:170,100"]
+    if r < 0.93:
+        return held_steps(rng)
+    return pause_run(rng, 10, 60) if rng.random() < 0.5 else ["key:" + rng.choice("1234")]
+
+
+SAFE_NAMED = ["up", "down", "left", "right", "home", "end", "pgup", "pgdn", "backspace", "tab"]
+
+
+def bsafe_alphabet(rng: random.Random) -> list[str]:
+    """Keys that stay in the battle's order mode (no Enter / Space / F-keys / S / E / panel clicks / mouse at the edges): letters, digits, the
+    named cursor keys, held keys with Shift / Ctrl, view clicks."""
+    r = rng.random()
+    if r < 0.30:
+        return ["key:" + rng.choice(BAT_ORDERS.replace("e", ""))]
+    if r < 0.40:
+        return ["key:" + rng.choice("1234567890")]
+    if r < 0.50:
+        return ["key:" + rng.choice(SAFE_NAMED)]
+    if r < 0.60:
+        m = rng.choice(["shift", "ctrl"])
+        return ["%s:on" % m, "key:" + rng.choice(BAT_LETTERS.replace("e", "") + "1234" + "x"), "%s:off" % m]
+    if r < 0.66:
+        m = rng.choice(["shift", "ctrl"])
+        return ["%s:on" % m, "key:" + rng.choice(SAFE_NAMED), "%s:off" % m]
+    if r < 0.88:
+        return held_steps(rng)
+    r2 = rng.random()
+    mod = rng.random()
+    pre = ["ctrl:on"] if mod < 0.15 else ["shift:on"] if mod < 0.25 else []
+    post = ["ctrl:off"] if mod < 0.15 else ["shift:off"] if mod < 0.25 else []
+    if r2 < 0.8:
+        return ["key:esc"] + pre + ["click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))] + post + ["key:esc", "move:170,100"]
+    return ["move:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))]
+
+
+BAT_START = GATE_START + "\nkey:2\nbwait:20"            # the first key ends the battle start pause (a held key or a mouse move alone does not)
+GATE_CLOSING = ["key:esc", "bwait:10", "key:esc", "bwait:10", "key:space", "wait:20000", "key:l", "wait:300", "key:enter", "wait:300"]
+SCREENS.update({
+    "bkeys": ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + BAT_START, bkeys_alphabet, GATE_CLOSING),
+    "bheld": ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + BAT_START, bheld_alphabet, GATE_CLOSING),
+    "bedge": ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + BAT_START, bedge_alphabet, GATE_CLOSING),
+    "bsafe": ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + BAT_START, bsafe_alphabet, GATE_CLOSING),
+})
+
+
+def brun_alphabet(rng: random.Random) -> list[str]:
+    """Keys, held keys and clicks while the battle RUNS (unpaused: DS:9081 bit 0, the active member changing under DS:C623): short waits."""
+    r = rng.random()
+    if r < 0.18:
+        return ["key:" + rng.choice("1234")]
+    if r < 0.40:
+        k = rng.choice(BAT_ORDERS)
+        return ["key:" + k] + (["key:esc"] if k == "e" else [])
+    if r < 0.55:
+        mod = rng.random()
+        pre = ["ctrl:on"] if mod < 0.15 else ["shift:on"] if mod < 0.25 else []
+        post = ["ctrl:off"] if mod < 0.15 else ["shift:off"] if mod < 0.25 else []
+        return ["key:esc"] + pre + ["click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))] + post + ["key:esc", "move:170,100"]
+    if r < 0.70:
+        return held_steps(rng)
+    if r < 0.80:
+        m = rng.choice(["shift", "ctrl"])
+        return ["%s:on" % m, "key:" + rng.choice(BAT_LETTERS + "1234"), "%s:off" % m]
+    if r < 0.92:
+        return ["key:" + rng.choice(SAFE_NAMED)]
+    if r < 0.96:
+        return ["key:" + rng.choice("1234"), "key:" + rng.choice("wavbpm")]
+    return ["move:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180))]
+
+
+RUN_START = BAT_START + "\nkey:space\nbwait:30"                       # the first Space starts the fight
+RUN_CLOSING = ["key:esc", "bwait:5", "key:space", "bwait:5"] + GATE_CLOSING                  # paused again, then the closing Space as the other walks
+SCREENS["brun"] = ("DKSAVE0.SAV", lambda: cut("orders-walk", "gate") + RUN_START, brun_alphabet, RUN_CLOSING)
+NO_STATES.add("brun")
+
+# the battle walks on synthetic saved games (synth_saves.py): a hurt / ill / dead party in the gate battle (the battle's party panel and sheets)
+for _name, _save, _alpha, _start in (("bhurt", "synth/DKSAVE0-hurt.sav", brun_alphabet, RUN_START), ("bhurta", "synth/DKSAVE0-hurtattr.sav", brun_alphabet, RUN_START),
+                                     ("bhurts", "synth/DKSAVE0-hurtstatus.sav", bkeys_alphabet, BAT_START), ("bdead", "synth/DKSAVE0-dead.sav", brun_alphabet, RUN_START),
+                                     ("bhurtk", "synth/DKSAVE0-hurt.sav", bkeys_alphabet, BAT_START)):
+    SCREENS[_name] = (_save, (lambda s=_start: cut("orders-walk", "gate") + s), _alpha, RUN_CLOSING if _start == RUN_START else GATE_CLOSING)
+    NO_STATES.add(_name)
+
+def border_alphabet(rng: random.Random) -> list[str]:
+    """Orders as the player gives them in the pause (member, order letter, target click), then the fight runs for a while (Space .. Space)."""
+    r = rng.random()
+    if r < 0.55:
+        order = rng.choice("wavbpmfh")
+        steps = ["key:" + rng.choice("1234"), "key:" + order]
+        steps += ["key:7", "click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180)), "key:esc", "move:170,100"] if order in "wavbm" else [ ]
+        if order == "p" or order == "f":
+            steps += ["key:7", "click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180)), "key:esc", "move:170,100"]
+        return steps
+    if r < 0.70:
+        # a thrown potion: T opens the Throw list (the Attack menu unfolded); Down k times, Enter, a click on a target
+        return ["key:" + rng.choice("1234"), "key:t"] + ["key:down"] * rng.randrange(0, 5) + ["key:enter", "key:7", "click:%d,%d" % (rng.randrange(80, 300), rng.randrange(20, 180)), "key:esc", "move:170,100"]
+    if r < 0.85:
+        return pause_run(rng, 15, 90)
+    if r < 0.93:
+        return held_steps(rng)
+    return ["key:" + rng.choice(["g", "q", "h", "u", "o", "d"])]
+
+
+for _name, _save, _from, _alpha, _start in (("blue", "Dksave21.sav", "orders-potion", bkeys_alphabet, BAT_START), ("bluer", "Dksave21.sav", "orders-potion", border_alphabet, BAT_START),
+                                           ("bpra", "local/oracle-saves/DKSAVE40N.SAV", "orders-prague-missile", bkeys_alphabet, BAT_START),
+                                           ("bprar", "local/oracle-saves/DKSAVE40N.SAV", "orders-prague-missile", border_alphabet, BAT_START),
+                                           ("bgater", "DKSAVE0.SAV", "orders-walk", border_alphabet, BAT_START),
+                                           ("bhurto", "synth/DKSAVE0-hurt.sav", "orders-walk", border_alphabet, BAT_START)):
+    SCREENS[_name] = (_save, (lambda f=_from, s=_start: cut(f, "gate") + s), _alpha, GATE_CLOSING)
+    NO_STATES.add(_name)
+
+CAMP_SCREENS = ("stay", "wild", "rstay", "rwild")
+BATTLE_SCREENS = ("gate", "gatem", "rgate", "rmgate", "bkeys", "bheld", "bedge", "bsafe", "brun", "bhurt", "bhurta", "bhurts", "bdead", "bhurtk", "blue", "bluer", "bpra", "bprar", "bgater", "bhurto")        # inputs of a battle are followed by bwait:<passes> (lockstep.py); no state steps inside a battle
+REST_WAIT = 1500            # frames: a rest that runs until the next key (S on the stay screen, A on the map after the camp): the original's
+#   next step waits for it to be idle after some 25 rest passes, which the C# host plays on its frames (RC rounds: s1-wild-102, w1-rstay-201)
+INN_WAIT = 300              # frames: the inn cards' rooms screen and night rest (R035, R051+0x12F0) run on from a line or a click (w1-saints-201)
 HOURGLASS_WAIT = 300        # frames: the C# host's hourglass of a camp day (4 steps x 400 ms + 1000 ms, R043+0x3494) runs on the host's frames
 
 
 def input_wait(screen: str, step: str) -> str:
     """The C#'s wait after an input: a camp day (S, or a click on the bottom menu's first row, R036+0x0734) passes time with the
-    hourglass, whose delays the headless host plays out frame by frame; the original's next step waits for it to be idle anyway."""
+    hourglass, whose delays the headless host plays out frame by frame; the original's next step waits for it to be idle anyway. A rest
+    that runs until the next key (S, A) and the inn's rest get more (REST_WAIT, INN_WAIT)."""
     if screen.startswith("mbar") or screen.startswith("rmbar"):
         return "wait:100"
+    if screen.startswith("trav"):
+        # a click on the map walks until the target or a stop (the original's next step waits for it to be idle): a walk across the view
+        # takes some 340 passes, about 700 of the host's frames (round R2: gen-trav0-01, gen-trav-11 took their states mid-walk with 600)
+        kind, _, value = step.partition(":")
+        return "wait:2000" if kind == "click" else "wait:60"
+    if screen in ("brun", "bhurt", "bhurta", "bdead"):
+        return "bwait:8"
     if screen in BATTLE_SCREENS:
         return "bwait:20"
+    if screen in ("saints", "rsaints"):
+        return "wait:%d" % INN_WAIT if step.partition(":")[0] in ("key", "click") else "wait:30"
     if screen in CAMP_SCREENS:
         kind, _, value = step.partition(":")
-        if kind == "key" and value in ("s", "S"):
-            return "wait:%d" % HOURGLASS_WAIT
+        if kind == "key" and value in ("s", "S", "a", "A"):
+            return "wait:%d" % REST_WAIT
         if kind == "click":
             x, y = (int(v) for v in value.split(","))
             if 0x46 < x < 0x134 and 0xAA < y < 0xBC and (y - 0xAA) // 9 == 0:
@@ -708,6 +983,27 @@ def fix_waits(screen: str, text: str) -> str:
         if lines[i] == "wait:30" and lines[i - 1].split(":")[0] in ("key", "click"):
             lines[i] = input_wait(screen, lines[i - 1])
     return "\n".join(lines) + "\n"
+
+
+def merge_bwaits(lines: list[str]) -> list[str]:
+    """Consecutive bwait steps as one (their sum): the original's script reader keeps only the last of a run, the C# host takes each one (round B1)."""
+    # a bwait right after a shift / ctrl step is dropped by the original's script reader (BWAIT_ACTUAL is then one short and the C# side's waits
+    # shift): move it before the modifier steps (they take no time)
+    lines = list(lines)
+    moved = True
+    while moved:
+        moved = False
+        for i in range(1, len(lines)):
+            if lines[i].startswith("bwait:") and lines[i - 1] in ("shift:on", "shift:off", "ctrl:on", "ctrl:off"):
+                lines[i - 1], lines[i] = lines[i], lines[i - 1]
+                moved = True
+    out = []
+    for l in lines:
+        if l.startswith("bwait:") and out and out[-1].startswith("bwait:"):
+            out[-1] = "bwait:%d" % (int(out[-1][6:]) + int(l[6:]))
+        else:
+            out.append(l)
+    return out
 
 
 def generate(screen: str, seed: int, steps: int) -> str:
@@ -735,7 +1031,7 @@ def generate(screen: str, seed: int, steps: int) -> str:
         out += ["key:esc", "wait:100"]              # the keyboard menu mode still on: leave it
     out += closing
     out.append("state:end")
-    return "\n".join(out) + "\n"
+    return "\n".join(merge_bwaits(out) if screen in BATTLE_SCREENS else out) + "\n"
 
 
 def main():

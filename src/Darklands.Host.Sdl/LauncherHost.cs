@@ -37,15 +37,17 @@ internal static class LauncherHost
 
     /// <summary>
     /// Shows the launcher; saves the changes into <paramref name="settingsPath"/> (its template is written when the file is
-    /// missing). Returns the settings to play with, or null when the player left.
+    /// missing). Returns the settings to play with, or null when the player left; <paramref name="saved"/>: changes were saved.
     /// </summary>
     public static GameSettings? Run(SdlHost host, LauncherReason reason, string? problem, GameSettings settings,
-        CommandLineOptions cli, string? settingsPath, string version)
+        CommandLineOptions cli, string? settingsPath, string version, Darklands.Platform.Reporting.ReportService reports, out bool saved)
     {
         using var soundTest = new SoundTest(cli.GameCommandLine ?? settings.CommandLine ?? [], SdlLauncherSurface.Wake);
+        var (given, fixedKeys) = GivenGameFolder(cli, Environment.GetEnvironmentVariable,
+            folder => GameFolderSearch.GameFolderIn(folder, GameFiles.IsGameFolder) is not null);
         var context = new LauncherContext(
             settings,
-            cli.Overrides(Environment.GetEnvironmentVariable),
+            fixedKeys,
             version,
             reason,
             problem,
@@ -55,14 +57,60 @@ internal static class LauncherHost
             soundTest,
             ReleaseNotes(),
             url => SdlNative.SDL_OpenURL(url),
-            ReleasesPage + "/tag/v" + version);
+            ReleasesPage + "/tag/v" + version,
+            PackFolders,
+            DescribePack,
+            PackGuide,
+            given,
+            chosen => Darklands.Audio.Packs.SoundFontLocator.Find(null, null, chosen, AppContext.BaseDirectory, _ => { }),
+            () => ReportProblem(reports, settings, cli, settingsPath));
         LauncherResult result;
         using (var surface = new SdlLauncherSurface(host))
         {
             result = new Launcher.Launcher().Run(context, surface);
         }
         Save(settingsPath, result);
+        saved = result.Changes.Count > 0;
         return result.Choice == LauncherChoice.Play ? result.Settings : null;
+    }
+
+    /// <summary>
+    /// "Report a problem": a report from the logs of the last sessions (the launcher's own is nearly empty, so three go in) and the
+    /// saves; its folder and the issue form are opened. Returns the message for the launcher.
+    /// </summary>
+    private static string ReportProblem(Darklands.Platform.Reporting.ReportService reports, GameSettings settings, CommandLineOptions cli, string? settingsPath)
+    {
+        // the game folder and saves as the launcher's settings name them now
+        reports.SettingsFile = settingsPath is not null && File.Exists(settingsPath) ? settingsPath : reports.SettingsFile;
+        var named = cli.GameFolder ?? settings.GameFolder;
+        if (GameFolderSearch.GameFolderIn(named, GameFiles.IsGameFolder) is { } game)
+        {
+            reports.GameFolder = game;
+            reports.SavesFolders.Clear();
+            reports.SavesFolders.AddRange(new[] { cli.SavesFolder ?? settings.SavesFolder, Darklands.Presentation.DarklandsGame.DefaultSaveDirectory(game), SaveLocation.UserFolder() }.OfType<string>());
+        }
+        var lines = ReportHost.Manual(reports, "launcher", null, logCount: 3);
+        lines.ToList().ForEach(Console.WriteLine);
+        return lines.Count > 0 && lines[0].StartsWith("Report saved", StringComparison.Ordinal)
+            ? lines[0] + " The folder and the report form are open; attach the zip to the form. Nothing was sent."
+            : string.Join(' ', lines);
+    }
+
+    /// <summary>
+    /// The game folder the command line (else DARKLANDS_DIR) names, and the settings the launcher cannot change. A named folder
+    /// that holds no game is not fixed: the player chooses another on the launcher (else the launcher could never start the game).
+    /// </summary>
+    internal static (string? Given, IReadOnlyDictionary<string, string> FixedKeys) GivenGameFolder(CommandLineOptions cli,
+        Func<string, string?> environment, Func<string, bool> holdsGame)
+    {
+        var fixedKeys = new Dictionary<string, string>(cli.Overrides(environment), StringComparer.Ordinal);
+        var given = !string.IsNullOrWhiteSpace(cli.GameFolder) ? cli.GameFolder
+            : environment("DARKLANDS_DIR") is { } dir && !string.IsNullOrWhiteSpace(dir) ? dir : null;
+        if (given is not null && !holdsGame(given))
+        {
+            fixedKeys.Remove("gameFolder");
+        }
+        return (given, fixedKeys);
     }
 
     private static void Save(string? settingsPath, LauncherResult result)
@@ -99,6 +147,48 @@ internal static class LauncherHost
         var mt32 = Mt32Roms.Find(folder, RolandModule.Mt32, out _) is not null;
         var cm32l = Mt32Roms.Find(folder, RolandModule.Cm32l, out _) is not null;
         return new RomStatus(folder, mt32, cm32l);
+    }
+
+    /// <summary>The guide for pack makers on the web (a copy is docs/PACKS.md beside the program).</summary>
+    private const string PackGuide = "https://github.com/Arkana-Mechanika-Studios/darklands-restoration/blob/master/docs/PACKS.md";
+
+    /// <summary>The subfolders of the packs folders: next to the program (the release's example pack is there) and next to the game.</summary>
+    internal static IReadOnlyList<string> PackFolders(string? gameFolder)
+    {
+        var roots = new List<string> { Path.Combine(AppContext.BaseDirectory, "packs") };
+        if (gameFolder is not null)
+        {
+            roots.Add(Path.Combine(gameFolder, "packs"));
+            if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(gameFolder)) is { } above)
+            {
+                roots.Add(Path.Combine(above, "packs"));
+            }
+        }
+        var folders = new List<string>();
+        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (Directory.Exists(root))
+                {
+                    folders.AddRange(Directory.EnumerateDirectories(root).Order(StringComparer.OrdinalIgnoreCase));
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+        return [.. folders.Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+
+    /// <summary>A folder as the game would read it: its pictures (an HD pack) and sounds (an audio pack, with audio.json's problems).</summary>
+    internal static PackStatus DescribePack(string folder)
+    {
+        var pictures = Darklands.Rendering.HdPack.Load(folder);
+        var sounds = Darklands.Audio.Packs.AudioPack.Load(folder);
+        var problem = sounds.Problems.Concat(pictures.Problems).FirstOrDefault(p => p.Contains(".json", StringComparison.Ordinal))
+            ?? sounds.Problems.FirstOrDefault(p => !p.Contains("SoundFont", StringComparison.Ordinal));
+        return new PackStatus(pictures.Count, sounds.Count, problem);
     }
 
     /// <summary>The project's releases on GitHub (each version's page is /tag/v&lt;version&gt;).</summary>

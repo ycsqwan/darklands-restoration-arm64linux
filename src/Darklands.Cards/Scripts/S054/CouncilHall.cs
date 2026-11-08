@@ -20,7 +20,7 @@ namespace Darklands.Cards.Scripts;
 // DORMANT: R054+0x2E6C (19DF:13FC), R054+0x2EA8 (19DF:1438),
 //   R054+0x2EE4 (19DF:1474) and R054+0x2F20 (19DF:14B0): the item pop-up
 //   handlers (slots 0..3): they name the member of the pop-up and say "Success is assured."; the card has no
-//   card_items and no option asks items_usable(), so the item pop-up never opens.
+//   card-item-lines and no option asks usable-item-list(), so the item pop-up never opens.
 public sealed class CouncilHall : Card
 {
     public const int CardNumber = 0x2B;
@@ -73,6 +73,10 @@ public sealed class CouncilHall : Card
         menu[2] = saint;
         menu[3] = prisoners;
         menu[4] = prisoners;
+        // C: after each choice the loop sets $ChosenOneName to the leader, then calls the handler (the saint box's, R054+0x2F5C..,
+        // C: for a choice in the box: by a click, or by Enter as card-option-handler[2]), then the action.
+        menu.OnChoice = () => c.Variables.Chosen[0] = c.Leader;
+        menu.SaintBox = () => SaintChance(c);
         c.Next = Number;
         return menu.Run(
             // orig: R054+0x221C (19DF:07AC) hint + R054+0x2018 (19DF:05A8) action (hint matched, action unmatched)
@@ -81,12 +85,7 @@ public sealed class CouncilHall : Card
             // orig: R054+0x2526 (19DF:0AB6) hint + R054+0x22F8 (19DF:0888) action (hint matched, action unmatched)
             Option(c, () => AskForAnErrand(c, ErrandChance(c).Chance), () => ErrandChance(c)),
             // orig: R054+0x2758 (19DF:0CE8) hint + R054+0x25C6 (19DF:0B56) action matched
-            Option(c, () =>
-                {
-                    _ = (c.MenuPopup ? SaintChance(c) : OptionHint.Say(CardTexts.SelectSaint)).Chance;
-                    CallUponASaint(c);
-                },
-                OptionHint.Saying(CardTexts.SelectSaint)),
+            Option(c, () => CallUponASaint(c), OptionHint.Saying(CardTexts.SelectSaint)),
             // orig: R054+0x2880 (19DF:0E10) hint + R054+0x2790 (19DF:0D20) action matched
             Option(c, () => InquireAboutPrisoners(c), InquireChance(c)),
             // orig: R054+0x2996 (19DF:0F26) hint + R054+0x28CE (19DF:0E5E) action matched
@@ -108,16 +107,9 @@ public sealed class CouncilHall : Card
     }
 
     /// <summary>
-    /// An option line. C: after each choice the menu loop sets $ChosenOneName to the leader
-    /// before the line's handler and action run (a saint pop-up's handler then sets the member).
+    /// An option line (the leader is $ChosenOneName before the line's handler and action run: CardMenu.OnChoice).
     /// </summary>
-    private static MenuLine Option(CardContext c, Action choose, Func<OptionHint> hint) =>
-        new(() =>
-            {
-                c.Variables.Chosen[0] = c.Leader;
-                choose();
-            },
-            hint);
+    private static MenuLine Option(CardContext c, Action choose, Func<OptionHint> hint) => new(choose, hint);
 
     // ---- chances ------------------------------------------------------------------
 
@@ -216,7 +208,7 @@ public sealed class CouncilHall : Card
     private static OptionHint SaintChance(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var low = c.SaintChanceLow(c.MenuMember, saint);
         return OptionHint.Say(c.ChanceText(low, c.SaintChanceHigh(c.MenuMember, saint)));
     }
@@ -327,7 +319,7 @@ public sealed class CouncilHall : Card
                 }
                 else
                 {
-                    // C: imin(rand_mod(3) + 2, hours_until(18)): hours_until is evaluated first; it draws nothing.
+                    // C: smaller-of(roll-below(3) + 2, hours-remaining-until(18)): hours-remaining-until is evaluated first; it draws nothing.
                     var until = TimeOfDay.HoursUntil(c.State.Date.Hour, 18);
                     c.Variables.Numbers[0] = Math.Min(c.Random(3) + 2, until);
                     c.PassHours(c.Variables.Numbers[0]);
@@ -425,7 +417,7 @@ public sealed class CouncilHall : Card
     // orig: R054+0x25C6 (19DF:0B56) matched
     private void CallUponASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -450,7 +442,7 @@ public sealed class CouncilHall : Card
             }
             // C: a slot outside 0..3 skips the texts and still gives the commission.
             // BUG: unlike the audience (ReceiveACommission), the saint's way in never asks for a finished commission
-            // (ev24_at_owner(3, 0x0A, cur_loc)): a party that prays its way in to be paid gets a new commission instead.
+            // (resolved-quest-at-owner(3, 0x0A, location-now)): a party that prays its way in to be paid gets a new commission instead.
             var here = c.State.Locations[c.Here];
             c.Variables.Location = c.NearestLocationOfType(here.X, here.Y, 2);
             c.StartQuest3(Lord, c.Variables.Location, c.City.Ordinal + 0x62, 0x0F, 2, 0);
@@ -525,7 +517,7 @@ public sealed class CouncilHall : Card
             c.Events.Create(-2, c.Here, 0x32, 0x28, 2, 0x19, 0, 0xA8, 0, 0);
             c.Events.Create(-2, c.Here, 0x32, 0x28, 3, 0x19, 0, 0xA8, 0, 0);
             c.Events.Create(-2, c.Here, 0x32, 0x28, 6, 0x19, 0, 0xA8, 0, 0);
-            // C: (unsigned)loc_query(0x21) % 11.
+            // C: (unsigned)place-query(0x21) % 11.
             var price = c.HereQuery(2) * 3 + (ushort)c.HereQuery(0x21) % 0x0B + 0x14;
             c.Variables.Money[0] = Money.From(0, price, 0);
             ShowPicture(c, GuardPicture);

@@ -32,21 +32,21 @@ public enum OrderCursor
 /// menus or the letters, the cursor that follows the pointer, the click that picks a target or a
 /// spot, and leaving order mode, which gives the order.
 /// </summary>
-// orig: order_mode_enter R014+0xBC0C, order_mode_leave R014+0xBCA8, the hover R014+0xC044, the click R014+0xC33C,
+// orig: command-mode-begin R014+0xBC0C, command-mode-end R014+0xBCA8, the hover R014+0xC044, the click R014+0xC33C,
 // the initial cursor R014+0xCF5E (draft); the order letters of R016 (156E, 1590, 152E, 1332, 133E,
 // 13D4, 1436: matched)
 public sealed partial class TacticalBattle
 {
-    /// <summary>selected_member (DS:A6B2): the member in order mode, −1 none.</summary>
+    /// <summary>chosen-member (DS:A6B2): the member in order mode, −1 none.</summary>
     public int Selected { get; private set; } = -1;
 
-    /// <summary>order_action (DS:A6B0): −1 none chosen, 1 walk, an attack stance, 0x80 missile, 0x100 throw, 0x400 a place action.</summary>
+    /// <summary>command-kind (DS:A6B0): −1 none chosen, 1 walk, an attack stance, 0x80 missile, 0x100 throw, 0x400 a place action.</summary>
     public int OrderAction { get; private set; } = -1;
 
     /// <summary>DS:A6D1: the place action of a 0x400 order.</summary>
     public int PlaceOrder { get; private set; } = -1;
 
-    /// <summary>cursor_target (DS:D845): ≥ 0 the combatant pointed at, −1 nothing, −2 a free spot, −3 a blocked spot.</summary>
+    /// <summary>mouse-cursor-target (DS:D845): ≥ 0 the combatant pointed at, −1 nothing, −2 a free spot, −3 a blocked spot.</summary>
     public int CursorTarget { get; private set; } = -1;
 
     /// <summary>DS:E1B4 / DS:E1B6: the map point of the ground cursor.</summary>
@@ -57,8 +57,12 @@ public sealed partial class TacticalBattle
     /// <summary>DS:C7CC: a target or spot was clicked; DS:C762: the clicked enemy is in reach (no walk).</summary>
     private bool _targetChosen, _adjacent;
 
-    /// <summary>DS:C652 / DS:C67D: the spot clicked (x 0: none).</summary>
-    private MapPoint _orderSpot;
+    /// <summary>DS:C652 / DS:C67D: the spot clicked (x 0: none), kept for the whole program (<see cref="Generation.GenerationProcessMemory.OrderSpot"/>).</summary>
+    private MapPoint OrderSpot
+    {
+        get => ProgramMemory.OrderSpot;
+        set => ProgramMemory.OrderSpot = value;
+    }
 
     /// <summary>DS:D6EA: the member's flee bit when order mode began; DS:C867: the clock then.</summary>
     private bool _fleeBefore;
@@ -77,20 +81,32 @@ public sealed partial class TacticalBattle
     /// DS:D7FE: the cursor keys move the pointer (set by entering order mode and by travelling as a group, cleared by leaving
     /// order mode, by the group's end and by single file).
     /// </summary>
-    // orig: R014+0xBC0C sets it, R014+0xBCA8 clears it; R016+0x0BD6 (the group: 1 when move_mode
-    // becomes 1, else 0), R016+0x0CDC (single file: 0)
-    public bool CursorKeysOn { get; private set; }
+    // C: R014+0xBC0C sets it, R014+0xBCA8 clears it; R016+0x0BD6 (the group: 1 when travel-mode
+    // C: becomes 1, else 0), R016+0x0CDC (single file: 0); the byte lives in CursorKeys (CursorKeyState)
+    public bool CursorKeysOn { get => CursorKeys.On; private set => CursorKeys.On = value; }
 
-    /// <summary>order_mode (DS:A6B3): a member is being given an order.</summary>
+    /// <summary>command-mode (DS:A6B3): a member is being given an order.</summary>
     public bool InOrderMode => _orderMode;
+
+    /// <summary>
+    /// command-mode (DS:A6B3) as the last battle left it, taken at this battle's start: no set-up clears it, so a battle left in order mode
+    /// (a game loaded from its menu bar, a surrender) starts the next one in order mode with nobody chosen, until the first tick's
+    /// command-mode-begin (the panel draws every row dim until then, and the pointer takes the order-mode branches).
+    /// </summary>
+    // orig: DS:A6B3 is written only by command-mode-begin R014+0xBC18 (1), command-mode-end R014+0xC00F and R016+0x13FD (0); the set-ups
+    //   write chosen-member DS:A6B2 = 0xFF (R002+0x1921, R014+0x02AA) and leave command-mode (every writer and reader listed from the EXE's
+    //   bytes; vis10 session ordercarry-load-battle with a write watch: DKSAVE99's ambush in order mode, Alt-L, the same ambush again: at its
+    //   fight-main-loop A6B3 = 1, A6B2 = FF; root 0000:1716 reads A6B3 = 1 five times (the rows dim) and R014+0xCD6C twice before the first
+    //   tick's command-mode-begin at pass 298)
+    public void TakeOrderMode(bool on) => _orderMode = on;
 
     /// <summary>
     /// The left button held over the view outside order mode: the member under the pointer (−1 none) becomes the selected
     /// one, with the cursor of its current order, without entering order mode (the release then enters it).
     /// </summary>
-    // orig: R014+0xB632.. (the hover of the mouse handler with order_mode 0) draft, checked against the asm: `selected_member =
-    // hotspot_cbt[k]; member cursor; order_action = -1; DS:C7CC = 0; R014+0xCF5E();` for the last-drawn member hot spot under the
-    // pointer, else selected_member = -1; tests: BattleUiTests
+    // orig: R014+0xB632.. (the hover of the mouse handler with command-mode 0) draft, checked against the asm: `chosen-member =
+    // mouse-zone-fighter[k]; member cursor; command-kind = -1; DS:C7CC = 0; R014+0xCF5E();` for the last-drawn member hot spot under the
+    // pointer, else chosen-member = -1; tests: BattleUiTests
     public void PreviewMember(int member)
     {
         if (member < 0)
@@ -121,7 +137,7 @@ public sealed partial class TacticalBattle
     /// Order mode for member i: the cursor of its current order, the order menu, and the game
     /// paused (the clock stops).
     /// </summary>
-    // orig: order_mode_enter R014+0xBC0C (19CD:069C) matched
+    // orig: command-mode-begin R014+0xBC0C (19CD:069C) matched
     public void EnterOrderMode(int member)
     {
         if (member is < 0 or >= Combatant.PartySlots)
@@ -138,7 +154,8 @@ public sealed partial class TacticalBattle
         PlaceOrder = -1;
         _targetChosen = false;
         Cursor = OrderCursor.None;
-        _orderSpot = default;
+        // orig: R014+0xBC6A clears the word DS:C652 only: DS:C67D, the y, keeps the last spot's
+        OrderSpot = OrderSpot with { X = 0 };
         InitialCursor();
         if (!Battle.RealCombat)
         {
@@ -184,10 +201,33 @@ public sealed partial class TacticalBattle
 
     /// <summary>The letters and the Attack menu entries choose an order: walk / flee (1), a stance, missile (0x80).</summary>
     // orig: R016+0x156E (1EF8:156E), R016+0x1332, R016+0x133E matched
+    // C: each ends in R016+0x15BE: the order letter drawn alone in the selected member's row (OrderLetterDrawn), then the flee bit
+    //   (0x1000 of the member's flags, the byte DS:A697 + 2 x DS:A6B2 and 0xEF) cleared. R016+0x133E (Flee) sets the bit before it and again
+    //   after it; R016+0x1332 (Walk) does not, so W after F draws the letter F and leaves the bit cleared (hooked in the original, vis10
+    //   session visleads-order-letter: the flags 0x7000 at W's letter draw, 0x6000 at the next order's)
+    // C: R016+0x156E has no test of DS:A6B2. Its callers test the selection except M (R016+0x0644 tests only the Attack menu's Missile
+    //   entry, DS:9841): with nobody selected M gives DS:A6B0 = 0x80 and the D845 reset, and 15BE clears 0x10 of flags[-1]'s high byte,
+    //   the pause byte DS:A695, as for ChoosePlace. W and F (R016+0x1332 / 0x133E, action 1) are only reached with a selection.
     public void ChooseOrder(int action, bool flee = false)
     {
         if (Selected == -1)
         {
+            if (action == 1)
+            {
+                return;
+            }
+            OrderAction = action;
+            if (CursorTarget < -1)
+            {
+                CursorTarget = -1;
+                Cursor = OrderCursor.None;
+            }
+            _view.OrderLetterDrawn();
+            if (!Battle.Behaviour.FixEscapeWithoutSelectionPauseByte)
+            {
+                // BUG: OriginalBehaviour.FixEscapeWithoutSelectionPauseByte - M with nobody selected: 15BE clears bit 0x10 of flags[-1]'s high byte, the pause byte DS:A695 (bx = -2)
+                PauseByte = (byte)(PauseByte & ~FlagsHighByte);
+            }
             return;
         }
         OrderAction = action;
@@ -197,6 +237,11 @@ public sealed partial class TacticalBattle
             {
                 Battle[Selected].Flags |= TacticalFlags.Following;
             }
+            _view.OrderLetterDrawn();
+            if (!flee)
+            {
+                Battle[Selected].Flags &= ~TacticalFlags.Following;
+            }
             return;
         }
         if (CursorTarget < -1)
@@ -205,6 +250,7 @@ public sealed partial class TacticalBattle
             Cursor = OrderCursor.None;
         }
         // 15BE (the letter) clears the flee bit after drawing it.
+        _view.OrderLetterDrawn();
         Battle[Selected].Flags &= ~TacticalFlags.Following;
     }
 
@@ -215,7 +261,7 @@ public sealed partial class TacticalBattle
     // orig: R016+0x1590 (1EF8:1590) matched
     // C: R016+0x1590 has no test of DS:A6B2: H with Halt on outside order mode (R016+0x101E, individually) gives DS:A6B0 = 0x400,
     // C: DS:A6D1 = 10 and DS:E1CA = 0xFF with nobody selected. R016+0x15BE then clears 0x10 of flags[-1]'s high byte, which is DS:A695
-    // C: (ai_paused): nothing changes while it is 0 or 1; after Esc made it 0x11 (CancelOrder) it becomes 1 again.
+    // C: (enemy-ai-paused-flag): nothing changes while it is 0 or 1; after Esc made it 0x11 (CancelOrder) it becomes 1 again.
     public void ChoosePlace(PlaceAction action)
     {
         OrderAction = 0x400;
@@ -225,6 +271,7 @@ public sealed partial class TacticalBattle
             CursorTarget = -1;
             Cursor = OrderCursor.None;
         }
+        _view.OrderLetterDrawn();
         if (Selected != -1)
         {
             Battle[Selected].Flags &= ~TacticalFlags.Following;
@@ -250,6 +297,7 @@ public sealed partial class TacticalBattle
         _throwPotion = potion;
         _throwQuality = quality;
         _throwAtTargetOnly = potion == 4;
+        _view.OrderLetterDrawn();
         Battle[Selected].Flags &= ~TacticalFlags.Following;
     }
 
@@ -260,8 +308,13 @@ public sealed partial class TacticalBattle
     // orig: R014+0xC044 (19CD:0AD4) draft
     public void Hover(int topmost, int enemy, MapPoint ground)
     {
-        if (Selected == -1 || topmost is >= 0 and < Combatant.PartySlots)
+        if (topmost is >= 0 and < Combatant.PartySlots)
         {
+            return;
+        }
+        if (Selected == -1)
+        {
+            HoverWithNobodySelected(enemy);
             return;
         }
         CursorTarget = -1;
@@ -313,6 +366,28 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>
+    /// The hover in order mode with nobody chosen (a battle started in the order mode the last one left, before its first tick): the
+    /// order of "member −1" is the word of record −1 (<see cref="ActionBeforeRecords"/>); an enemy under the pointer gets the target cursor.
+    /// </summary>
+    // orig: R014+0xC044 (19CD:0AD4) with DS:A6B2 = 0xFF, checked against the asm: f = combatant[-1].+0x10 (DS:9BE5); the enemy loop as for
+    //   a member; `if (cursor-target == -1) DS:E1BC = 0`
+    // DIVERGENCE: not reproduced, the original then reads undefined memory: for a shot or a throw (the order chosen, or f 0x80 / 0x100) the
+    //   line of fire from record -1's place (DS:9BD5.., the menu bar's item records), and on the ground the collision test of a copy of
+    //   record -1 (the free or blocked ground cursor, cursor target -2 / -3); the first tick's command-mode-begin then sets the cursor again.
+    private void HoverWithNobodySelected(int enemy)
+    {
+        CursorTarget = -1;
+        var f = ActionBeforeRecords;
+        if (!(OrderAction == 1 || (OrderAction == -1 && f is 1 or 0)) && enemy >= Combatant.PartySlots)
+        {
+            CursorTarget = enemy;
+            Cursor = OrderCursor.Target;
+            return;
+        }
+        Cursor = OrderCursor.None;
+    }
+
+    /// <summary>
     /// A click in order mode: on a member it changes the member; on an enemy it is the target (a
     /// path is found when out of reach); on the ground the spot (a path is found to it).
     /// </summary>
@@ -337,6 +412,16 @@ public sealed partial class TacticalBattle
             return false;
         }
         _adjacent = false;
+        if (Selected == -1)
+        {
+            // DIVERGENCE: not reproduced, the original then reads and writes undefined memory: a click off the members in a battle started
+            //   in the order mode the last one left, before its first tick (DS:A6B2 = 0xFF, R014+0xC33C checked against the asm), works on
+            //   record -1 (DS:9BD5.., the menu bar's item records): its order word DS:9BE5, a copy of it in DS:D73E, the reach table's row
+            //   -1, its path (route-find(-1), the route's save) or its line of fire, its destination and target written and restored, and
+            //   with a path found the spot DS:C652 / DS:C67D; the first tick's command-mode-begin then clears the order (DS:A6B0, DS:C7CC,
+            //   DS:C652, the cursor), not the spot's y.
+            return false;
+        }
         var i = Selected;
         var c = Battle[i];
         var f = (int)c.Action;
@@ -419,7 +504,7 @@ public sealed partial class TacticalBattle
             Cursor = OrderCursor.Ground;
         }
         CursorTarget = -2;
-        _orderSpot = ground;
+        OrderSpot = ground;
         (c.Destination, c.Target, c.Facing) = keep;
         return false;
     }
@@ -428,8 +513,8 @@ public sealed partial class TacticalBattle
     /// Order mode ends and the order is given: a place action; a walk to the spot clicked; a throw
     /// at the spot or the enemy; a shot; an attack (walking there first when out of reach).
     /// </summary>
-    // orig: order_mode_leave R014+0xBCA8 (19CD:0738) draft
-    // C: a cursor target of 0 (party member 0) takes the spot branch and gives nothing (cursor_target &lt; 1).
+    // orig: command-mode-end R014+0xBCA8 (19CD:0738) draft
+    // C: a cursor target of 0 (party member 0) takes the spot branch and gives nothing (mouse-cursor-target &lt; 1).
     // C: R014+0xBCA8 has no test of DS:A6B2: Enter outside order mode (R016+0x0734, individually) runs it with nobody selected. The spot
     // C: of the last walk order (DS:C652, cleared only by R014+0xBC6A and R016+0x13DA) or DS:C7CC still set make it give an order to
     // C: "member -1"; then the end (R014+0xC004..: the order menu reset, the cursor) runs as always.
@@ -442,7 +527,7 @@ public sealed partial class TacticalBattle
         }
         var i = Selected;
         var c = Battle[i];
-        var spot = _orderSpot;
+        var spot = OrderSpot;
         if (!(OrderAction == -1 && !_targetChosen && spot.X == 0))
         {
             Give();
@@ -579,15 +664,20 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>
-    /// The word of record -1 that order_mode_leave reads as the order with nobody selected (+0x10 of the record before combatant 0,
-    /// DS:9BE5, inside the menu bar's sub-menu item records) and writes the order it gives "member -1".
+    /// The word of record -1 that command-mode-end reads as the order with nobody selected (+0x10 of the record before combatant 0,
+    /// DS:9BE5, inside the menu bar's item records) and writes the order it gives "member -1"; kept for the whole program
+    /// (<see cref="Generation.GenerationProcessMemory.ActionBeforeRecords"/>).
     /// </summary>
-    // UNCERTAIN: the menu bar's sub-menu building (root 0000:0984 and the battle's lists) writes these bytes too (a sub-menu item's text);
-    //   the rewrite starts it at 0 and keeps only what order_mode_leave writes. The branches below agree for any value other than 0x80,
-    //   0x100, one with bit 1 set or one with all of 0x1BE (the value seen in the battle states, 0x1A6D, takes the same branches as 0).
-    private int _actionBeforeRecords;
+    // C: only start-up (0x1A6D) and command-mode-end write it: the menus opened in a battle do not (vis10 session uncert-cme-menus, DS:9BE5
+    //   read at R014+0xBCA8 after each of the four battle menus: 0x1A6D, and every write logged). 0x1A6D takes the branches of 0 below
+    //   (not 0x80 or 0x100, bit 1 clear, not all of 0x1BE).
+    private int ActionBeforeRecords
+    {
+        get => ProgramMemory.ActionBeforeRecords;
+        set => ProgramMemory.ActionBeforeRecords = value;
+    }
 
-    /// <summary>order_mode_leave with DS:A6B2 = 0xFF: the order given to "member -1" where it lands on data the rewrite keeps, then its end.</summary>
+    /// <summary>command-mode-end with DS:A6B2 = 0xFF: the order given to "member -1" where it lands on data the rewrite keeps, then its end.</summary>
     // orig: R014+0xBCA8 (19CD:0738) draft, checked against the asm for A6B2 = 0xFF and by direct calls (battle states, DS:A6B2 = 0xFF):
     //   entry -1 of the per-member tables is the end of the table before: action state[-1] (DS:CA63) is exchange[12], repath[-1] (DS:D97A)
     //   is give-up[12], engage[-1] (DS:D994) is repath[12], the flags' high byte [-1] (DS:A695) is the pause byte; tests: OrderModeLeadsTests
@@ -600,13 +690,16 @@ public sealed partial class TacticalBattle
     // DIVERGENCE: not reproduced, the original then reads or writes undefined memory: DS:17B0 = 0xFF (walk, attack with a target chosen):
     //   the view's follow (R014+0x1065) and the keys read record -1's screen place and floor (the menu records, DS:A6B3); the record -1
     //   fields (DS:9BD5.., the menu bar's sub-menu items and DS:9C1E..9C2C: its range, the UI word, the alchemy file's far pointer through
-    //   weapon_ready(-1)), path_give_saved(-1), order_queue(-1), the 'PT' name of the animation slot of record -1's kind byte, and the
+    //   weapon-armed(-1)), route-hand-over-restore(-1), command-queue(-1), the 'PT' name of the animation slot of record -1's kind byte, and the
     //   bytes before other tables (DS:A6C3, DS:CA2F, DS:D6FA, DS:D492, DS:9063, and DS:CA56, the high byte of the palette
     //   buffer's segment DS:CA55 that the loot screen saves the palette through). moving[-1] (DS:A6D2) is the place order's high byte (modelled).
+    //   Seen on the screen: the panel rows drawn after it get bytes of code on their value lines (vis10 session uncert-order-letter-none,
+    //   shot e1: 202 px at x 14..56, y 0x28 x row + 0x21 / + 0x25; a write watch on the panel page D000:2E54 at the Enter's pass: the
+    //   driver's blit 4A44:0E24 copies them from 0A0C:030A, where it took the row's pixels from 4D52:07F6 before).
     private void LeaveWithNobodySelected()
     {
         CursorKeysOn = false;
-        var spot = _orderSpot;
+        var spot = OrderSpot;
         if (!(OrderAction == -1 && !_targetChosen && spot.X == 0) && OrderAction != 0x400 && CursorTarget != -3 && Cursor != OrderCursor.TargetBlocked
             && spot.X != 0)
         {
@@ -618,6 +711,8 @@ public sealed partial class TacticalBattle
             GiveToRecordBeforeCombatants(spot);
         }
         _orderMode = false;
+        // orig: R014+0xC01A: party-panel-frame-set(DS:A6B2 = 0xFF), then the rows (hooked in the original, vis10 session uncert-order-letter-none)
+        _view.FramesOfNobodyDrawn();
         _view.RowChanged(-1);
         OrderAction = -1;
         Cursor = OrderCursor.None;
@@ -636,7 +731,7 @@ public sealed partial class TacticalBattle
         if (OrderAction == 0x400)
         {
             // R014+0xBCDC..0xBCEE
-            _actionBeforeRecords = 0;
+            ActionBeforeRecords = 0;
             PauseByte &= unchecked((byte)~Hurry);
             return;
         }
@@ -645,7 +740,7 @@ public sealed partial class TacticalBattle
             return;
         }
         // R014+0xBD31..0xBD5B
-        var action = OrderAction == -1 ? _actionBeforeRecords : OrderAction;
+        var action = OrderAction == -1 ? ActionBeforeRecords : OrderAction;
         if ((action & 0x1BE) == 0x1BE)
         {
             PauseByte &= unchecked((byte)~Hurry);
@@ -656,7 +751,7 @@ public sealed partial class TacticalBattle
             if (action == 0x80)
             {
                 // R014+0xBE48..0xBE94
-                _actionBeforeRecords = 0x80;
+                ActionBeforeRecords = 0x80;
                 MovingBeforeTable(0);
                 PauseByte |= ShotSkipped;
                 last.RepathAt = _orderClock;
@@ -665,7 +760,7 @@ public sealed partial class TacticalBattle
             else if (action == 0x100)
             {
                 // R014+0xBEA3..0xBF0A
-                _actionBeforeRecords = 0x100;
+                ActionBeforeRecords = 0x100;
                 MovingBeforeTable(0);
                 last.RepathAt = _orderClock;
                 last.Exchange = (Exchange)ActionState.Ready;
@@ -675,20 +770,20 @@ public sealed partial class TacticalBattle
                 // R014+0xBDD8..0xBDF3
                 if ((action & 2) == 2)
                 {
-                    _actionBeforeRecords = action;
+                    ActionBeforeRecords = action;
                     last.Exchange = (Exchange)ActionState.Ready;
                 }
             }
             else if (!_adjacent)
             {
-                // R014+0xBE06..0xBE3A (DS:17B0 = 0xFF and order_queue(-1) not reproduced)
-                _actionBeforeRecords = 1;
+                // R014+0xBE06..0xBE3A (DS:17B0 = 0xFF and command-queue(-1) not reproduced)
+                ActionBeforeRecords = 1;
                 MovingBeforeTable(1);
             }
             else
             {
                 // R014+0xBDFD..0xBE04
-                _actionBeforeRecords = action;
+                ActionBeforeRecords = action;
                 last.Exchange = (Exchange)ActionState.Ready;
             }
             return;
@@ -700,7 +795,7 @@ public sealed partial class TacticalBattle
         if (action == 0x100)
         {
             // R014+0xBF20..0xBF72
-            _actionBeforeRecords = 0x100;
+            ActionBeforeRecords = 0x100;
             MovingBeforeTable(0);
             last.RepathAt = _orderClock;
             last.Exchange = (Exchange)ActionState.Ready;
@@ -713,7 +808,7 @@ public sealed partial class TacticalBattle
             return;
         }
         // R014+0xBF94..0xC000 (action state[-1] = 0, repath[-1] = clock + 30; DS:17B0 = 0xFF not reproduced)
-        _actionBeforeRecords = 1;
+        ActionBeforeRecords = 1;
         MovingBeforeTable(1);
         last.Exchange = Exchange.None;
         last.GiveUpUntil = (ushort)(_orderClock + 30);
@@ -729,7 +824,8 @@ public sealed partial class TacticalBattle
     public void CancelOrder()
     {
         OrderAction = -1;
-        _orderSpot = default;
+        // orig: R016+0x13DA clears the word DS:C652 only: DS:C67D, the y, keeps the last spot's
+        OrderSpot = OrderSpot with { X = 0 };
         if (Selected != -1)
         {
             var c = Battle[Selected];
@@ -753,7 +849,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>Space: pause (order mode may follow) or resume (leaving order mode; the attack rates are worked out again).</summary>
-    // orig: combat_keys R016+0x0000 (the Space case) and R016+0x1436 (1EF8:1436) matched
+    // orig: fight-keys R016+0x0000 (the Space case) and R016+0x1436 (1EF8:1436) matched
     public void TogglePause()
     {
         // orig: R016+0x074E (== 0 pauses; any other value, 0x11 too, takes the resume path)
@@ -780,7 +876,7 @@ public sealed partial class TacticalBattle
     /// new order) its colour says whether the line of fire is clear now.
     /// </summary>
     // orig: R014+0xCD66 (19CD:17F6) unmatched (the target part; the member cursor's
-    // position is the screen's); called by combat_draw
+    // position is the screen's); called by fight-draw
     // C: the cursor is only redone when the target has a hot spot (is drawn); without one the cursor sprite DS:E1BC = 0 (0xCECB),
     // C: which also lifts a blocked line's refusal of the order.
     private void RefreshTargetCursor()

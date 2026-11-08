@@ -47,7 +47,8 @@ public sealed class CardAimSearch
         var option = key[key.LastIndexOf("-O", StringComparison.Ordinal)..];
         var parts = key[(v + 2)..key.LastIndexOf("-O", StringComparison.Ordinal)].Split('+')
             .Where(p => !(p.Length > 3 && p[0] == 'F' && p[1..].Split('.') is [var b, var l] && int.TryParse(b, out _) && int.TryParse(l, out _))
-                && !(p.Length > 1 && p[0] == 'P' && p[1..].Split('_').All(x => int.TryParse(x, out _))));
+                && !(p.Length > 1 && p[0] == 'P' && p[1..].Split('_').All(x => int.TryParse(x, out _)))
+                && !CardOracleStates.IsBattle(p) && !CardOracleStates.IsPrayer(p));
         return key[..v] + (parts.Any() ? "-V" + string.Join('+', parts) : "") + option;
     }
 
@@ -142,7 +143,7 @@ public sealed class CardAimSearch
         var depth = spec["depth"]?.GetValue<int>() ?? 4;
         var cap = spec["cap"]?.GetValue<int>() ?? 400;
         var variant = spec["variant"]?.GetValue<string>() ?? "";
-        // "cardVariants": {"104": ["ev8_0_2_0_1", ...]} runs the card once for each of its variants (and "cards" is then ignored)
+        // "cardVariants": {"104": ["quest-variant-a", ...]} runs the card once for each of its variants (and "cards" is then ignored)
         var perCard = spec["cardVariants"]?.AsObject().SelectMany(p => p.Value!.AsArray().Select(v => (p.Key, v!.GetValue<string>()))).ToList();
         var clock = Convert.ToUInt32(Environment.GetEnvironmentVariable("DARKLANDS_CARD_AIM_CLOCK") ?? "1DC0", 16);
         var cards = typeof(Card).Assembly.GetTypes()

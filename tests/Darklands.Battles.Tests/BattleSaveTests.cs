@@ -42,6 +42,43 @@ public sealed class BattleSaveTests
         Assert.All(Enumerable.Range(0, Combatant.Count), i => Assert.Equal(7, file.Variables[BattleVariables.Exchange + i]));
     }
 
+    /// <summary>A battle after another in one program: the attack facings (DS:D3FE), the placed base loads (DS:C1C1) and the saved path
+    /// (2E38:0C64, DS:DA43) are not reset by its start, so its battle file holds the last battle's where this one has not set them; the
+    /// timer's rate word DS:07E6 is 1 (the timer installed again at the start, R002+0x0093). Round spawn: the original's .BSV of the mine's
+    /// ambush after a wild fight (gen-carry-04: member 3's facing 5, the wolves' records 8..10 base load 10, a 31-step saved path).</summary>
+    [Fact]
+    public void ABattleAfterAnotherKeepsTheTablesNoStartResets()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        var ui = new GameUi(new BattleScreenTests.SilentHost(), new GameAssets(files));
+        var state = Simulation.NewGame.Quickstart(world, 7);
+        var program = new BattleFile();
+        var v = program.Variables;
+        v[BattleVariables.AttackFacing + 3] = 5;
+        v[BattleVariables.AttackFacing + 10] = 2;
+        v[BattleVariables.PlacedBaseLoad + 12] = 10;
+        v[BattleVariables.SavedPathLength] = 3;
+        v[BattleVariables.SavedPath] = 9;
+        v[BattleVariables.SavedPath + 1] = 6;
+        v[BattleVariables.SavedPath + 2] = 5;
+        v[BattleVariables.SavedPath + 3] = 0xFF;
+        state.BattleFile = program;
+        var (_, tactics) = StartBattle(ui, files, state, new BattleRequest(0x14, 863, NoGroups, Persistent: true));
+        var file = new BattleFile();
+        tactics.WriteBattleFile(file, inBattle: true, 0, 0);
+        var w = file.Variables;
+        Assert.Equal(5, w[BattleVariables.AttackFacing + 3]);
+        Assert.Equal(2, w[BattleVariables.AttackFacing + 10]);
+        Assert.Equal(10, w[BattleVariables.PlacedBaseLoad + 12]);
+        Assert.Equal(3, w[BattleVariables.SavedPathLength]);
+        Assert.Equal([9, 6, 5, 0xFF], w[BattleVariables.SavedPath..(BattleVariables.SavedPath + 4)]);
+        Assert.Equal(1, w[BattleVariables.TimerRate] | w[BattleVariables.TimerRate + 1] << 8);
+    }
+
     [Theory]
     [MemberData(nameof(Battlefields))]
     public void ABattleSavedInsideItIsTakenUpAsItStood(int battlefield, int seed)
@@ -76,7 +113,7 @@ public sealed class BattleSaveTests
         var r = resumed.Battle;
 
         // the fight taken up again shows "Battlefield save rules are in effect" (DS:1776) for 150 ticks after its set-up (R014+0x0000), the
-        // clock running in show_message's wait (root 0000:24BC)
+        // clock running in notice-display's wait (root 0000:24BC)
         Assert.Equal((ushort)(b.Clock + 150), r.Clock);
         Assert.Equal(b.FloorShown, r.FloorShown);
         Assert.Equal(b.PartyFloor, r.PartyFloor);
@@ -139,6 +176,115 @@ public sealed class BattleSaveTests
         }
         Assert.Equal(first.Terrain, again.Terrain);
         Assert.Equal(first.Loot, again.Loot);
+    }
+
+    /// <summary>
+    /// R002+0x0000 (battle-entry) sets DS:C1F0 to the battle call's battlefield after the restore R003+0x0CE8 read the file's: a game saved in a
+    /// battle and loaded from the start screen (the main loop's DS:A768 still 0) runs, and saves again, with battlefield type 0. Lockstep
+    /// dungeon-king-ladder (local/batch/b32/a7-king): the original's battle file saved after such a load holds 0 at +0x1571.
+    /// </summary>
+    [Fact]
+    public void ABattleTakenUpHasTheBattlefieldTypeOfTheCall()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        var ui = new GameUi(new BattleScreenTests.SilentHost(), new GameAssets(files));
+        var state = Simulation.NewGame.Quickstart(world, 7);
+        var (_, tactics) = StartBattle(ui, files, state, new BattleRequest(0x0A, 777, NoGroups, Persistent: true));
+        Run(tactics, 30);
+        Assert.Equal(1, tactics.Menus.SaveGame);
+        Assert.Equal(0x0A, tactics.BattlefieldType);
+        var (sav, bsv) = SaveInBattle(state, tactics);
+        Assert.Equal(0x0A, BattleSaveFile.Parse(bsv!).Variables[BattleVariables.BattlefieldType]);
+
+        var loaded = OriginalSaves.Read(sav, bsv, "dksave1.sav", world).State;
+        var (_, resumed) = StartBattle(ui, files, loaded, new BattleRequest(0, 0, NoGroups, Persistent: true, Resume: true));
+        Assert.Equal(0, resumed.BattlefieldType);
+        var again = loaded.BattleFile!.Clone();
+        resumed.WriteBattleFile(again, inBattle: true, loaded.Battlefield.ClearedLevels, loaded.LastCastleFlags);
+        Assert.Equal(0, again.Variables[BattleVariables.BattlefieldType]);
+    }
+
+    /// <summary>
+    /// The set-up's fight-draw (R014+0x0307) puts every combatant's screen place (R014+0x99F6) before the first tick. A battle taken up from a
+    /// saved game in a program just started is drawn around the view centre 0,0, far from the party: the leader's place lies outside the
+    /// follow margins, so the first tick centres the view on it (R014+0x1065) and the start pause's order mode opens at that tick (lockstep
+    /// dungeon-king-ladder, local/batch/b32/a7-king: the original pauses at its first tick, the C# had waited for the second).
+    /// </summary>
+    [Fact]
+    public void ABattleTakenUpPlacesTheSpritesBeforeTheFirstTick()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        var ui = new GameUi(new BattleScreenTests.SilentHost(), new GameAssets(files));
+        var state = Simulation.NewGame.Quickstart(world, 7);
+        // the keep (city battlefield 8): no "save rules" notice, whose box the C# draws over a frame of the battle outside the tester's mode
+        var (_, tactics) = StartBattle(ui, files, state, new BattleRequest(8, 777, NoGroups, Persistent: true));
+        Assert.True(tactics.IsKeep);
+        Run(tactics, 30);
+        var (sav, bsv) = SaveInBattle(state, tactics);
+        var leader = tactics.Battle.Leader;
+
+        var loaded = OriginalSaves.Read(sav, bsv, "dksave1.sav", world).State;
+        // the leader's record holds the screen place the last frame left, inside the margins (the original's DKSAVE1-kingopen: 64, 150)
+        var member = loaded.Party.Slot(leader);
+        member.RosterLocation = 64;
+        member.OriginalRecord![0] = 64;
+        member.OriginalRecord[1] = 0;
+        member.OriginalRecord[2] = 150;
+        member.OriginalRecord[3] = 0;
+        var screens = new BattleScreens(ui, () => loaded);
+        var screen = new BattleScreen(ui, new BattleAssets(files), loaded, screens);
+        screen.Start(new BattleRequest(0, 0, NoGroups, Persistent: true, Resume: true));
+        var place = screen.Tactics!.Battle[leader].ScreenPlace;
+        Assert.NotEqual((64, 150), place);
+        Assert.False(place.X is >= 0x14 and <= 0xDC && place.Y is >= 0x14 and <= 0xA0, $"set-up place {place} outside the margins");
+    }
+
+    /// <summary>
+    /// A battle taken up from a saved game in a program just started: the effects' modifiers (DS:A532) are not in the battle file and the
+    /// reset that turns their timers off is only a fresh battle's, so every record's timers are 0 and due at the first tick. Each record then
+    /// readies its weapon again (R019+0x0B00 through the mods: tail of R014+0x2A4A), and the empty records 5..12 (animation slot 0, weapon 0)
+    /// leave their code in slot 0's walking file name: the leader's next walk loads that file (lockstep dungeon-king-ladder,
+    /// local/batch/b32/a7-l5: the original's slot 0 goes from F01wkA2 to F01wkS2 at the first step).
+    /// </summary>
+    [Fact]
+    public void ABattleTakenUpInAFreshProgramEndsTheZeroedModifiersAtTheFirstTick()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        var ui = new GameUi(new BattleScreenTests.SilentHost(), new GameAssets(files));
+        var state = Simulation.NewGame.Quickstart(world, 7);
+        var (_, tactics) = StartBattle(ui, files, state, new BattleRequest(8, 777, NoGroups, Persistent: true));
+        Run(tactics, 30);
+        var (sav, bsv) = SaveInBattle(state, tactics);
+
+        var loaded = OriginalSaves.Read(sav, bsv, "dksave1.sav", world).State;
+        var screens = new BattleScreens(ui, () => loaded);
+        var screen = new BattleScreen(ui, new BattleAssets(files), loaded, screens);
+        screen.Start(new BattleRequest(0, 0, NoGroups, Persistent: true, Resume: true));
+        var taken = screen.Tactics!;
+        Assert.All(taken.Battle.Combatants, c => Assert.Equal(0, c.Modifiers.SkillsUntil));
+        // weapon 0's code (S2); the leader's own walking file is another's
+        var zero = taken.Battle.AnimationCode(0);
+        Assert.NotEqual(zero, taken.SlotWeapons[0]);
+        // up to the first tick (NextTickAt: the set-up's clock + the tick length)
+        for (var pass = 0; pass < 20 && taken.Ticks == 0; pass++)
+        {
+            Run(taken, 1);
+        }
+        Assert.Equal(1, taken.Ticks);
+        Assert.All(taken.Battle.Combatants, c => Assert.Equal(EffectModifiers.Off, c.Modifiers.SkillsUntil));
+        Assert.Equal(zero, taken.SlotWeapons[0]);
     }
 
     /// <summary>The level files of every battle file of the player's saves go through this program's conversions unchanged.</summary>

@@ -7,9 +7,9 @@ namespace Darklands.Cards.Scripts;
 /// </summary>
 // orig: R111+0x0B28 (18EA:0008) matched; tests: CardSmokeTests
 // orig: R111+0x102C (18EA:050C) matched (registration: an empty function; lines 10..19 keep an earlier card's handlers, all hidden)
-// C: the loop calls card_menu without card_options or card_text (card_load draws only the picture), so the menu works on the option
+// C: the loop calls card-choice-menu without card-option-lines or card-text-block (card-run draws only the picture), so the menu works on the option
 // C: lines the screen last laid out (the previous card's last text) with this card's states and handlers (CardMenu.DrawsOptions = false).
-// C: its pop-up branch calls (*item_fn[menu_slot])(): a pop-up line of that stale layout would run the pop-up handler installed here.
+// C: its pop-up branch calls (*item-handler-table[menu-choice-index])(): a pop-up line of that stale layout would run the pop-up handler installed here.
 // C: the three ports all lead to card 0x5A; nothing here records which port was chosen.
 public sealed class EasternBalticVoyage : Card
 {
@@ -34,7 +34,7 @@ public sealed class EasternBalticVoyage : Card
             // orig: R111+0x0DE2 (18EA:02C2) matched; hint R111+0x0E00
             new MenuLine(_ => Land(c, c.Random(3) + 3)),
             // orig: R111+0x0E38 (18EA:0318) matched (empty); hint R111+0x0E3A
-            // DORMANT: lines 3..5 are never offered; their actions (R111+0x0E72, R111+0x0EAC) are empty.
+            // Lines 3..5 are reachable: card 270 keeps card 269's hotspots, so they can be clicked; their actions (R111+0x0E72, R111+0x0EAC) are empty.
             new MenuLine(_ => { }),
             new MenuLine(_ => { }),
             new MenuLine(_ => { }),

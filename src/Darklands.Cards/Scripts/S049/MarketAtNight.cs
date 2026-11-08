@@ -38,7 +38,7 @@ public sealed class MarketAtNight : Card
         c.Screen.Show(MsgName, PictureNames.Of(Picture));
         var states = new[] { OptionState.Enabled, OptionState.Enabled, OptionState.Enabled, OptionState.Enabled, OptionState.Enabled,
             OptionState.Enabled, OptionState.Enabled, OptionState.Hidden, OptionState.Hidden, OptionState.Hidden };
-        // C: the bribe is reckoned with cur_rep as the card before left it (it is set again only below).
+        // C: the bribe is reckoned with reputation-now as the card before left it (it is set again only below).
         var perMember = c.HereQuery(2) - c.StandingSeen / 10;
         if (perMember < 4)
         {
@@ -285,14 +285,14 @@ public sealed class MarketAtNight : Card
     private static OptionHint SaintChance(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var low = c.SaintChanceLow(c.MenuMember, saint);
         return OptionHint.Say(c.ChanceText(low, c.SaintChanceHigh(c.MenuMember, saint)));
     }
 
     private static void CallUponASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

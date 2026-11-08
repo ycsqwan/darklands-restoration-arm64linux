@@ -128,13 +128,23 @@ def original_side(rec_parts, folder, name, exe, game, steps, save, request, pass
     return (trace, got["given"], got["seeds"], got["log"], got["end"], got["set_up"], cov), got["seconds"], replayed
 
 
+BATTLE_KEY = 0x10000      # a key is battle << 16 | clock: the battles of a session are told apart (their clocks repeat)
+
+
 def parse(lines):
-    """{clock: (rand, records, queued, rates)} of the first pass at each clock."""
+    """{key: (rand, records, queued, rates)} of the first pass at each clock of each battle: the key is battle << 16 | clock, a new
+    battle starting where the clock goes back (the battle's reset clears it; within a battle it only grows or stays), so the clocks a
+    session's second battle repeats are not taken for the first's (b35 T1: dungeon-door-reload)."""
     out = {}
+    battle, last = 0, None
     for line in lines:
         w = line.split()
         if len(w) >= 4 and w[0] == "pass" and w[1] == "clock":
             clock = int(w[2])
+            if last is not None and clock < last:
+                battle += 1
+            last = clock
+            clock += battle * BATTLE_KEY
             if clock not in out:
                 get = lambda key: bytes.fromhex(w[w.index(key) + 1]) if key in w else b""
                 out[clock] = (w[4], get("cbt"), get("q"), get("ar"))
@@ -153,9 +163,14 @@ def lone_clocks(original, rewrite, original_cut: bool = False) -> list:
                   + [c for c in rewrite if c not in original and not (original_cut and (last is None or c > last))])
 
 
+def where(key) -> dict:
+    """A key as the report gives it: the clock, and the battle when it is not the session's first."""
+    return {"clock": key} if key is None or key < BATTLE_KEY else {"battle": key // BATTLE_KEY + 1, "clock": key % BATTLE_KEY}
+
+
 def lone_difference(original, rewrite, clock, agreeing) -> dict:
     span = lambda d: [min(d), max(d)] if d else []
-    return {"clock": clock, "ticks agreeing": agreeing,
+    return {**where(clock), "ticks agreeing": agreeing,
             "differences": [{"field": "battle clock", "original": "reached" if clock in original else "not reached",
                              "rewrite": "reached" if clock in rewrite else "not reached"}],
             "clocks": {"original": span(original), "rewrite": span(rewrite)}}
@@ -169,27 +184,45 @@ def first_difference(original: dict, rewrite: dict, original_cut: bool = False):
     start = {}      # slot -> (original, rewrite) +0x1D at its first tick
     ready = {}      # (slot, offset) -> (original, rewrite) at the slot's first tick
     dest = {}       # slot -> (original, rewrite) +0x08..0x0B at its first tick
+    battle = None
     for clock in common:
         if lone and clock > lone[0]:
             break
+        if clock // BATTLE_KEY != battle:
+            # a new battle of the session: its enemies are placed anew (R025+0x0267 copies each record whole), often before its first pass,
+            # so the enemy slots' stale bytes are baselined anew at their first tick here (round spawn: gen-carry-15, -16, -31)
+            battle = clock // BATTLE_KEY
+            for i in range(5, COUNT):
+                start.pop(i, None)
+                dest.pop(i, None)
+                for off in STALE_READY:
+                    ready.pop((i, off), None)
         (orand, orec, oq, oar), (crand, crec, cq, car) = original[clock], rewrite[clock]
         diffs = []
         for i in range(COUNT):
             o, c = orec[i * RECORD:(i + 1) * RECORD], crec[i * RECORD:(i + 1) * RECORD]
             if o[0x14] == 0 and c[0x14] == 0:
-                continue                # an empty slot: the original keeps old bytes there
+                # an empty slot: the original keeps old bytes there. The next enemy placed into it (an activation or reinforcement later in
+                # this battle, or one of a later battle of the same run) is copied whole from its kind's enemy file record again
+                # (R025+0x0267), so its stale bytes are taken anew at its own first tick (carry: the mine's ambushers after a wild fight
+                # bring the same +0x1D as in a fresh program, 245 / 235 / 235, gen-carry-04 against dungeon-mine-doors)
+                start.pop(i, None)
+                dest.pop(i, None)
+                for off in STALE_READY:
+                    ready.pop((i, off), None)
+                continue
             first = start.setdefault(i, (o[0x1D], c[0x1D]))
             kept = dest.setdefault(i, (o[8:12], c[8:12]))
             for off in STALE_READY:
                 ready.setdefault((i, off), (o[off], c[off]))
             for off, name in FIELDS.items():
                 if off in STALE_READY:
-                    # compared once either side has changed it (weapon_ready sets it outright)
+                    # compared once either side has changed it (weapon-armed sets it outright)
                     if (o[off] != ready[(i, off)][0] or c[off] != ready[(i, off)][1]) and o[off] != c[off]:
                         diffs.append({"combatant": i, "field": name, "offset": "+%02X" % off, "original": o[off], "rewrite": c[off]})
                 elif off == 0x1D:
-                    # +0x1D starts as whatever the stack held when level_enemies_load (R020+0x0000) wrote the enemy file, which
-                    # enemies_place (R025+0x0885) reads into DS:B899 and copies whole (R025+0x0267); it is compared once either side
+                    # +0x1D starts as whatever the stack held when level-enemies-read (R020+0x0000) wrote the enemy file, which
+                    # enemy-placement-entry (R025+0x0885) reads into DS:B899 and copies whole (R025+0x0267); it is compared once either side
                     # has changed it (the aim sets it outright, from the readied skill +0x59 (R014+0xA492): -(agility >> 1) - ((skill >> 1) - 150),
                     # so an enemy whose weapon was never readied (its +0x59 a stale byte in the original, 0 in the C#) aims 1 apart per 2 of skill)
                     mine = c[off]
@@ -212,7 +245,7 @@ def first_difference(original: dict, rewrite: dict, original_cut: bool = False):
         if orand != crand:
             diffs.append({"field": "random", "original": orand, "rewrite": crand})
         if diffs:
-            return {"clock": clock, "ticks agreeing": common.index(clock), "differences": diffs[:60]}
+            return {**where(clock), "ticks agreeing": common.index(clock), "differences": diffs[:60]}
     if lone:
         return lone_difference(original, rewrite, lone[0], sum(c < lone[0] for c in common))
     return {"clock": None, "ticks agreeing": len(common), "clocks": [common[0], common[-1]] if common else []}
@@ -312,6 +345,10 @@ def main():
                         "passes": {"original": len(trace), "rewrite": len(lines)},
                         "seconds": {"original": round(t_original), "rewrite": round(t_rewrite)},
                         "original run": "replayed" if replayed else "live", **result}
+        # the sound requests of the whole run (the program's start, the load, the battle's set-up, its effects) against the C# host's; a lead apart from
+        # the passes' verdict above (the original's log has them since patch 06 of local/batch/orig-side-queue, battle_orig.py)
+        sound = lockstep.sound_compare(log, output, original_cut=True)
+        report[name]["sound"] = {k: v for k, v in sound.items() if k != "segments"}
         print(name, json.dumps(report[name])[:600], flush=True)
     (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
 

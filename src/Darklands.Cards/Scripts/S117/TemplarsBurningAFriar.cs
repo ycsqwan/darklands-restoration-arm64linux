@@ -24,7 +24,7 @@ public sealed class TemplarsBurningAFriar : Card
         menu.Set(OptionState.Enabled, 0, 1, 2);
         c.PartyMaxSkill((int)Skill.Religion);
         c.Variables.Chosen[0] = c.BestMember;
-        // C: party_x is declared `extern long`, so the call pushes party_y and party_x (and 0x24): nearest_loc_type gets (x, y, 0x24); nothing is undefined (checked against the asm).
+        // C: party-map-column is declared `extern long`, so the call pushes party-map-row and party-map-column (and 0x24): closest-place-of-kind gets (x, y, 0x24); nothing is undefined (checked against the asm).
         c.Variables.Location = c.NearestLocationOfType(c.State.MapPosition.X, c.State.MapPosition.Y, 0x24);
         c.Variables.Location2 = c.SabbatSite();
         c.SetCardItems(0x5F, 0x60, 0x65, 0x66);
@@ -66,7 +66,7 @@ public sealed class TemplarsBurningAFriar : Card
     {
         var m = c.MenuMember;
         c.Variables.Chosen[0] = m;
-        var quality = c.ItemQuality(m, c.CardItems[c.MenuSlot]);
+        var quality = c.ItemQuality(m, c.CardItems[c.MenuEntrySlot]);
         var chance = c.MenuSlot switch { 0 => quality + 2, 1 => quality - 3, 2 => quality + 12, _ => quality * 2 };
         return OptionHint.ChanceOf(chance, m);
     }
@@ -85,7 +85,7 @@ public sealed class TemplarsBurningAFriar : Card
     private static void PrayForGuidance(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -126,7 +126,7 @@ public sealed class TemplarsBurningAFriar : Card
     /// (text 7 is shown even after text 11, as in the original); beaten, captured for the Sabbat (card 296).
     /// </summary>
     // orig: R117+0x0D16 (18E0:0296) matched; tests: CardSmokeTests
-    // C: arguments right to left: rand_mod(3) + 1 (eighth) is drawn before rand_mod(5) + 3 (fifth); the seed is the place's (-2).
+    // C: arguments right to left: roll-below(3) + 1 (eighth) is drawn before roll-below(5) + 3 (fifth); the seed is the place's (-2).
     // C: the function takes no parameter; the callers' arguments (1, 2) are ignored.
     private static void FightTheTemplars(CardContext c)
     {

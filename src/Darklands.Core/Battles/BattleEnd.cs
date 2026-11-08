@@ -5,27 +5,33 @@ namespace Darklands.Core.Battles;
 /// <summary>What the end-of-battle test asks the battle screen to do.</summary>
 public interface IBattleEndActions
 {
-    /// <summary><c>loot_after_fight</c>: the fallen enemies' belongings become loot piles.</summary>
+    /// <summary><c>post-fight-loot</c>: the fallen enemies' belongings become loot piles.</summary>
     void LootAfterFight();
 
-    /// <summary><c>loot_pile_open</c>(member): open the loot screen.</summary>
+    /// <summary><c>loot-pile-opened</c>(member): open the loot screen.</summary>
     void OpenLoot(int member);
 
-    /// <summary><c>level_switch</c>: show another level.</summary>
+    /// <summary><c>level-change</c>: show another level.</summary>
     void SwitchLevel(int floor);
 
-    /// <summary>The screen parts of <c>combat_mode_leave</c>, <c>combat_recover</c>'s placing of the woken and the redraws.</summary>
+    /// <summary>The screen parts of <c>fight-mode-exit</c>, <c>fight-recovery</c>'s placing of the woken and the redraws.</summary>
     void LeftCombatMode();
 
-    /// <summary>Puts a woken member on a free spot near where it fell (<c>combat_recover</c>'s search).</summary>
+    /// <summary>Puts a woken member on a free spot near where it fell (<c>fight-recovery</c>'s search).</summary>
     void PlaceWokenMember(int member);
 
-    /// <summary>The victory clean-up of the sprites and animations (enemy_anim_free5, cbt_set_anim(i, 5)).</summary>
+    /// <summary>The victory clean-up of the sprites and animations (enemy-sprite-release-a, fighter-start-animation(i, 5)).</summary>
     void VictoryCleanUp();
+
+    /// <summary>
+    /// <c>floor-view-paint</c>(<paramref name="member"/>) and <c>fight-draw</c>: the view drawn anew around combatant member's cell (−1: around
+    /// the centre kept), then a frame of the renderer (its random draws, the turns toward the targets, the arrived missiles removed, the target cursor).
+    /// </summary>
+    void RedrawAround(int member);
 }
 
 /// <summary>
-/// The end of a battle: the end test run every loop (<c>combat_over</c>), leaving battle mode,
+/// The end of a battle: the end test run every loop (<c>fight-finished</c>), leaving battle mode,
 /// recovering afterwards, and the skill improvements for the skills used.
 /// </summary>
 public static class BattleEnd
@@ -35,7 +41,7 @@ public static class BattleEnd
 
     /// <summary>The loot screen's D: true when party slot <paramref name="slot"/> is to be skipped as gone through an exit.</summary>
     // orig: R040+0x0DB3..0x0DBC `mov si, bx; shl si, 1; cmp word [si - 0x594C], -0x63`
-    // BUG: OriginalBehaviour.FixLootExitTestReadsWords - the test reads cbt_floor (a byte table, DS:A6B4) as words at 2 x slot: it skips
+    // BUG: OriginalBehaviour.FixLootExitTestReadsWords - the test reads fighter-floor-level (a byte table, DS:A6B4) as words at 2 x slot: it skips
     //   slot s only when combatant 2s's floor is -99 (0x9D) and combatant 2s + 1's is -1 (0xFF), so a member who left is not skipped
     //   (direct calls of R040+0x0C22 from the battle state street-p100 with key D and DS:8DC4 = 0: member 1's floor byte 0x9D gives
     //   DS:8DC4 = 1 without the message; floor bytes 2, 3 = 0x9D, 0xFF give DS:8DC4 = 2 after R022+0x04E4); tests: BattleEndTests
@@ -51,7 +57,8 @@ public static class BattleEnd
     }
 
     /// <summary>The end test; true when the battle screen should close.</summary>
-    // orig: combat_over R014+0x08FE (0E76:08FE) draft; checked against asm up to R014+0x0A54 (results 4/6/7, enemy floor, fled/left); tests: BattleEndTests
+    // orig: fight-finished R014+0x08FE (0E76:08FE) draft; checked against asm up to R014+0x0B1C (results 4/6/7, enemy floor, fled/left, the switch to the
+    //   party's other floor); tests: BattleEndTests
     public static bool IsOver(Battle b, IBattleEndActions actions)
     {
         var party = b.Combatants.Take(Combatant.PartySlots).ToArray();
@@ -146,9 +153,13 @@ public static class BattleEnd
                     {
                         b[j].Status = CharacterStatus.Empty;
                     }
-                    ChooseNewLeader(b);
+                    // C: R014+0x0AFC..0x0B1C: si, the member the view is drawn around, is the first able member, or the new leader when one is chosen.
+                    var who = ChooseNewLeader(b) ?? first;
                     LeaveCombatMode(b, actions);
                     Recover(b, actions);
+                    // C: R014+0x0AB5..0x0ABE: floor-view-paint(si) (09C0:1C2F) and fight-draw (14F7:0008) before the return of 0: the renderer's
+                    //   random draws and the removal of the arrived missiles come in this pass, not with the next tick's draw.
+                    actions.RedrawAround(who);
                     return false;
                 }
             }
@@ -232,7 +243,7 @@ public static class BattleEnd
             if (b.DragonFight != 0)
             {
                 // C: a dragon fight ends with the victory (R014+0x0C7C); for the seven-headed dragon the view is then drawn again
-                // (R014+0x0CB6: floor_view_draw(−1), combat_draw), which the screen does every frame here.
+                //   below (R014+0x0CB6..0x0CC7).
                 b.LeaveAfterVictory = true;
             }
             foreach (var m in party)
@@ -243,6 +254,13 @@ public static class BattleEnd
                 }
             }
             actions.VictoryCleanUp();
+            if (b.DragonFight == Battle.HydraFight)
+            {
+                // orig: R014+0x0CB6..0x0CC7: DS:C21A == 'I': floor-view-paint(−1) (9C0:1C2F) and fight-draw (14F7:0008) before the new
+                //   leader (R014+0x0CCC); nobody turns (R014+0x0C64..0x0CB4 cleared the enemies' status and the party's orders), but the
+                //   frame's random draws (animated pieces, cloud jitter and edges, flashes) come from the game's generator
+                actions.RedrawAround(-1);
+            }
             ChooseNewLeader(b);
             actions.LootAfterFight();
             Recover(b, actions);
@@ -262,26 +280,31 @@ public static class BattleEnd
         return !(b.Result == BattleResult.Running || b.Persistent || now <= b.EndTime);
     }
 
-    /// <summary>When the leader cannot lead (empty, dead or gone), the first able or unconscious member leads.</summary>
-    private static void ChooseNewLeader(Battle b)
+    /// <summary>
+    /// When the leader cannot lead (empty, dead or gone), the first able or unconscious member leads; returns the slot the search stopped at
+    /// (<see cref="Combatant.PartySlots"/> when it found nobody), null when the leader stays.
+    /// </summary>
+    private static int? ChooseNewLeader(Battle b)
     {
-        if (b[b.Leader].Status is CharacterStatus.Empty or CharacterStatus.Dead or CharacterStatus.Away)
+        if (b[b.Leader].Status is not (CharacterStatus.Empty or CharacterStatus.Dead or CharacterStatus.Away))
         {
-            for (var i = 0; i < Combatant.PartySlots; i++)
+            return null;
+        }
+        for (var i = 0; i < Combatant.PartySlots; i++)
+        {
+            if (b[i].Status is CharacterStatus.Able or CharacterStatus.Unconscious)
             {
-                if (b[i].Status is CharacterStatus.Able or CharacterStatus.Unconscious)
-                {
-                    b.Leader = b.ActiveMember = i;
-                    break;
-                }
+                b.Leader = b.ActiveMember = i;
+                return i;
             }
         }
+        return Combatant.PartySlots;
     }
 
     /// <summary>Leaves battle mode: no more real combat, the alarm reset.</summary>
-    // orig: combat_mode_leave R014+0x0D86 (0E76:0D86) draft
-    // C: the rest of combat_mode_leave is IBattleEndActions.LeftCombatMode (TacticalBattle): the menu states DS:9631 / DS:9721, the reinforcement
-    // waves DS:D6EB, the fire-blocked flags DS:A3D8, cbt_flags bits 13/14 and the collision half sizes; root 047C:040B(3) (a palette-cycling slot) is
+    // orig: fight-mode-exit R014+0x0D86 (0E76:0D86) draft
+    // C: the rest of fight-mode-exit is IBattleEndActions.LeftCombatMode (TacticalBattle): the menu states DS:9631 / DS:9721, the reinforcement
+    // waves DS:D6EB, the fire-blocked flags DS:A3D8, fighter-flags bits 13/14 and the collision half sizes; root 047C:040B(3) (a palette-cycling slot) is
     // the battle screen's palette cycles. Tests: BattleEndDelegationTests.LeavingCombatModeResetsWhatTheOriginalResets
     public static void LeaveCombatMode(Battle b, IBattleEndActions actions)
     {
@@ -291,8 +314,8 @@ public static class BattleEnd
     }
 
     /// <summary>After a fight: damage cleared, endurance back to at least three quarters, the unconscious woken.</summary>
-    // orig: combat_recover R014+0x0DEE (0E76:0DEE) draft; tests: BattleEndTests
-    // C: the search for a free spot near where the woken member fell (the random_n draws, the line-of-sight test, the collision test with DS:E0A2 set)
+    // orig: fight-recovery R014+0x0DEE (0E76:0DEE) draft; tests: BattleEndTests
+    // C: the search for a free spot near where the woken member fell (the roll-n draws, the line-of-sight test, the collision test with DS:E0A2 set)
     // is IBattleEndActions.PlaceWokenMember (TacticalBattle.PlaceWoken, checked against the asm); the party panel row redraw after it is the screen's.
     // Tests: BattleEndDelegationTests.RecoveringWakesTheUnconsciousOnAFreeSpotWithTheSearchsDraws
     public static void Recover(Battle b, IBattleEndActions actions)
@@ -355,7 +378,7 @@ public static class BattleEnd
                 used &= (SkillUse)0xFE;
             }
             // BUG: the missile skill is the readied weapon's at the battle's end: a member who threw his last javelin or
-            // axe has weapon -1 (use_ammo), whose category byte (R136+0x75AB, before the table) is 0, so Edged is practised
+            // axe has weapon -1 (spend-ammunition), whose category byte (R136+0x75AB, before the table) is 0, so Edged is practised
             // instead of the thrown weapon's skill, beside the hand weapon's own (flail, spear ...).
             if (used.HasFlag(SkillUse.MissileHit))
             {
@@ -390,7 +413,7 @@ public static class BattleEnd
     /// A chance of (100 − skill)/2 (mode 1) or /4 (mode 0) in 100 to raise a skill below 99 by
     /// 1..3/4/5 (by difficulty); <paramref name="changed"/> gets (member, skill, from, to).
     /// </summary>
-    // orig: skill_try_improve R021+0x0000 (1EF8:0000) matched; skill_change_msg R021+0x0080 (1EF8:0080) matched
+    // orig: ability-improve-attempt R021+0x0000 (1EF8:0000) matched; ability-change-notice R021+0x0080 (1EF8:0080) matched
     // C: the message at the member's row is shown through changed (TacticalBattle.AfterBattle: ITacticalView.MemberMessage).
     public static void TryImprove(Battle b, int member, int skill, int mode, Action<int, int, int, int>? changed)
     {

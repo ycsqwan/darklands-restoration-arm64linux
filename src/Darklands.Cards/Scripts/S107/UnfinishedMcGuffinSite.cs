@@ -54,7 +54,7 @@ public sealed class UnfinishedMcGuffinSite : Card
     /// original's switch has no breaks: places 0 and 1 hear all three tellings, place 2 two.
     /// </summary>
     // orig: R107+0x2F60 (1B0A:0240) matched; tests: CardSmokeTests
-    // C: cur_loc % 4 is C's signed remainder: -1 in the wilderness matches no case and nothing is told.
+    // C: location-now % 4 is C's signed remainder: -1 in the wilderness matches no case and nothing is told.
     private static void LookAbout(CardContext c)
     {
         c.PassHours(1);
@@ -80,7 +80,7 @@ public sealed class UnfinishedMcGuffinSite : Card
     private static void Pray(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

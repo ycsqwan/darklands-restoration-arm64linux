@@ -43,19 +43,68 @@ public sealed class GenerationProcessMemory
     public bool FortressReducedGroups { get; set; }
 
     /// <summary>
-    /// floor_img as the last battle left it (the level shown at its end), or null in a fresh program (zeros): the empty
+    /// floor-picture as the last battle left it (the level shown at its end), or null in a fresh program (zeros): the empty
     /// battlefield writes only its cells and counts over it, so its exit cards and other records are the previous battle's.
     /// </summary>
     public byte[]? FloorImage { get; set; }
 
     /// <summary>
     /// DS:C80F / DS:C831 for the party's slots 0..4 (half the collision box, width and height) as the last battle left them, or null in a
-    /// fresh program (zeros): the party is placed (R014+0x0017) before combat_main sets them (R014+0x0258, 5 and 2 from the animation sets).
+    /// fresh program (zeros): the party is placed (R014+0x0017) before fight-main-loop sets them (R014+0x0258, 5 and 2 from the animation sets).
     /// </summary>
     public (int Width, int Height)[]? PartySizes { get; set; }
 
+    /// <summary>
+    /// DS:1182 / DS:118E for the party's animation slots 0..4 (the half sizes of the sets last loaded there) as the last battle left them, or
+    /// null in a fresh program: the next battle's start copies them into the party's collision boxes before it loads its own sets (R014+0x0254).
+    /// </summary>
+    public (int Width, int Height)[]? PartySlotSizes { get; set; }
+
+    /// <summary>
+    /// The party's place tables a new battle starts from, laid out as in the battle file (BattleVariables.MemberDoor .. MemberStairsBack,
+    /// five bytes each: door, opens, side, stairs, chest, dissolve slot, exit zone, stairs back): the program's battle file's; null: a
+    /// fresh program's zeros.
+    /// </summary>
+    public byte[]? PartyTables { get; set; }
+
+    /// <summary>The size of <see cref="PartyTables"/>.</summary>
+    public const int PartyTablesSize = BattleVariables.MemberStairsBack + 5 - BattleVariables.MemberDoor;
+
     /// <summary>DS:C925 / DS:C978 / DS:C989 / DS:CA1B: the trigger whose alarm ended the last battle (x −1: none).</summary>
     public (int X, int Y, int Width, int Height) AlarmTrigger { get; set; } = (-1, 0, 0, 0);
+
+    /// <summary>
+    /// DS:C652 / DS:C67D: the spot of the last walk order clicked (x 0: none), zeros in a fresh program. Only the ground click sets both;
+    /// order mode's start and Esc clear the x alone and no battle's reset touches them, so a walk given with no spot clicked goes to x 0
+    /// and the y of the last spot, of this battle or an earlier one.
+    /// </summary>
+    // orig: set by R014+0xC6F3 / 0xC6FA only; R014+0xBC6A and R016+0x13DA clear DS:C652; R014+0xBFC0..0xBFCC copy both into the destination
+    public MapPoint OrderSpot { get; set; }
+
+    /// <summary>
+    /// DS:9BE5: the word command-mode-end takes as the order of "member −1" (+0x10 of the record before combatant 0, inside the menu bar's
+    /// item records): 0x1A6D from start-up, then what command-mode-end last wrote there, in this battle or an earlier one.
+    /// </summary>
+    // orig: written once at start-up (1699:0DB3, the item records set up: the offset of an item text, far pointer 11E3:1A6D) and by
+    //   command-mode-end R014+0xBCA8 with nobody selected; opening the battle's menus (Game, Orders, Attack, Party) and loading a game
+    //   leave it (vis10 session uncert-cme-menus, every write to DS:9BE5 logged from start-up: 0x1A6D at each of 12 calls)
+    public int ActionBeforeRecords { get; set; } = 0x1A6D;
+
+    /// <summary>
+    /// DS:E237: the enemies' turn rotation (enemy-move-phase R018+0x0706: inc, and 3, read; the EXE's only accesses), 0 from start-up: no
+    /// battle's reset, no load and no battle file touches it, so a battle begins where the last one's enemy turns left it.
+    /// </summary>
+    public int TurnRotation { get; set; }
+
+    /// <summary>
+    /// DS:A532[13]: the effects' temporary modifiers as the last battle left them, or null in a fresh program (zeros: every timer 0, not
+    /// −536). Only a fresh battle's fight-state-reset turns the timers off; a battle taken up from a saved game starts from these, so in a
+    /// fresh program every record's three timers are due at the first tick and each record readies its weapon again (R019+0x0B00), the
+    /// empty records 5..12 (animation slot 0, weapon 0) writing their code into slot 0's walking file name.
+    /// </summary>
+    // orig: DS:A532 is not in the battle file (R003+0x00DC / 0x0CE8); R014+0x0000 skips the reset for a resume (DS:9081 bit 0);
+    // the mods: tail of R014+0x2A4A tests the timers for all 13; lockstep dungeon-king-ladder (local/batch/b32/a7-l5)
+    public EffectModifiers[]? Modifiers { get; set; }
 }
 
 /// <summary>Everything a battlefield generator reads besides the request.</summary>
@@ -74,7 +123,7 @@ public sealed class BattlefieldContext
 
     public required IRandomSource Random { get; init; }
 
-    /// <summary>cur_loc: the location (−1 wilderness).</summary>
+    /// <summary>location-now: the location (−1 wilderness).</summary>
     public int Location { get; init; } = -1;
 
     /// <summary>DS:D843: terrain code of the world map cell under the party.</summary>
@@ -86,8 +135,8 @@ public sealed class BattlefieldContext
     /// <summary>How many party members are able (R008 counts status 1).</summary>
     public int AbleMembers { get; init; } = 4;
 
-    /// <summary>party_lore_level(): 1..10.</summary>
-    // orig: party_lore_level_impl R039+0x0470 (1462:0470) matched: supplied by the game (PartyQueries.LoreLevel)
+    /// <summary>party-lore-rating(): 1..10.</summary>
+    // orig: party-lore-rating-inner R039+0x0470 (1462:0470) matched: supplied by the game (PartyQueries.LoreLevel)
     public Func<int> LoreLevel { get; init; } = () => 1;
 
     /// <summary>
@@ -135,10 +184,10 @@ public sealed class GeneratedBattlefield
     /// <summary>The .enm data of each level as a battle file held it (a battlefield taken from one); null: made from the kinds.</summary>
     public IReadOnlyList<byte[]?>? EnemyFiles { get; init; }
 
-    /// <summary>combat_flags bit 0: the battlefield persists ("battlefield save rules are in effect").</summary>
+    /// <summary>fight-flags bit 0: the battlefield persists ("battlefield save rules are in effect").</summary>
     public bool Persistent { get; init; }
 
-    /// <summary>combat_flags bit 0x40: a timed battle (the combat code starts a 600-tick timer).</summary>
+    /// <summary>fight-flags bit 0x40: a timed battle (the combat code starts a 600-tick timer).</summary>
     public bool Timed { get; init; }
 
     /// <summary>What the battles leave on this battlefield besides its level images (the original's files and far tables).</summary>
@@ -150,7 +199,7 @@ public sealed class GeneratedBattlefield
 /// battle (handlers and wall lists relocated, chest contents moved to the loot file), the wall
 /// groups each level has opened, and the chests' contents.
 /// </summary>
-// orig: R024+0x0000 (1EF8:0000) prepares the level files once per new battlefield; R136+0xE4E6 (doors_opened, a long
+// orig: R024+0x0000 (1EF8:0000) prepares the level files once per new battlefield; R136+0xE4E6 (opened-door-list, a long
 // per level, cleared by R002+0x1A7A for a new battlefield); DS:C7A4[20] (the chests' loot file offsets)
 public sealed class BattlefieldStore
 {
@@ -163,7 +212,7 @@ public sealed class BattlefieldStore
     /// <summary>The loot file with the piles and the chests' offsets (DS:C7A4).</summary>
     public Tactics.LootStore Loot { get; } = new();
 
-    /// <summary>floor_shown (DS:11CA) when the last battle here ended (−1: none yet): modes 1 and 2 show it again.</summary>
+    /// <summary>floor-displayed (DS:11CA) when the last battle here ended (−1: none yet): modes 1 and 2 show it again.</summary>
     public int FloorShown { get; set; } = -1;
 
     /// <summary>
@@ -171,6 +220,19 @@ public sealed class BattlefieldStore
     /// null for a slot that was empty: mode 1 keeps them.
     /// </summary>
     public (MapPoint Position, int Facing, int SpriteFacing)?[] PartyPlaces { get; } = new (MapPoint, int, int)?[5];
+
+    /// <summary>
+    /// Each level's files as last written (level%d.flr, the floor image; level%d.atv, the activations): the prepared levels, then the
+    /// level in the buffer whenever it is saved, which level-change, the battle's end and the in-battle save do only while DS:D4E4 is
+    /// set. A battle file takes the levels from these. Null until a battle prepared the levels or a battle file gave them.
+    /// </summary>
+    // orig: level-change R024+0x05B4..0x0636 and the battle-state save R003+0x0132..0x01AB write the buffer (20A5:0000, 0x33FC bytes,
+    // with the hidden wall groups' bit 31 that R024+0x06D3 sets after each load) and DS:A895 only when DS:D4E4 is 1; the save then reads
+    // every level back from its files (b35: a write watch in the original sets bit 31 of the same 279 cells at the battle's entry and again
+    // in the save's reload, and the .BSV holds them clear)
+    public byte[][]? FloorFiles { get; set; }
+
+    public byte[][]? ActivationFiles { get; set; }
 }
 
 /// <summary>A generator's working state: the forces, the levels it saves, the flags it sets.</summary>
@@ -215,7 +277,7 @@ public sealed class GenerationState
     }
 
     /// <summary>The direction (0, 2, 4, 6) from one point to another.</summary>
-    // orig: dir_between R004+0x2160 (0E76:2160) draft (byte-matched per the draft notes)
+    // orig: heading-from-to R004+0x2160 (0E76:2160) draft (byte-matched per the draft notes)
     public static int DirectionBetween(int x0, int y0, int x1, int y1)
     {
         var dx = x1 - x0;
@@ -241,18 +303,18 @@ public sealed class GenerationState
 }
 
 /// <summary>
-/// Builds a battlefield as <c>battlefield_build</c> does: the colour seed from the location, the
+/// Builds a battlefield as <c>battlefield-builder-entry</c> does: the colour seed from the location, the
 /// battle seed, the generator chosen by the battlefield type, then the loader's fix-ups of the
 /// enemy kinds and groups.
 /// </summary>
-// orig: battlefield_build R004+0x0000 (0E76:0000) draft (dispatch table checked
+// orig: battlefield-builder-entry R004+0x0000 (0E76:0000) draft (dispatch table checked
 // against the old engine's BattlefieldGenerationDispatcher, which pinned the original 138-word table)
 public static class BattlefieldBuilder
 {
     public static GeneratedBattlefield Build(BattlefieldContext context, int battlefield, int seed, IReadOnlyList<(int Type, int Quality, int Count)> groups)
     {
         var random = context.Random;
-        // C: srand(cur_loc); r = rand(); srand(seed): r fixes the enemies' colours for this place.
+        // C: srand(location-now); r = rand(); srand(seed): r fixes the enemies' colours for this place.
         random.Seed((uint)(ushort)context.Location);
         var variantSeed = random.NextRaw();
         random.Seed((uint)(ushort)seed);
@@ -294,7 +356,7 @@ public static class BattlefieldBuilder
                 break;
             default:
                 // DIVERGENCE: the citadel needs LCASTLE; without it (and for battlefield types no generator handles, as in the
-                // original) the field is empty (empty_battlefield, R008 2D62).
+                // original) the field is empty (blank-battlefield, R008 2D62).
                 levels = EmptyBattlefield.Build(state, battlefield, specs);
                 start = 0;
                 break;
@@ -317,7 +379,7 @@ public static class BattlefieldBuilder
         [.. Enumerable.Range(0, 3).Select(i => i < groups.Count ? groups[i] : (-1, 0, 0))];
 
     /// <summary>Which generator overlay builds a battlefield type.</summary>
-    // orig: battlefield_build's switch (R004+0x00E0..0x024F)
+    // orig: battlefield-builder-entry's switch (R004+0x00E0..0x024F)
     public static BattlefieldGenerator Generator(int battlefield) => battlefield switch
     {
         <= 8 and >= 0 or 0x27 or 0x28 or >= 0x7A and <= 0x7E => BattlefieldGenerator.Castle,
@@ -335,7 +397,7 @@ public static class BattlefieldBuilder
 /// <summary>The battlefield generator overlays.</summary>
 public enum BattlefieldGenerator
 {
-    /// <summary>R008 2D62 empty_battlefield.</summary>
+    /// <summary>R008 2D62 blank-battlefield.</summary>
     Empty,
 
     /// <summary>R005..R007 castles and keeps.</summary>

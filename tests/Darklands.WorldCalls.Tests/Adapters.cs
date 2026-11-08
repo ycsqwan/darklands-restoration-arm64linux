@@ -18,12 +18,16 @@ internal static class Adapters
 
         // ---- time passing
         ["R029+0x255A"] = c => { TimePassage.Recover(c.State, c.S(0)); return null; },
-        // R029+0x281C reads cur_month DS:00E4 for the birthdays; its callers (R029+0x5537, R029+0x55CD) pass DS:00E4 just incremented
+        // R029+0x281C reads month-now DS:00E4 for the birthdays; its callers (R029+0x5537, R029+0x55CD) pass DS:00E4 just incremented
         ["R029+0x281C"] = c => c.S(0) != c.State.Date.Month
-            ? throw new WorldCallsTests.SkipJob("a month other than cur_month (its callers pass DS:00E4 itself)")
+            ? throw new WorldCallsTests.SkipJob("a month other than month-now (its callers pass DS:00E4 itself)")
             : Run(() => MonthlyUpdate.Run(c.State, c.S(0))),
         ["R029+0x54D8"] = c => { TimePassage.Advance(c.State, c.S(0)); return null; },
         ["R029+0x5590"] = c => { TimePassage.AdvanceDays(c.State, c.S(0)); return null; },
+
+        // day of the year to month / day of the month (R029+0x5848, R029+0x5892)
+        ["R029+0x5848"] = c => Quests.MonthOf(c.S(0)),
+        ["R029+0x5892"] = c => Quests.DayOfMonth(c.S(0)),
 
         // ---- timed events
         ["R029+0x2E74"] = c => c.State.Events.Update(c.S(0), c.S(1), c.S(2), c.S(3), c.S(4), c.S(5), (EventUpdate)c.S(6)),
@@ -56,7 +60,10 @@ internal static class Adapters
         ["R029+0x0792"] = c => { MemberRules.BoostEquippedWeaponSkills(c.State, c.S(0), c.S(1)); return null; },
         ["R029+0x1260"] = c => Saints.Knows(c.State, c.S(0), c.S(1)) ? 1 : 0,
         ["R029+0x4C04"] = c => { MemberRules.RaiseAttributeTemporarily(c.State, c.S(0), c.S(1), c.S(2), c.S(3)); return null; },
+        ["R029+0x4D24"] = c => { MemberRules.RecordPotionBonus(c.State, c.S(0), c.S(1), c.S(2), c.S(3)); return null; },
         ["R029+0x4AA4"] = c => { PartyRules.EndTerms(c.State, c.S(0)); return null; },
+        // R029+0x2474: of the members who went away one leaves for good, the others come back; AX = how many were away
+        ["R029+0x2474"] = c => new Cards.CardContext(c.State, c.Data, new NoScreen()).OneOfTheAwayLeaves(),
 
         // ---- travel on the map: the view's registers and the travel counters are DS words of the job
         ["R030+0x1300"] = Step,
@@ -71,8 +78,35 @@ internal static class Adapters
         ["R039+0x0D46"] = c => CityPolitics.Strength(c.State, -1),
         // R039+0x0EBE: its 36 call sites (thunk 09C0:217F) are the uprising cards R065, R068, R074, R076, R089, R090, R091, run in a city
         ["R039+0x0EBE"] = c => c.State.CurrentLocation < 0
-            ? throw new WorldCallsTests.SkipJob("in the open country (cur_loc -1): every caller runs in a city")
+            ? throw new WorldCallsTests.SkipJob("in the open country (location-now -1): every caller runs in a city")
             : Run(() => CityPolitics.ConflictOutcome(c.State, c.S(0), c.S(1), c.S(2))),
+        ["R039+0x0A34"] = c => CityPolitics.SideOf(c.State, c.S(0)),
+        ["R039+0x0A7E"] = c => Run(() => CityPolitics.SetSide(c.State, c.S(0), c.S(1))),
+        // the expiry handlers (event-expiry-handlers): the argument is the expiring event's slot; the rewrite's dispatcher runs the handler of that event
+        ["R029+0x3FB2"] = c => Handler(c, 1),
+        ["R029+0x4180"] = c => Handler(c, 2),
+        ["R029+0x4378"] = c => Handler(c, 3),
+        ["R029+0x4436"] = c => Handler(c, 4),
+        ["R029+0x4442"] = c => Handler(c, 5),
+        ["R029+0x448A"] = c => Handler(c, 6),
+        ["R029+0x450A"] = c => Handler(c, 7),
+        ["R029+0x4534"] = c => Handler(c, 8),
+        ["R029+0x4626"] = c =>
+        {
+            c.State.PartyTerrain = c.Job.Word(0xD843);
+            return Handler(c, 9);
+        },
+        ["R039+0x00BA"] = c => LocationRules.Hostile(c.State) ? 1 : 0,
+        ["R039+0x0102"] = c => LocationRules.PriceEvents(c.State),
+        ["R039+0x0000"] = c => LocationRules.LocalPrice(c.State, c.S(0), c.S(2)),
+        ["R039+0x1D2C"] = c => LocationRules.ServicePrice(c.State, c.S(0), c.S(1)),
+        ["R039+0x1E06"] = c => Practice.GiveReward(c.State, c.S(0)),
+        ["R039+0x15C2"] = c => Run(() => Quests.StartMine(c.State)),
+        ["R039+0x11FC"] = c => Run(() => Quests.StartDragon(c.State)),
+        ["R039+0x1B0C"] = c => Run(() => Quests.StartSabbat(c.State)),
+        // six words; the fact events' location is what the original pushes from DS:E89B (R039+0x118D/0x11AC/0x11CB/0x11EA), CardContext passes Variables.Location
+        ["R039+0x10B6"] = c => Quests.StartQuest3(c.State, c.S(0), c.S(1), c.S(2), c.S(3), c.S(4), c.S(5), c.Job.Word(0xE89B)),
+        ["R039+0x026A"] = c => Run(() => MemberRules.Injure(c.State, c.S(0), c.S(1), c.S(2), c.S(3))),
         ["R039+0x1C22"] = c => Quests.FeastDayNearThisMonth(c.State),
         ["R039+0x1712"] = c => Quests.StartQuest10(c.State, c.S(0), out _),
     };
@@ -88,6 +122,22 @@ internal static class Adapters
         }
     }
 
+    /// <summary>A card screen that shows nothing (the party panel redraw of the original's calls is not part of what is compared).</summary>
+    private sealed class NoScreen : Cards.ICardScreen
+    {
+        public void Show(string cardName, string picture) { }
+
+        public void ShowPicture(string picture) { }
+
+        public void Text(int block, Cards.TextFrame frame = Cards.TextFrame.OnPicture) { }
+
+        public int Choose(int block, IReadOnlyList<Cards.OptionState> options, Func<int, Cards.OptionHint>? hint = null) => 0;
+
+        public void Tell(string message, int member = Cards.OptionHint.WholeParty) { }
+
+        public void PassTime(int hours) { }
+    }
+
     private sealed class BytePalette(int[] bytes) : SeasonPalette.IPaletteBytes
     {
         public int this[int offset]
@@ -97,7 +147,7 @@ internal static class Adapters
         }
     }
 
-    /// <summary>season_palette R030+0x2DD6: cur_month DS:00E4, cur_day DS:00E2, the palette DS:E48C (768 bytes), the map's background DS:2860.</summary>
+    /// <summary>season_palette R030+0x2DD6: month-now DS:00E4, day-now DS:00E2, the palette DS:E48C (768 bytes), the map's background DS:2860.</summary>
     private static int? SeasonPaletteCall(WorldCallsTests.Context c)
     {
         var before = new int[768];
@@ -131,6 +181,22 @@ internal static class Adapters
     private static int? Run(Action call)
     {
         call();
+        return null;
+    }
+
+    /// <summary>An expiry handler R029+0x.... called with an event slot: the rewrite's EventExpiry.Handle on that slot's event.</summary>
+    private static int? Handler(WorldCallsTests.Context c, int number)
+    {
+        var slot = c.U(0);
+        if (c.State.Events[slot] is not { } e)
+        {
+            throw new WorldCallsTests.SkipJob($"slot {slot} holds no event in the rewrite");
+        }
+        if ((int)e.ExpiryHandler != number)
+        {
+            throw new WorldCallsTests.SkipJob($"slot {slot} holds an event of handler {(int)e.ExpiryHandler}, not {number}");
+        }
+        EventExpiry.Handle(c.State, e);
         return null;
     }
 
@@ -177,7 +243,7 @@ internal static class Adapters
         switch (result.Outcome)
         {
             case StepOutcome.Walked:
-                // party_x/party_y are left to the next pass of the key handler (R030+0x0C44 sets them from the marker) in both
+                // party-map-column/party-map-row are left to the next pass of the key handler (R030+0x0C44 sets them from the marker) in both
                 return -1;
             case StepOutcome.Blocked:
                 return 9999;

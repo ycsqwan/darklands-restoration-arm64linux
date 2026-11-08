@@ -30,7 +30,7 @@ public sealed class HutOfTheBlondeWoman : Card
         var menu = Menu(c, 0);
         menu.Set(OptionState.Enabled, 0, 1, 3, 4, 9);
         c.Variables.Chosen[0] = c.Leader;
-        // C: (party_y + party_x) % 2, a signed remainder; only its non-zero-ness counts.
+        // C: (party-map-row + party-map-column) % 2, a signed remainder; only its non-zero-ness counts.
         _witch = (c.Events.QuestExists(1) || c.Events.FactAnywhere(1, 1))
             && (c.State.MapPosition.Y + c.State.MapPosition.X) % 2 != 0;
         c.SetCardItems(0x65, 0x66, 0x67);
@@ -38,39 +38,32 @@ public sealed class HutOfTheBlondeWoman : Card
         menu[3] = c.SaintsUsable();
         menu.Popup = () => c.SaintPopupChanceHint();
 
-        // C: after every choice the loop sets var_chosen1 = leader before the handler; a pop-up
-        // handler then names its own member. Each action does this first for line choices.
+        // C: after each choice the loop sets $ChosenOneName to the leader, then calls the handler (a box handler may name its member), then
+        // C: the action.
+        menu.OnChoice = () => c.Variables.Chosen[0] = c.Leader;
         return menu.Run(
             // orig: R116+0x12E6 (191B:04B6) matched; hint R116+0x1352
-            new MenuLine(_ => { LeaderSpeaks(c); KnockOnTheDoor(c, menu); }, Unknown),
+            new MenuLine(_ => { KnockOnTheDoor(c, menu); }, Unknown),
             // orig: R116+0x138A (line 1); hint R116+0x14E6 (191B:06B6) matched
-            new MenuLine(p => { LeaderSpeaks(c); WatchTheHut(c, menu, p); }, () => StealthHint(c)),
+            new MenuLine(p => { WatchTheHut(c, menu, p); }, () => StealthHint(c)),
             // orig: R116+0x1526 (line 2); hint R116+0x16E8 (191B:08B8) matched
-            new MenuLine(p => { LeaderSpeaks(c); ClimbInAtTheWindow(c, menu, p); }, () => StealthHint(c)),
+            new MenuLine(p => { ClimbInAtTheWindow(c, menu, p); }, () => StealthHint(c)),
             // orig: R116+0x1728 (line 3); hint R116+0x17EA (191B:09BA) matched
-            new MenuLine(_ => { LeaderSpeaks(c); PrayForInsight(c); }, () => OptionHint.Say("Select a person and a saint.")),
+            new MenuLine(_ => { PrayForInsight(c); }, () => OptionHint.Say("Select a person and a saint.")),
             // orig: R116+0x1822 (line 4); hint R116+0x18F4 (191B:0AC4) matched
-            new MenuLine(_ => { LeaderSpeaks(c); StormTheHut(c); }, Unknown),
+            new MenuLine(_ => { StormTheHut(c); }, Unknown),
             // orig: R116+0x192C (line 5); hint R116+0x1A26 (191B:0BF6) matched
-            new MenuLine(p => { LeaderSpeaks(c); BurnTheHut(c, p); }, () => OptionHint.Say("Select a person and a potion."), () => PotionHint(c)),
+            new MenuLine(p => { BurnTheHut(c, p); }, () => OptionHint.Say("Select a person and a potion."), () => PotionHint(c)),
             // DORMANT: lines 6..8 are never offered; actions R116+0x1A5E/0c32/0c36 and hints R116+0x1A60/0c34/0c38
             // C: are empty; the hints return AX/DX; neutral hints are used.
-            new MenuLine(_ => LeaderSpeaks(c)),
-            new MenuLine(_ => LeaderSpeaks(c)),
-            new MenuLine(_ => LeaderSpeaks(c)),
+            new MenuLine(_ => { }),
+            new MenuLine(_ => { }),
+            new MenuLine(_ => { }),
             // orig: R116+0x1A6A (191B:0C3A) matched; hint R116+0x1A78
-            new MenuLine(_ => { LeaderSpeaks(c); c.LeaveForTheMap(); }, () => OptionHint.Say(SuccessAssured)));
+            new MenuLine(_ => { c.LeaveForTheMap(); }, () => OptionHint.Say(SuccessAssured)));
     }
 
     private static OptionHint Unknown() => OptionHint.Say("You can always encounter the unknown");
-
-    private static void LeaderSpeaks(CardContext c)
-    {
-        if (!c.MenuPopup)
-        {
-            c.Variables.Chosen[0] = c.Leader;
-        }
-    }
 
     private static OptionHint StealthHint(CardContext c) => OptionHint.ChanceOf(Math.Clamp(
         c.PartyAverageSkill((int)Skill.Woodwise) / 2 + c.PartyAverageSkill((int)Skill.Stealth) / 2, 1, 99), OptionHint.WholeParty);
@@ -81,7 +74,7 @@ public sealed class HutOfTheBlondeWoman : Card
     {
         var m = c.MenuMember;
         c.Variables.Chosen[0] = m;
-        var quality = c.ItemQuality(m, c.CardItems[c.MenuSlot]);
+        var quality = c.ItemQuality(m, c.CardItems[c.MenuEntrySlot]);
         var chance = c.MenuSlot switch { 0 => quality, 1 => Math.Clamp(quality * 2, 1, 99), _ => Math.Clamp(quality * 5 / 2, 1, 99) };
         return OptionHint.ChanceOf(chance, m);
     }
@@ -112,7 +105,7 @@ public sealed class HutOfTheBlondeWoman : Card
 
     /// <summary>Watching till dusk; a witch's wolves catch a clumsy watcher.</summary>
     // orig: R116+0x138A (191B:055A) matched; tests: CardSmokeTests
-    // C: advance_hours(hours_until(18) - 1): at 18:00 this passes -1 hours, as the original does.
+    // C: pass-hours(hours-remaining-until(18) - 1): at 18:00 this passes -1 hours, as the original does.
     private void WatchTheHut(CardContext c, CardMenu menu, int chance)
     {
         c.PassHours(c.HoursUntil(18) - 1);
@@ -164,7 +157,7 @@ public sealed class HutOfTheBlondeWoman : Card
             c.Screen.Text(11);
             c.AddSkill(Who.Everybody, (int)Skill.Virtue, -1);
             c.AddAttribute(Who.Everybody, (int)Attribute.DivineFavor, -20);
-            // The original leaves without clearing cur_loc here.
+            // The original leaves without clearing location-now here.
             c.Next = CardContext.MapCard;
             return;
         }
@@ -188,7 +181,7 @@ public sealed class HutOfTheBlondeWoman : Card
     private void PrayForInsight(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -254,7 +247,7 @@ public sealed class HutOfTheBlondeWoman : Card
     /// cannot bite through). An hour passes after any result.
     /// </summary>
     // orig: R116+0x10CC (191B:029C) matched; tests: CardSmokeTests
-    // C: the only draw among run_battle's arguments is rand_mod(5) + 3 (the eighth); then run_battle draws its seed.
+    // C: the only draw among battle-driver's arguments is roll-below(5) + 3 (the eighth); then battle-driver draws its seed.
     // C: party[v]+0x37 is the vital armour's item type; types 0x49..0x4B protect from the wolves.
     private static void FightTheWitch(CardContext c)
     {

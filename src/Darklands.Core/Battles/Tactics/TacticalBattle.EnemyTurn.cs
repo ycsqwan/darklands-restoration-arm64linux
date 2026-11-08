@@ -12,11 +12,16 @@ public sealed partial class TacticalBattle
     /// <summary>The distance of an unseen or unwanted target.</summary>
     private const int FarAway = 0x7D00;
 
+    /// <summary>The clip points the enemies' sight tests and missile tests leave for their next test (BattleMap.ClipResidue).</summary>
+    private readonly BattleMap.ClipResidue _seesResidue = new(), _turnResidue = new();
+
     /// <summary>Which party members the enemies see (all of them right after the alarm).</summary>
-    // orig: enemy_sees R018+0x04B6 (1F43:0006) draft (asm-verified per spec D §6.1)
+    // orig: enemy-line-of-sight R018+0x04B6 (1F43:0006) draft (asm-verified per spec D §6.1)
     private int EnemySees(bool[] seen)
     {
         Array.Clear(seen);
+        // orig: R018+0x04B6..0x0704 calls nothing but sight-line-blocked (R018+0x06AB): its tests are one run of clip tests (BattleMap.ClipResidue)
+        _seesResidue.Point = default;
         var count = 0;
         var alive = Battle.Combatants.Take(Combatant.PartySlots).Count(c => c.IsAble);
         if (Battle.Alarm == 0x63)
@@ -48,7 +53,7 @@ public sealed partial class TacticalBattle
                 }
                 var dir = DirectionToward(en.Position, m.Position, false);
                 var ok = en.WatchedFacingCount == 7 || en.WatchedFacings.Take(en.WatchedFacingCount).Contains(dir);
-                if (ok && Map.LineBlocked(en.Position, m.Position) == 0)
+                if (ok && Map.LineBlocked(en.Position, m.Position, residue: _seesResidue) == 0)
                 {
                     // C: DS:C4FD is set (only the battle file reads it).
                     EnemySawMember = true;
@@ -85,7 +90,7 @@ public sealed partial class TacticalBattle
     /// visible member: hand-to-hand fighters walk to it, archers shoot from 32 pixels or more (else
     /// close in or find a spot), casters cast now and then.
     /// </summary>
-    // orig: enemy_turn R018+0x0706 (1F43:0256) draft (near-match; key conditions
+    // orig: enemy-move-phase R018+0x0706 (1F43:0256) draft (near-match; key conditions
     // checked against the asm per spec D §6.2)
     private void EnemyTurn()
     {
@@ -244,6 +249,8 @@ public sealed partial class TacticalBattle
     private void MeleeOrRanged(int e, (int Dist, int Count, int Who)[] list, bool[] seen)
     {
         var en = Battle[e];
+        // orig: R018+0x0A9F..0x0BF3: the candidates' loop calls nothing between its missile tests (R018+0x0BE7): one run of clip tests per enemy
+        _turnResidue.Point = default;
         var done = false;
         for (var k = 0; k < Combatant.PartySlots && !done; k++)
         {
@@ -284,7 +291,7 @@ public sealed partial class TacticalBattle
             }
             else if (cls == 1)
             {
-                if (Map.LineBlocked(en.Position, Battle[t].Position, e, t, 0x80) == 0)
+                if (Map.LineBlocked(en.Position, Battle[t].Position, e, t, 0x80, _turnResidue) == 0)
                 {
                     ReadyWeapon(e, en.ReadiedWeapon, 0x80);
                     en.Target = (sbyte)t;
@@ -470,6 +477,9 @@ public sealed partial class TacticalBattle
     {
         var en = Battle[e];
         var found = false;
+        // orig: R018+0x113A's line tests (R018+0x11B4) are one run of clip tests over its tries (BattleMap.ClipResidue; probed: the random
+        // draw between the tries leaves it)
+        var residue = new BattleMap.ClipResidue();
         for (var tries = 0; tries < 50 && !found; tries++)
         {
             var k = Scaled(16);
@@ -477,7 +487,7 @@ public sealed partial class TacticalBattle
             var ok = false;
             for (var j = 0; j < Combatant.PartySlots; j++)
             {
-                if (list[j].Dist != FarAway && Map.LineBlocked(spot, Battle[list[j].Who].Position, e, list[j].Who, 0x80) == 0)
+                if (list[j].Dist != FarAway && Map.LineBlocked(spot, Battle[list[j].Who].Position, e, list[j].Who, 0x80, residue) == 0)
                 {
                     ok = true;
                 }
@@ -537,7 +547,7 @@ public sealed partial class TacticalBattle
             return false;
         }
         GivePath(e);
-        // orig: R018+0x113A (1F43:0C8A) 0E00: `es:[e * 0xFA + 0x624C] = 0xFF` right after path_give, the path array starting at 20A5:6238: byte 20.
+        // orig: R018+0x113A (1F43:0C8A) 0E00: `es:[e * 0xFA + 0x624C] = 0xFF` right after route-hand-over, the path array starting at 20A5:6238: byte 20.
         en.Path[20] = 0xFF;
         en.Action = CombatAction.Walk;
         en.PathIndex = 0;

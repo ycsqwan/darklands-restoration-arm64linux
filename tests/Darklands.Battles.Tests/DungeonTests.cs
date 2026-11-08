@@ -248,7 +248,7 @@ public sealed class DungeonTests
         Shot(screen, "stairs");
         Assert.True(tactics.Menus.On(OrdersItem.UseStairs));
         tactics.ToggleGroup();
-        // G ends with the order menu reset (R016+0x0BD6): the next tick's party_locations turns Use Stairs on again
+        // G ends with the order menu reset (R016+0x0BD6): the next tick's party-place-table turns Use Stairs on again
         Assert.False(tactics.Menus.On(OrdersItem.UseStairs));
         Run(tactics, 8);
         Assert.True(tactics.Menus.On(OrdersItem.UseStairs));
@@ -258,6 +258,41 @@ public sealed class DungeonTests
         Assert.Equal(to, b.FloorShown);
         Assert.Equal(to, b.PartyFloor);
         Assert.All(Enumerable.Range(0, Combatant.PartySlots).Where(i => b[i].IsAble), i => Assert.Equal(to, b[i].Floor));
+    }
+
+    /// <summary>
+    /// R023+0x1618 (use-exit): when the party has gone over, the new level is drawn with floor-view-paint(who): the view's centre becomes the
+    /// cell of the member whose move completed the party's, where it was placed (not the centre the old level was shown around). Lockstep
+    /// dungeon-king-door (local/batch/b32/a7-king): the members' screen places saved one pass after the ladder agree only so.
+    /// </summary>
+    [Fact]
+    public void TheNewLevelIsShownAroundTheMemberWhoTookTheStairs()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var (screen, tactics) = Start(0x0B, 4242);
+        var b = tactics.Battle;
+        var level = tactics.Level;
+        var spot = Centre(level, StairsAt);
+        for (var i = 0; i < Combatant.PartySlots; i++)
+        {
+            if (b[i].IsAble)
+            {
+                b[i].Position = spot;
+            }
+        }
+        Run(tactics, 16);
+        tactics.ToggleGroup();
+        Run(tactics, 8);
+        var before = screen.ViewCentre;
+        tactics.UseKey(-1);
+        // travelling together every able member takes the leader's stairs in slot order (R016+0x1182): the last one completes the party's
+        // move, and the view is drawn around it
+        var last = b[Enumerable.Range(0, Combatant.PartySlots).Last(i => b[i].IsAble)];
+        Assert.Equal((last.Position.X >> 5, last.Position.Y >> 4), screen.ViewCentre);
+        Assert.NotEqual(before, screen.ViewCentre);
     }
 
     /// <summary>
@@ -298,7 +333,7 @@ public sealed class DungeonTests
 
     /// <summary>
     /// The fortress varies its furniture: each level shown puts its own record of the set named at level byte 0x33C8 (byte 0x33D2) in
-    /// furniture tile byte 0x33D1 (level_switch R024+0x059A → R024+0x07A2), its footprint and height with it.
+    /// furniture tile byte 0x33D1 (level-change R024+0x059A → R024+0x07A2), its footprint and height with it.
     /// </summary>
     [Fact]
     public void EachFortressLevelShowsItsOwnFurniture()
@@ -326,5 +361,45 @@ public sealed class DungeonTests
         }
         Assert.Contains(0x17, records);
         Assert.Contains(0x1D, records);
+    }
+
+    /// <summary>root 0000:1A9C (member-gauge-bars) with R014+0xDC4E..0xDD17 and R017+0x001E..0x004C: a member stepping into a doorway gets
+    /// "near a door" (DS:01A8 → DS:0049) in its row in place of the bars, which stays until the row is drawn again; stepping out draws the
+    /// bars; a full view redraw (floor-view-paint) shows the note of everyone standing in a place; in real combat the bars stay.</summary>
+    [Fact]
+    public void AMemberSteppingIntoADoorwayShowsNearADoorUntilTheRowIsDrawnAgain()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var (screen, tactics) = Start(0x5E, 4545);
+        var level = tactics.Level;
+        var door = Enumerable.Range(0, level.GetByte(0x1F52)).First(d => (short)level.GetWord(DoorsAt + 14 * d) > 0
+            && level.GetByte(DoorsAt + 14 * d + 4) > 0 && level.GetByte(DoorsAt + 14 * d + 5) > 0);
+        var at = DoorsAt + 14 * door;
+        var i = Enumerable.Range(0, Combatant.PartySlots).First(k => tactics.Battle[k].IsAble);
+        var c = tactics.Battle[i];
+        var outside = c.Position;
+        void Locations() => typeof(TacticalBattle).GetMethod("PartyLocations", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(tactics, []);
+        tactics.Battle.RealCombat = false;
+        c.Position = new MapPoint(level.GetWord(at), level.GetWord(at + 2));
+        c.Flags &= ~(TacticalFlags.InDoorway | TacticalFlags.PlaceChanged);
+        Locations();
+        Assert.Equal("near a door", screen.PlaceNote(i));
+        Locations();
+        Assert.Equal("near a door", screen.PlaceNote(i));       // no row drawn: the note stays
+        screen.RowChanged(i);
+        Assert.Null(screen.PlaceNote(i));                       // the row drawn again: the bars
+        screen.MapChanged();
+        Assert.Equal("near a door", screen.PlaceNote(i));       // floor-view-paint: every member in a place
+        c.Position = outside;
+        Locations();
+        Assert.Null(screen.PlaceNote(i));                       // out of the doorway: the row drawn with the bars
+        tactics.Battle.RealCombat = true;
+        c.Position = new MapPoint(level.GetWord(at), level.GetWord(at + 2));
+        Locations();
+        Assert.Null(screen.PlaceNote(i));
     }
 }

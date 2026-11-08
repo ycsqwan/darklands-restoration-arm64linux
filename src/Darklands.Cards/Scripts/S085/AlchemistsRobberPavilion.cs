@@ -64,7 +64,8 @@ public sealed class AlchemistsRobberPavilion : Card
     {
         c.RemoveItemsWithFlags(Who.Everybody, AlchemyFlags);
         ShowPicture(c, 106);
-        // UNCERTAIN: the text pays out $Money1, which this card never sets (a stale value from an earlier card).
+        // C: the text pays out $Money1, which this card never sets (R085+0x162C..0x167B: the goods are removed, the text shown, the party leaves;
+        //   no purse change, no store to $Money1): what an earlier card left, as the shared variable here.
         c.Screen.Text(1);
         LeaveTheScene(c);
     }
@@ -92,7 +93,7 @@ public sealed class AlchemistsRobberPavilion : Card
     // orig: R085+0x1524 (1973:0174) matched; tests: CardSmokeTests
     private static void FightTheAlchemist(CardContext c)
     {
-        // C: arguments are evaluated right to left: the guards' count (rand_mod(5)) is drawn before the first group's.
+        // C: arguments are evaluated right to left: the guards' count (roll-below(5)) is drawn before the first group's.
         var second = c.Random(5) + 3;
         var first = c.Random(2) + c.PartyLoreLevel() / 4 + 1;
         var third = c.PartyLoreLevel() / 5 != 0 ? 1 : 2;

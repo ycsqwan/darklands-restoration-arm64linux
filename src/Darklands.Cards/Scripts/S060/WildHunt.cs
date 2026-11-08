@@ -10,7 +10,7 @@ namespace Darklands.Cards.Scripts;
 /// or invoke the saint the quest named.
 /// </summary>
 // orig: R060+0x0978 (18CF:0008) matched; tests: CardSmokeTests
-// orig: handler setup R060+0x1282 (opt_on[*]=0, screwed-up handler 09b4 for all 20 lines, item handlers
+// orig: handler setup R060+0x1282 (card-option-enabled[*]=0, screwed-up handler 09b4 for all 20 lines, item handlers
 // 09ec/0a28/0a64/0aa0, saint handlers 0adc/0b66/0bf0/0c7a: standard pop-ups)
 public sealed class WildHunt : Card
 {
@@ -41,7 +41,7 @@ public sealed class WildHunt : Card
         menu.Enable(0, 1, 2, 3, 4);
 
         // The quest names the saint that banishes the Hunt and an item.
-        // C: p = events[event_find(8, -1, -1, -1, DS:EE72 = 7, -1)]: the argument also stores 7 in DS:EE72 (text window state, not modelled);
+        // C: p = events[event-search(8, -1, -1, -1, DS:EE72 = 7, -1)]: the argument also stores 7 in DS:EE72 (text window state, not modelled);
         // p+0x2A is the saint, p+0x2C the item.
         // DIVERGENCE: when no quest event exists the original indexes events[-1]; here saint and item are 0.
         var quest = c.Events[c.Events.Find(Core.Events.EventKinds.Quest, -1, -1, -1, HuntQuest, -1)];
@@ -51,7 +51,7 @@ public sealed class WildHunt : Card
         c.Variables.Texts[1] = c.World.ItemName(item);
         if (!c.KnowsSaint(Who.Everybody, saint))
         {
-            // C: member_bit(-2, saint) false: opt_flag_4 = 0.
+            // C: member-flag-bit(-2, saint) false: card-option-flag-4 = 0.
             menu[4] = OptionState.Hidden;
         }
         c.SetCardSaints(0x2F, 0x39, 0x45);
@@ -76,8 +76,8 @@ public sealed class WildHunt : Card
             new MenuLine(_ => Fight(c), OptionHint.Saying(CardTexts.EnterCombat)),
             // orig: R060+0x11FC (line 4); handler R060+0x124A (select saint)
             new MenuLine(_ => BanishTheHunt(c), OptionHint.Saying(CardTexts.SelectSaint)),
-            // DORMANT: lines 5..9 keep the "screwed up." handler of the setup function (09b4); opt_on[5..9] stay 0
-            // (the loop copies only opt_flag_0..4) and the action switch has no case for them.
+            // DORMANT: lines 5..9 keep the "screwed up." handler of the setup function (09b4); card-option-enabled[5..9] stay 0
+            // (the loop copies only card-option-flag-0..4) and the action switch has no case for them.
             // orig: R060+0x1324
             new MenuLine(_ => { }, OptionHint.Saying(CardTexts.ScrewedUp)),
             new MenuLine(_ => { }, OptionHint.Saying(CardTexts.ScrewedUp)),
@@ -91,7 +91,7 @@ public sealed class WildHunt : Card
     // orig: R060+0x0E6E (18CF:04FE)
     private static OptionHint DeerChance(CardContext c)
     {
-        // C: count_items_flags(-2, 0x20, 0): the flag word is passed as low and high halves; (max Woodwise << 1) / 3.
+        // C: item-tally-by-flags(-2, 0x20, 0): the flag word is passed as low and high halves; (max Woodwise << 1) / 3.
         if (c.CountItemsWithFlags(Who.Everybody, BowFlag) != 0)
         {
             return OptionHint.Say(DeathForThePrey);
@@ -101,15 +101,19 @@ public sealed class WildHunt : Card
     }
 
     /// <summary>
-    /// The original handler leaves the chance unset when not everybody rides (a stack leftover);
-    /// here it is the least agile member's effective Agility the handler looks up.
+    /// The original handler leaves the chance unset when not everybody rides. Rated for the choice, that word is what the display
+    /// driver's pointer hide has just written (0x0240): outrunning then always works. For a hint shown over the line it is another
+    /// call's leftover; here the least agile member's effective Agility the handler looks up.
     /// </summary>
     // orig: R060+0x0FF4 (18CF:0684)
-    // C: with everybody mounted: r.a = party_min_skill(Riding), r.b = (unsigned char)best_member, r.a += mount quality
-    // (item_quality_flags(best_member, 0x2000, 0)), r.a = clamp99(r.a). Otherwise party_min_eff_attr2() is called and r.a is never written.
-    // DIVERGENCE: the original returns the uninitialised r.a (a stack leftover) as the chance when not everybody rides;
-    // here the effective Agility that party_min_eff_attr2() returns is used.
-    // C: the disassembly (R060+0x0FF4) leaves the chance word [bp-4] unwritten on that path: it is a stack leftover.
+    // C: with everybody mounted: r.a = party-ability-low(Riding), r.b = (unsigned char)top-scoring-member, r.a += mount quality
+    // (item-grade-flags(top-scoring-member, 0x2000, 0)), r.a = limit-to-0-99(r.a). Otherwise party-effective-stat-two-low() is called and r.a
+    // ([bp-4], `enter 4,0`) is never written (R060+0x103C..0x1049).
+    // C: the loop rates the line right after pointer-hide at the same SP (R060+0x0B37, then R060+0x0B48 / 0x0B55), with the pointer drawn
+    //   (pointer-show R060+0x0B16): the driver's hide (MGRAPHIC slot 15, drv+0x023D `call 0x0253`) leaves 0x0240 in that word, as in
+    //   $Polit01 (HandbillThugs_Polit01.PickedPopupChance); the action R060+0x0ED8 `cmp ax,[bp+6]; jle` then always succeeds (b32 C-fix).
+    // DIVERGENCE: for a hint shown over the line (card-mouse-handler R043+0x26C4) the original shows another stack leftover as the chance;
+    // here the effective Agility that party-effective-stat-two-low() returns.
     private static OptionHint OutrunChance(CardContext c)
     {
         if (c.PartyGet(5) != 0)
@@ -120,23 +124,26 @@ public sealed class WildHunt : Card
             return new OptionHint(Math.Clamp(chance, 0, 99), "", rider);
         }
         var agility = c.PartyMinEffectiveAgility();
-        return new OptionHint(agility, "", c.BestMember);
+        return new OptionHint(c.RatingTheChoice ? PointerHideWord : agility, "", c.BestMember);
     }
+
+    /// <summary>The word the display driver's pointer hide leaves where an unset handler result lies when the loop rates the choice.</summary>
+    private const int PointerHideWord = 0x0240;
 
     // orig: R060+0x0CE8 (18CF:0378)
     private void OfferADeer(CardContext c, int chance)
     {
-        // C: v_si = rand_mod(100) is drawn first, then party_max_skill(Woodwise) is called for best_member only.
+        // C: local-in-si = roll-below(100) is drawn first, then party-ability-top(Woodwise) is called for top-scoring-member only.
         var roll = c.Random(100);
         c.PartyMaxSkill((int)Skill.Woodwise);
         var hunter = c.BestMember;
         c.Variables.Chosen[0] = hunter;
-        // C: count_items_flags(-2, 0x30, 0x800) = ItemFlags.MissileWeapon (0x0800_0030).
+        // C: item-tally-by-flags(-2, 0x30, 0x800) = ItemFlags.MissileWeapon (0x0800_0030).
         if (c.CountItemsWithFlags(Who.Everybody, ItemFlags.MissileWeapon) == 0)
         {
             ShowPicture(c, 16);
             c.Screen.Text(2);
-            // C: card_load_near(card_name, pic_buf) restores the main picture.
+            // C: card-run-near(card-title, image-buffer) restores the main picture.
             ShowPicture(c, HuntPicture);
             c.Next = Number;
             return;
@@ -150,7 +157,7 @@ public sealed class WildHunt : Card
             LeaveForTheMap(c);
             return;
         }
-        // C: p_6 < v_si && party_max_skill(Woodwise) >= v_si (the skill is only fetched when the roll missed).
+        // C: param-plus-6 < local-in-si && party-ability-top(Woodwise) >= local-in-si (the skill is only fetched when the roll missed).
         if (chance < roll && c.PartyMaxSkill((int)Skill.Woodwise) >= roll)
         {
             ShowPicture(c, HunterPicture);
@@ -184,14 +191,14 @@ public sealed class WildHunt : Card
                 c.PartyMinEffectiveAgility();
                 c.Variables.Chosen[0] = c.BestMember;
                 ShowPicture(c, 287);
-                // C: add_attr(-2, 0, rand_mod(10) + 5) comes between the picture and the text.
+                // C: raise-attribute-by(-2, 0, roll-below(10) + 5) comes between the picture and the text.
                 c.AddAttribute(Who.Everybody, (int)Attribute.Endurance, c.Random(10) + 5);
                 c.Screen.Text(7);
             }
             LeaveForTheMap(c);
             return;
         }
-        // C: -(rand_mod(6) - -2) = -(rand_mod(6) + 2).
+        // C: -(roll-below(6) - -2) = -(roll-below(6) + 2).
         c.AddAttribute(Who.Everybody, (int)Attribute.Endurance, -(c.Random(6) + 2));
         ShowPicture(c, 131);
         c.Screen.Text(8);
@@ -201,7 +208,7 @@ public sealed class WildHunt : Card
     // orig: R060+0x1052 (18CF:06E2); -1 from the saint pop-up (cancelled) changes nothing
     private void Pray(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -211,14 +218,14 @@ public sealed class WildHunt : Card
             if (c.MenuSlot == 1)
             {
                 // Saint Gertrude's mists carry the party to the nearest village.
-                // C: nearest_loc_type(party_x, 8) takes the party's map position (x, y) and the village icon 8.
+                // C: closest-place-of-kind(party-map-column, 8) takes the party's map position (x, y) and the village icon 8.
                 ShowPicture(c, 27);
                 c.Screen.Text(9);
                 c.State.CurrentLocation = c.NearestLocationOfType(c.State.MapPosition.X, c.State.MapPosition.Y, 8);
                 c.Next = 0x85;
                 return;
             }
-            // C: switch (menu_slot) { case 0: 0x2f; default: 0x45 } (slot 1 left above, so slot 2 and any other take 0x45).
+            // C: switch (menu-choice-index) { case 0: 0x2f; default: 0x45 } (slot 1 left above, so slot 2 and any other take 0x45).
             c.NameToSlot(1, c.MenuSlot == 0 ? 0x2F : 0x45, 2);
             c.WaitUntilHour(5);
             ShowPicture(c, HuntPicture);
@@ -269,7 +276,7 @@ public sealed class WildHunt : Card
     {
         var victim = c.Random(c.PartySize);
         var status = c.Status(victim);
-        // C: the original steps through party[v]+0x00 (1 = able, 2 = unconscious) until it finds one, wrapping at party_size.
+        // C: the original steps through party[v]+0x00 (1 = able, 2 = unconscious) until it finds one, wrapping at party-headcount.
         // DIVERGENCE: a party with nobody able or unconscious would hang the original; the loop here ends after 5 * MaxMembers steps.
         for (var tries = 0; status != CharacterStatus.Able && tries < 5 * Party.MaxMembers; tries++)
         {
@@ -291,7 +298,7 @@ public sealed class WildHunt : Card
         c.Events.ClearFacts(HuntQuest, -1);
     }
 
-    // C: cur_loc = -1; next_card = 0xC at the end of every path that leaves the card.
+    // C: location-now = -1; following-card = 0xC at the end of every path that leaves the card.
     private static void LeaveForTheMap(CardContext c)
     {
         c.State.CurrentLocation = -1;

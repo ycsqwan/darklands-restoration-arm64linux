@@ -31,7 +31,7 @@ public sealed class WorldCallsTests(Xunit.Abstractions.ITestOutputHelper output)
         public int[] Args => Job.Args;
 
         /// <summary>
-        /// Set by an adapter whose rewrite call did more than the original function: the road encounter's card, which overland_loop R030+0x02C0
+        /// Set by an adapter whose rewrite call did more than the original function: the road encounter's card, which world-map-loop R030+0x02C0
         /// chooses (its sel == 1000 branch) right after 0c44 returns 1300's 1000, with no draw in between (0c44 returns at once). The rewrite's
         /// first draws must then be the original's exactly (the generator's state after as many draws as the original made is the original's);
         /// the draws after them are the loop's.
@@ -195,7 +195,9 @@ public sealed class WorldCallsTests(Xunit.Abstractions.ITestOutputHelper output)
         }
         var changed = SaveSections.Differences(ob, oa);
         changed.UnionWith(SaveSections.Differences(cb, ca));
-        var apart = SaveSections.Differences(oa, ca).Where(changed.Contains).OrderBy(k => k.Item1).ThenBy(k => k.Item2).ThenBy(k => k.Item3).ToList();
+        // A record a call creates (or removes) is in 'changed' only as (section, record, -1) / (section, record, -2): the bytes of that record are
+        // compared too (the audit of batch 17: the contents of the events a call appends went uncompared before).
+        var apart = SaveSections.Differences(oa, ca).Where(k => changed.Contains(k) || changed.Contains((k.Item1, k.Item2, -1)) || changed.Contains((k.Item1, k.Item2, -2))).OrderBy(k => k.Item1).ThenBy(k => k.Item2).ThenBy(k => k.Item3).ToList();
         if (apart.Count > 0)
         {
             var k = apart[0];

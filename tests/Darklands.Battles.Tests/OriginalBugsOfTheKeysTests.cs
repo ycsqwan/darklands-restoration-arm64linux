@@ -9,7 +9,7 @@ namespace Darklands.Battles.Tests;
 /// <summary>
 /// Three original bugs reachable in play and reproduced behind <see cref="OriginalBehaviour"/> flags (faithful = the bug, the fix =
 /// the behaviour the rewrite had before): the stairs key with nobody selected (R016+0x014E), Esc with nobody selected (R016+0x13D4)
-/// and the stairs record's wall mark lost by level_switch (R023+0x1618 / R024+0x05B4).
+/// and the stairs record's wall mark lost by level-change (R023+0x1618 / R024+0x05B4).
 /// </summary>
 public sealed class OriginalBugsOfTheKeysTests
 {
@@ -137,6 +137,29 @@ public sealed class OriginalBugsOfTheKeysTests
         t.PauseByte = 0x11;
         t.ChoosePlace(PlaceAction.Halt);
         Assert.Equal(1, t.PauseByte);
+    }
+
+    /// <summary>M with nobody selected (the Attack menu's Missile entry on): R016+0x156E has no test of DS:A6B2, so the order becomes 0x80 and
+    /// 15BE clears bit 0x10 of the pause byte; with the fix the byte is left alone.</summary>
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0x11)]
+    public void MissileWithNobodySelectedTakesTheOrder(bool fixedByte, int pauseByte)
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var t = Start(new OriginalBehaviour { FixEscapeWithoutSelectionPauseByte = fixedByte });
+        Assert.Equal(-1, t.Selected);
+        Assert.Equal(-1, t.OrderAction);
+        t.PauseByte = 0x11;
+        t.ChooseOrder(0x80);
+        Assert.Equal(0x80, t.OrderAction);
+        Assert.Equal(pauseByte, t.PauseByte);
+        // W / F (action 1) are reached only with a selection and change nothing here
+        t.ChooseOrder(1);
+        Assert.Equal(0x80, t.OrderAction);
     }
 
     private static (TacticalBattle Tactics, int Record, int To, int Wall) Prepare(OriginalBehaviour behaviour)

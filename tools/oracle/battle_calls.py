@@ -20,6 +20,7 @@ export    the kept inputs of battle_fuzz.py with the states they start from, as 
 from __future__ import annotations
 
 import argparse
+import os
 import gzip
 import json
 import pickle
@@ -41,8 +42,10 @@ FAR_SEG = 0x20A5                       # link-time segment of the level image, t
 PACK_SEG = 0x2E38                      # link-time segment of the packs (party 003E + 0x180 k, enemies 0BDE + 0x60 k): the first PACK_SIZE bytes
 PACK_SIZE = 0x1100
 FAR2_VAR = 0x7D4A                    # DS word: the segment of the twin doors (+0xC00) and the doors opened (+0xBB6)
+WAVE_VAR, WAVE_AT, WAVE_SIZE = 0x7D44, 0x0BE2, 30      # DS word: the segment of the reinforcement wave's encounter record (+0xBE2, 30 bytes; R014+0x2721
+                                                     # reads its batch +0x1A and pool +0x1B there), copied by enemy-placement mode 0 when DS:D6EB is set
 REPO = HERE.parent.parent
-GAME = REPO.parent / "game" / "DARKLAND"       # as rerun_all.py: the game folder beside the code folder
+GAME = Path(os.environ.get("DARKLANDS_ROOT") or REPO.parent) / "game" / "DARKLAND"       # as rerun_all.py: the game folder of the project root
 
 
 def u32(b: bytes) -> int:
@@ -156,11 +159,27 @@ class State:
         self.cat = Catalog(exe)
         self.draws: list[int] = []
         self.m.hook(*RAND_FN, lambda m: self.draws.append(u32(m.read(DS, HOLDRAND, 4))))
+        # the tick wait of the game's delay routine (root 0410:0302: loops until the timer interrupt moves the tick byte DS:07D2). A call has no interrupts
+        # (and the machine would need ~10^7 bytes of code a tick), so each pass of the wait takes the counters of one timer callback (root 047C:0038..0050:
+        # the combat clock DS:07D4 unless held by DS:07D3, bytes 07D0 07D1 07D2 07D9, word 07D6): n ticks of the game's clock, as the game's wait would see
+        self.m.hook(P(0x0410), 0x0314, self._wait_tick)
+        self.answer = 0
+        if "R022+0x03E4" in near:
+            # the yes/no question (root 0000:2522, the message box with two buttons) of yield-action: answered at once with the job's first argument
+            self.m.stub(P(0x0000), 0x2522, lambda m: (self.answer, 0), record="root")
         self.stop_at = None             # (linear entry, SP when the near function has returned)
         for coord in near:
             i = self.cat.info(coord)
             self.m.hook(i["seg"], i["off"], self._near_end, record="R%03d" % i["record"])
         self.restore()
+
+    @staticmethod
+    def _wait_tick(m):
+        if m.byte(DS, 0x07D3) == 0:
+            m.write(DS, 0x07D4, struct.pack("<H", (m.word(DS, 0x07D4) + 1) & 0xFFFF))
+        for a in (0x07D0, 0x07D1, 0x07D2, 0x07D9):
+            m.write(DS, a, bytes([(m.byte(DS, a) + 1) & 0xFF]))
+        m.write(DS, 0x07D6, struct.pack("<H", (m.word(DS, 0x07D6) + 1) & 0xFFFF))
 
     def _near_end(self, m):
         if self.stop_at is not None and m.reg("SP") == self.stop_at[1] and linear(m.reg("CS"), m.reg("IP")) == self.stop_at[0]:
@@ -179,6 +198,8 @@ class State:
         self.far2_seg = m.word(DS, FAR2_VAR)          # the segment DS:7D4A names (the twin doors at +0xC00, the doors opened at +0xBB6)
         self.far2_base = bytes(m.uc.mem_read(self.far2_seg * 16, 0x10000))
         self.far3_base = bytes(m.uc.mem_read(P(PACK_SEG) * 16, PACK_SIZE))
+        self.wave_seg = m.word(DS, WAVE_VAR)
+        self.wave_base = bytes(m.uc.mem_read(self.wave_seg * 16 + WAVE_AT, WAVE_SIZE))
         loot = m.vfs.files.get(LOOT_FILE)
         self.loot_base = None if loot is None else bytes(loot)           # the loot file (DS:1162 names it): the piles and chests keep offsets into it
 
@@ -187,9 +208,9 @@ class State:
         import base64
         return {"fight": self.fight, "pass": self.pass_no, "ds": base64.b64encode(gzip.compress(self.base, 1)).decode(),
                 "far": base64.b64encode(gzip.compress(self.far_base, 1)).decode(), "far2": base64.b64encode(gzip.compress(self.far2_base, 1)).decode(),
-                "far3": base64.b64encode(gzip.compress(self.far3_base, 1)).decode(),
+                "far3": base64.b64encode(gzip.compress(self.far3_base, 1)).decode(), "wave": self.wave_base.hex(),
                 "loot": "absent" if self.loot_base is None else base64.b64encode(gzip.compress(self.loot_base, 1)).decode(),
-                "randomState": u32(self.base[HOLDRAND:HOLDRAND + 4])}
+                "randomState": u32(self.base[HOLDRAND:HOLDRAND + 4]), "sp0": self.sp0}
 
     # ---- memory helpers (DS offsets, or a segment in memory)
     def ds(self, off: int, n: int) -> bytes:
@@ -239,10 +260,15 @@ class State:
             if seg_ == "loot":
                 m.vfs.files[LOOT_FILE] = bytearray(data)
                 continue
+            if seg_ == "wave":
+                m.write(self.wave_seg, WAVE_AT + o, data)
+                continue
             m.write(DS if seg_ is None else seg_, o, data)
         info = self.cat.info(coord)
         if not (info["record"] in m.resident or info["record"] == "root") and info["thunk"] is None:
             m.ensure(info["record"])
+        if coord in KEYED:
+            m.write(*orig_side.KEYBOARD_FLAGS, bytes([args[1] & 0xFF if len(args) > 1 else 0]))      # the second argument (round B3): the BIOS shift flags (bit 0/1 Shift, bit 2 Ctrl)
         if coord in KEYED and (args[0] & 0xFFFF) == 0:
             m.script = []                                      # no key waits: the held direction keys (DS:0880 / DS:0881) give the arrow
             m.waits, m.idle_since = 0, m.ms
@@ -254,16 +280,20 @@ class State:
             m.waits, m.idle_since = orig_side.IDLE_POLLS, -orig_side.IDLE_MS         # the game has been idle long enough: the first look at the keyboard finds the key
             m.idle_mark = (m.read(DS, orig_side.HOLDRAND, 4), m.word(DS, orig_side.CARD))
             args = ()
+        if coord in ASKED:
+            self.answer = args[0] & 0xFFFF           # the answer the question gets; the function itself takes no argument
+            args = ()
         if coord in MOUSED:
             m.releases = [args[0] & 0xFFFF, 0]
             m.presses = [0, 0]
             m.write(*orig_side.KEYBOARD_FLAGS, bytes([4 if args[1] else 0]))
-            m.mouse = [m.word(DS, orig_side.MOUSE_X), m.word(DS, orig_side.MOUSE_Y), m.byte(DS, orig_side.MOUSE_BUTTONS) & 1]
+            m.mouse = [m.word(DS, orig_side.POINTER_COLUMN), m.word(DS, orig_side.POINTER_ROW), m.byte(DS, orig_side.MOUSE_BUTTON_STATE) & 1]
             args = ()
         before = bytes(m.uc.mem_read(DS * 16, 0x10000))
         far_before = bytes(m.uc.mem_read(P(FAR_SEG) * 16, 0x10000))
         far2_before = bytes(m.uc.mem_read(self.far2_seg * 16, 0x10000))
         far3_before = bytes(m.uc.mem_read(P(PACK_SEG) * 16, PACK_SIZE))
+        wave_before = bytes(m.uc.mem_read(self.wave_seg * 16 + WAVE_AT, WAVE_SIZE))
         self.draws.clear()
         m.count = 0
         m.budget = budget or 2_000_000          # a call that goes on for more is not a function call of the game (bytes executed / 3)
@@ -298,8 +328,10 @@ class State:
         far2_changed = {j: far2_after[j] for j in range(0x0B00, 0x0D00) if far2_before[j] != far2_after[j]}      # the part the rewrite models
         far3_after = bytes(m.uc.mem_read(P(PACK_SEG) * 16, PACK_SIZE))
         far3_changed = {j: far3_after[j] for j in range(PACK_SIZE) if far3_before[j] != far3_after[j]}
+        wave_after = bytes(m.uc.mem_read(self.wave_seg * 16 + WAVE_AT, WAVE_SIZE))
+        wave_changed = {j: wave_after[j] for j in range(WAVE_SIZE) if wave_before[j] != wave_after[j]}
         loot = m.vfs.files.get(LOOT_FILE)
-        out = {"ax": ax, "dx": dx, "error": error, "loot": "absent" if loot is None else bytes(loot).hex(), "changed": changed, "far_changed": far_changed, "far2_changed": far2_changed, "far3_changed": far3_changed, "random": u32(after[HOLDRAND:HOLDRAND + 4]), "draws": list(self.draws),
+        out = {"ax": ax, "dx": dx, "error": error, "loot": "absent" if loot is None else bytes(loot).hex(), "changed": changed, "far_changed": far_changed, "far2_changed": far2_changed, "far3_changed": far3_changed, "wave_changed": wave_changed, "random": u32(after[HOLDRAND:HOLDRAND + 4]), "draws": list(self.draws),
                "seconds": secs, "instructions": m.count, "coverage": m.coverage_result()}
         if keep_state:
             out["after"], out["before"] = after, before
@@ -307,9 +339,10 @@ class State:
 
 
 MOUSED = {"R014+0xB576"}          # functions that read the mouse: the arguments are the left-button releases the driver counted and whether Ctrl is held
+ASKED = {"R022+0x03E4"}          # functions that ask a yes/no question: the first argument is the answer (1 yes), given by a stub of the question's function
 KEYED = {"R016+0x0000"}          # functions that read a key: the first argument is the key code (scan << 8 | character), given through the keyboard stubs
 
-GAPS: dict = {}          # (the loot is carried now: loot_after_fight is judged)
+GAPS: dict = {}          # (the loot is carried now: post-fight-loot is judged)
 
 
 def _runs(cat: "Catalog", coord: str, item: dict) -> bool:
@@ -337,7 +370,7 @@ def export(fuzz_folders, states_folder: Path, out: Path):
                 gaps = [why for coord, why in GAPS.items() if _runs(cat, coord, item)]
                 jobs.append({"gaps": gaps, "id": "%s|%s#%d" % (d["function"], d.get("label", name), item["iteration"]), "function": d["function"], "state": name,
                              "args": item["args"], "ops": item["ops"],
-                             "orig": {k: item[k] for k in ("ax", "dx", "changed", "far_changed", "far2_changed", "far3_changed", "random", "draws", "loot") if k in item}})
+                             "orig": {k: item[k] for k in ("ax", "dx", "changed", "far_changed", "far2_changed", "far3_changed", "wave_changed", "random", "draws", "loot") if k in item}})
     with gzip.open(out, "wt", encoding="utf-8", compresslevel=6) as f:
         json.dump({"fights": fights, "states": states, "jobs": jobs}, f)
     print("exported", len(jobs), "jobs,", len(states), "states ->", out)

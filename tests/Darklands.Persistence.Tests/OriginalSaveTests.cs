@@ -134,10 +134,10 @@ public sealed class OriginalSaveTests
     private const int BattlefieldImageSize = 0x33FC;
 
     /// <summary>
-    /// A saved game as the original's writer (R037+0x2ACE) writes it straight after loading it: party_size recounted from the slots,
+    /// A saved game as the original's writer (R037+0x2ACE) writes it straight after loading it: party-headcount recounted from the slots,
     /// and a party slot whose status is 0 written as nothing, without the charactr.tmp read past it, so the entries after it come that
-    /// many records late and the file that many records short of the count (DKSAVE40, from another tool: party_size 6 for four slots,
-    /// slots 0 and 1 of status 0; written by 483.07 in the lockstep oracle with party_size 4 and records 0, 1, 2, 3, 4, 7 of 8).
+    /// many records late and the file that many records short of the count (DKSAVE40, from another tool: party-headcount 6 for four slots,
+    /// slots 0 and 1 of status 0; written by 483.07 in the lockstep oracle with party-headcount 4 and records 0, 1, 2, 3, 4, 7 of 8).
     /// A file the original wrote itself comes back as it was.
     /// </summary>
     private static byte[] AsTheOriginalWritesIt(byte[] sav)
@@ -227,7 +227,7 @@ public sealed class OriginalSaveTests
     [Fact]
     public void ALoadedSlotOfStatusZeroPastThePartyKeepsItsIdAndIsSkippedToo()
     {
-        // The writer tests ids[] of all five slots: the last slot of status 0 is past party_size after loading, keeps its id, and its
+        // The writer tests ids[] of all five slots: the last slot of status 0 is past party-headcount after loading, keeps its id, and its
         // record is left out like any status-0 slot's (B-1cec30).
         var state = SampleGame();
         state.Behaviour = OriginalBehaviour.DataSafe;
@@ -289,6 +289,40 @@ public sealed class OriginalSaveTests
 
         Assert.Equal(SaveFile.LocationCount, loaded.Locations.Count);
         Assert.Equal(8, loaded.Roster.Characters.Count);
+    }
+
+    [Fact]
+    public void TwoSlotsNamingOneRecordReadTheRecordIntoTheFirstAndStaySo()
+    {
+        // A saved game whose slots 0 and 1 name one record (as party-join leaves it for a character already in the party). The reader
+        // R037+0x8ED4 reads each record into the first slot naming it (R037+0x96BE..0x96D3), so slot 1 gets nothing (an empty slot);
+        // the writer R037+0x2ACE writes ids[] as they are and the record from the first slot naming it (R037+0x3520..0x3531): the save
+        // keeps its two ids and its count, and gives the second slot no roster entry of its own.
+        var name = SaveFolderCopy.Names.FirstOrDefault(n => n.Equals("DKSAVE0.SAV", StringComparison.OrdinalIgnoreCase));
+        if (name is null)
+        {
+            return;
+        }
+        var sav = SaveFolderCopy.Read(name);
+        BitConverter.GetBytes(BitConverter.ToInt16(sav, 0xF3)).CopyTo(sav, 0xF5);
+        var count = BitConverter.ToInt16(sav, 0xF1);
+        var loaded = OriginalSaves.Read(sav, [], name, NoGameData.Instance);
+        var state = loaded.State;
+        // the slot the load screen asks "picsshield.pic" for (OriginalBehaviour.FixLoadTwoSlotsOneRecord)
+        Assert.Equal([1], loaded.SlotsWithoutRecord);
+        Assert.Equal(CharacterStatus.Empty, state.Party.Members[1].Status);
+        Assert.Equal(CharacterStatus.Able, state.Party.Members[0].Status);
+        state.Party.Members[0].Age = 70;
+
+        var bytes = OriginalSaves.Write(state).Sav;
+        var written = SaveFile.Parse(bytes);
+
+        Assert.Equal(count, BitConverter.ToInt16(bytes, 0xF1));
+        Assert.Equal(written.PartyIds[0], written.PartyIds[1]);
+        Assert.Equal(count, written.Characters.Count);
+        var again = OriginalSaves.Read(bytes, [], name, NoGameData.Instance).State;
+        Assert.Equal(70, again.Party.Members[0].Age);
+        Assert.Equal(CharacterStatus.Empty, again.Party.Members[1].Status);
     }
 
     private static int FirstDifference(byte[] a, byte[] b)
@@ -397,7 +431,7 @@ public sealed class OriginalSaveTests
         Assert.Equal((17, 30), (again[0x51], again[0x58]));
         // The bytes the model does not name are as they were.
         Assert.Equal(record.AsSpan(0x02, 0x10).ToArray(), again.AsSpan(0x02, 0x10).ToArray());
-        // item_delete moved the stale entry 3 down into entry 2 and left entry 3 as it was.
+        // item-erase moved the stale entry 3 down into entry 2 and left entry 3 as it was.
         Assert.Equal(record.AsSpan(0xAA + 3 * 6, 6).ToArray(), again.AsSpan(0xAA + 2 * 6, 6).ToArray());
         Assert.Equal(record.AsSpan(0xAA + 3 * 6, 0x22A - 0xAA - 3 * 6).ToArray(), again.AsSpan(0xAA + 3 * 6).ToArray());
     }
@@ -518,7 +552,7 @@ public sealed class OriginalSaveTests
         Assert.Equal([0, -1, 2, 3, -1], file.PartyIds);
         Assert.Equal(4, file.Characters.Count);
 
-        // add_member (R029+0x4650) there: a new entry, the figure argument, and the zero slot memory's weapon qualities (+0x58/+0x5A)
+        // join-party-member (R029+0x4650) there: a new entry, the figure argument, and the zero slot memory's weapon qualities (+0x58/+0x5A)
         back = OriginalSaves.Read(sav, [], "x.sav", NoGameData.Instance).State;
         Assert.Equal(1, Core.Rules.PartyRules.AddMember(back, "Wolf Bauer", "Wolf", "F01", 100, 1));
         file = SaveFile.Parse(OriginalSaves.Write(back).Sav);
@@ -561,12 +595,17 @@ public sealed class OriginalSaveTests
         Assert.Equal(first.State.BattleFile!.Variables, second.State.BattleFile!.Variables);
         Assert.Same(first.State.BattleFile.Compressor, second.State.BattleFile.Compressor);
         Assert.NotNull(OriginalSaves.Write(second.State).Bsv);
-        // Read in a program that holds no battle file, it is saved with the program start's (zero variables, no levels, no work files).
+        // Read in a program that holds no battle file, it is saved with the program start's (BattleFile.ProgramStartVariables: zeros but
+        // the level shown 0xFF and the timer word 1; no levels; no work files: the game host would give the folder's).
         var fresh = BattleSaveFile.Parse(OriginalSaves.Write(OriginalSaves.Read(SaveFolderCopy.Read("DKSAVE41.SAV"), [], "DKSAVE41.SAV", NoGameData.Instance).State).Bsv);
         // C: but for the marching order, one global with the header's (+0x9B): the battle file's copy (+0x1573) is the same six bytes.
         var loaded41 = OriginalSaves.Read(SaveFolderCopy.Read("DKSAVE41.SAV"), [], "DKSAVE41.SAV", NoGameData.Instance).State;
         Assert.Equal(loaded41.MarchingOrder, fresh.Variables[0x1573..0x1579]);
-        Assert.All(fresh.Variables.Take(0x1573).Concat(fresh.Variables.Skip(0x1579)), v => Assert.Equal(0, v));
+        Assert.Equal(0xFF, fresh.Variables[0x16D1]);
+        Assert.Equal(1, fresh.Variables[0x16DB]);
+        var rest = Core.Battles.BattleFile.ProgramStartVariables();
+        loaded41.MarchingOrder.CopyTo(rest, 0x1573);
+        Assert.Equal(rest, fresh.Variables);
         Assert.Empty(fresh.Levels);
         Assert.Null(fresh.File1162);
         Assert.Null(fresh.File1164);
@@ -609,7 +648,7 @@ public sealed class OriginalSaveTests
         }
     }
 
-    private static GameState SampleGame()
+    internal static GameState SampleGame()
     {
         var state = new GameState(new MscRandom(1234)) { Party = DefaultParty.Create(seed: 77), Date = new GameDate(9, 3, 4, 1401) };
         state.Roster.Reset(state.Party);

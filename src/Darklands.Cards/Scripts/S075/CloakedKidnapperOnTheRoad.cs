@@ -26,7 +26,7 @@ public sealed class CloakedKidnapperOnTheRoad : Card
         var menu = Menu(c);
         menu.Enable(0, 2);
         menu[1] = c.SaintsUsable();
-        // C: the loop calls card_menu without card_options or card_text (card_load draws only the picture), so the menu works
+        // C: the loop calls card-choice-menu without card-option-lines or card-text-block (card-run draws only the picture), so the menu works
         // C: on the option lines the screen last laid out (the previous card's last text) with this card's states and handlers.
         menu.DrawsOptions = false;
 
@@ -38,7 +38,7 @@ public sealed class CloakedKidnapperOnTheRoad : Card
             // R075+0x0FCC (18DA:05AC) matched; R075+0x1054 (18DA:0634) matched; tests: CardSmokeTests
             // C: the slot-3 pop-up handler is an empty function (its result is garbage); an empty hint here.
             new MenuLine(() => PrayForAid(c), OptionHint.Saying(CardTexts.SelectSaint), () => c.MenuSlot < 3
-                ? OptionHint.Say(c.ChanceText(c.SaintChanceLow(c.MenuMember, c.CardSaints[c.MenuSlot]), c.SaintChanceHigh(c.MenuMember, c.CardSaints[c.MenuSlot])), c.MenuMember)
+                ? OptionHint.Say(c.ChanceText(c.SaintChanceLow(c.MenuMember, c.CardSaints[c.MenuEntrySlot]), c.SaintChanceHigh(c.MenuMember, c.CardSaints[c.MenuEntrySlot])), c.MenuMember)
                 : OptionHint.Say("", c.MenuMember)),
             new MenuLine(() => Refuse(c), OptionHint.Saying(CardTexts.EnterCombat)),
             // orig: R075+0x0D88 (18DA:0368) matched; R075+0x0D90 (18DA:0370) matched; tests: CardSmokeTests
@@ -51,7 +51,7 @@ public sealed class CloakedKidnapperOnTheRoad : Card
     private static void PrayForAid(CardContext c)
     {
         c.Variables.Chosen[1] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

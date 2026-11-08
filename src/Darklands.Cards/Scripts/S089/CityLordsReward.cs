@@ -33,7 +33,7 @@ public sealed class CityLordsReward : Card
         c.SetCardItems(FormulaOfTheCity(c));
         // orig: R089+0x0C5C (18CE:02FC) matched
         // BUG: the original looks for a saint nobody in the party knows, starting from the city's own,
-        // but has no return statement: AX holds the last member_bit answer, 0 (checked against asm). So
+        // but has no return statement: AX holds the last member-flag-bit answer, 0 (checked against asm). So
         // saint 0.
         // DIVERGENCE: if the party knows all 0x88 saints the original's search never ends (the game hangs); saint 0 here too.
         c.SetCardSaints(0);
@@ -41,6 +41,10 @@ public sealed class CityLordsReward : Card
         // C: DS:5204 = 1 for the menu loop (back to 0 after): the pop-ups list the formula and the saint for every member.
         c.PopupListsAll = true;
         var menu = Menu(c, 2);
+        // C: the pop-up handlers (R089+0x1162.., R089+0x1252..) name the member picked in the box: the formula box says "Success is
+        // C: assured." beside the member, the saint box tells the prayer's chance for the party.
+        menu.ItemBox = () => c.MemberPopupHint();
+        menu.SaintBox = c.SaintPopupHint;
         menu.Enable(0, 1, 2, 3, 4);
         var next = menu.Run(
             // orig: R089+0x0C9C (18CE:033C); hint R089+0x0CE6 matched
@@ -67,8 +71,8 @@ public sealed class CityLordsReward : Card
     }
 
     /// <summary>The potion whose formula the city's alchemist offers, chosen by the city.</summary>
-    // orig: R089+0x0C08 (18CE:02A8) matched: card_items[0] = it
-    // C: cur_loc_query(0x21) % 6 is a signed remainder: a negative value falls to the default (0x74), as here.
+    // orig: R089+0x0C08 (18CE:02A8) matched: card-item-lines[0] = it
+    // C: location-now-query(0x21) % 6 is a signed remainder: a negative value falls to the default (0x74), as here.
     private static int FormulaOfTheCity(CardContext c)
     {
         var potion = (c.HereQuery(0x21) % 6) switch
@@ -94,7 +98,7 @@ public sealed class CityLordsReward : Card
     private static void LearnTheFormula(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        LearnFormulaGroup(c, c.MenuMember, c.CardSaints[c.MenuSlot]);
+        LearnFormulaGroup(c, c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         c.Screen.Text(3);
         c.PassHours(1);
         c.Next = ToTheSquare(c);
@@ -104,7 +108,7 @@ public sealed class CityLordsReward : Card
     /// All three formulas of a potion group (a byte of the members' formula tables, which follow
     /// each other: group −1 is the previous member's last group).
     /// </summary>
-    // C: formulas_known[member][slot] = 7 writes byte member × 22 + slot of the five members' tables;
+    // C: known-recipes[member][slot] = 7 writes byte member × 22 + slot of the five members' tables;
     // slot −1 reaches the previous member's last byte. DIVERGENCE: for member 0 and slot −1 the original
     // writes the byte before the table; here nothing is written.
     private static void LearnFormulaGroup(CardContext c, int member, int group)
@@ -122,7 +126,7 @@ public sealed class CityLordsReward : Card
     private static void LearnAboutTheSaint(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         // C: for saint −1 the bit is 0x80 >> −1 % 8 = 0x80 >> −1, a shift count masked to 31: no bit is set.
         if (saint >= 0)
         {

@@ -21,6 +21,19 @@ public sealed class SaveFolder(string path)
 {
     public string Path { get; } = path;
 
+    /// <summary>
+    /// The mods of the game being played (null: none, Classic). With mods, or for a game played with mods before
+    /// (<see cref="ModdedSaves.ModsUsed"/>), every save gets a companion file (<see cref="ModdedSaves"/>); the .SAV stays in the original format.
+    /// </summary>
+    public SaveMods? Mods { get; init; }
+
+    /// <summary>
+    /// A host's notice (null: none): called with the file name and true just before a saved game is read, and with the name and false
+    /// after one is written. It reads and writes nothing of the game; a report helper copies the files with it (docs/REPORTING.md).
+    /// </summary>
+    // Host feature, not part of the original: the game's files and behaviour are unchanged.
+    public Action<string, bool>? Used { get; init; }
+
     /// <summary>The saved games, as _dos_findfirst("saves\\*.sav") / _dos_findnext list them.</summary>
     // DIVERGENCE: DOS lists the files in directory order (the order they were made in, holes reused); here they are in name order.
     // C: *.sav in DOS matches 8.3 names with the extension SAV; longer extensions ("DKSAVE0.SAV.bak") are not listed.
@@ -47,6 +60,27 @@ public sealed class SaveFolder(string path)
         return new SaveSummary(fileName, Text(h, 0, 0x15), Text(h, 0x15, 0x4F), Word(h, 0x68), Word(h, 0x6A), Word(h, 0x6C), Word(h, 0x6E));
     }
 
+    /// <summary>
+    /// Whether the saved game belongs to a modded game: its companion file is there and is its own (<see cref="ModdedSaves.IsCompanionOf"/>).
+    /// False for a plain saved game, and for a companion file left from an earlier save of that name.
+    /// </summary>
+    // New code (no original): the load screen's mod mark (LoadGameScreen, only in the presets that draw clean).
+    public bool IsModded(string fileName)
+    {
+        if (Find(ModdedSaves.CompanionOf(fileName)) is not { } companion || Find(fileName) is not { } sav)
+        {
+            return false;
+        }
+        try
+        {
+            return ModdedSaves.IsCompanionOf(File.ReadAllText(companion), File.ReadAllBytes(sav));
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>The name the next save takes: dksaveN.sav for the first N without a file.</summary>
     // orig: `do { strcpy(pathh, "saves\\dksave"); itoa(kh++, numk, 10); strcat(pathh, numk); strcat(pathh, ".sav"); } while (!_dos_findfirst(pathh, 0, &ffc));`
     // C: the name kept in DS:A680 is lower case ("dksave3.sav"); DOS stores it upper case.
@@ -62,12 +96,37 @@ public sealed class SaveFolder(string path)
         }
     }
 
+    /// <summary>
+    /// Whether the saved game is cut short: its file ends inside what its own counts say it holds (<see cref="SaveFile.RunsPastTheEnd"/>), or its
+    /// battle file is there but cannot be read whole (<see cref="BattleSaveFile.IsReadable"/>: the original's restore reads it whatever the
+    /// game was saved in, and ends the program on a short or corrupt one; a missing battle file is fine).
+    /// </summary>
+    public bool IsDamaged(string fileName) =>
+        Find(fileName) is { } file && (SaveFile.RunsPastTheEnd(File.ReadAllBytes(file))
+            || Find(BattleFileOf(fileName)) is { } battle && !BattleSaveFile.IsReadable(File.ReadAllBytes(battle)));
+
     /// <summary>Reads a saved game and its battle file.</summary>
     public LoadedGame Load(string fileName, IGameData data, GameState? running = null)
     {
+        Used?.Invoke(fileName, true);
         var sav = File.ReadAllBytes(Find(fileName) ?? throw new FileNotFoundException(fileName));
         var bsv = Find(BattleFileOf(fileName)) is { } battle ? File.ReadAllBytes(battle) : [];
-        return OriginalSaves.Read(sav, bsv, fileName, data, running);
+        var loaded = OriginalSaves.Read(sav, bsv, fileName, data, running);
+        // a game saved with mods: its companion file marks it and gives the mods' card numbers back (ModdedSaves)
+        if (Find(ModdedSaves.CompanionOf(fileName)) is { } companion)
+        {
+            string text;
+            try
+            {
+                text = File.ReadAllText(companion);
+            }
+            catch (IOException e)
+            {
+                return loaded with { Mods = new ModdedLoad([], $"the companion file cannot be read ({e.Message}); the game loads as a plain saved game") };
+            }
+            return loaded with { Mods = ModdedSaves.Apply(text, sav, loaded.State, Mods) };
+        }
+        return loaded;
     }
 
     /// <summary>Saves the game under the next free name and returns that name.</summary>
@@ -77,11 +136,26 @@ public sealed class SaveFolder(string path)
     {
         Directory.CreateDirectory(Path);
         var name = NextName();
-        var (sav, bsv) = OriginalSaves.Write(state, comment, music, soundEffects, inBattle);
+        var cards = ModdedSaves.CardsOf(state);
+        var (sav, bsv) = OriginalSaves.Write(state, comment, music, soundEffects, inBattle, Mods?.SavedCardOf);
         File.WriteAllBytes(System.IO.Path.Combine(Path, name.ToUpperInvariant()), sav);
         var battle = BattleFileOf(name);
         File.WriteAllBytes(Find(battle) ?? System.IO.Path.Combine(Path, battle.ToUpperInvariant()), bsv);
         OriginalSaves.Saved(state, name, sav);
+        // DIVERGENCE: no original: a game with mods (loaded now, or played with before) is marked by a companion file beside the .SAV;
+        //   a companion file left over from an earlier save of this name (deleted outside this program) is removed. Classic writes none.
+        var active = Mods?.Active ?? [];
+        ModdedSaves.MarkUsed(state, active);
+        var companion = Find(ModdedSaves.CompanionOf(name));
+        if (ModdedSaves.ModsUsed(state).Count > 0)
+        {
+            File.WriteAllText(companion ?? System.IO.Path.Combine(Path, ModdedSaves.CompanionOf(name)), ModdedSaves.Write(state, sav, name, cards, active));
+        }
+        else if (companion is not null)
+        {
+            File.Delete(companion);
+        }
+        Used?.Invoke(name, false);
         return name;
     }
 
@@ -106,10 +180,15 @@ public sealed class SaveFolder(string path)
         {
             File.Delete(bsv);
         }
+        // DIVERGENCE: no original: a modded game's companion file goes with it
+        if (Find(ModdedSaves.CompanionOf(fileName)) is { } companion)
+        {
+            File.Delete(companion);
+        }
         return true;
     }
 
-    // C: `path[strlen(path) - 3] = 0; strcat(path, "bsv");` (the delete) and sprintf("saves\\%s.bsv", name less its last 4 characters) (battle_save).
+    // C: `path[strlen(path) - 3] = 0; strcat(path, "bsv");` (the delete) and sprintf("saves\\%s.bsv", name less its last 4 characters) (battle-store).
     private static string BattleFileOf(string fileName) => fileName.Length >= 3 ? fileName[..^3] + "bsv" : fileName + ".bsv";
 
     /// <summary>The file of that name in the folder, whatever the case of its letters (DOS names are case-blind).</summary>

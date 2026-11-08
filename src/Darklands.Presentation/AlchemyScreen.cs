@@ -8,8 +8,8 @@ using Attribute = Darklands.Core.Characters.Attribute;
 
 namespace Darklands.Presentation;
 
-// orig: alchemy_screen R033+0x0000 (1462:0000) draft (register-level diffs); tests: CampAndSheetRulesTests (the bench), visual
-// C: the menu bar (menu_bar_run) comes with every GameUi.Poll (MenuBar).
+// orig: alchemy-screen-entry R033+0x0000 (1462:0000) draft (register-level diffs); tests: CampAndSheetRulesTests (the bench), visual
+// C: the menu bar (menu-bar-loop) comes with every GameUi.Poll (MenuBar).
 /// <summary>
 /// The alchemy screen. The batch page lists the alchemist's formulas on a scroll (Up/Down or
 /// a click picks one) with "Use this formula" and "Do something else"; the formula page sets
@@ -70,6 +70,7 @@ public sealed class AlchemyScreen(GameUi ui, PartyPanel panel, IReadOnlyList<For
                 {
                     // C: the original takes back the member's brews once more on leaving (R033+0x14E6); none are left by then.
                     _bench.TakeBackUnfinishedBrews();
+                    Leave();
                     return;
                 }
                 // C: k = count - x4, where x4 (the batch record's third word) is never set in this screen, so it is 0: the batches are all given back.
@@ -85,6 +86,7 @@ public sealed class AlchemyScreen(GameUi ui, PartyPanel panel, IReadOnlyList<For
             if (_formulaPage && Keys.IsLetter(key, 's') && Selected.Count != 0)
             {
                 _bench.Brew(Selected, place, key);
+                Leave();
                 return;
             }
             if (key != Keys.None)
@@ -101,7 +103,12 @@ public sealed class AlchemyScreen(GameUi ui, PartyPanel panel, IReadOnlyList<For
         }
     }
 
-    /// <summary>The batch or formula page again, as the loop does after the party information (party_icons_dirty).</summary>
+    /// <summary>The screen's exit (both ways out of the loop: Esc / D and a brew).</summary>
+    // orig: R033+0x0628 from R033+0x061D: the fonts back, DARKLAND.ALC freed, pointer-shape-set(0, 0, DS:9C42) at R033+0x064D: a camp opened
+    //   from the map has the gauntlet's hot spot (0, 0) after the alchemy (GameUi.PointerHotSpot); tests: PointerHotSpotTests
+    private void Leave() => (ui.PointerHotSpot, ui.PointerShape) = ((0, 0), null);
+
+    /// <summary>The batch or formula page again, as the loop does after the party information (party-icons-stale).</summary>
     // orig: R033+0x047F..0x04DA
     // C: the picture DS:3232 loaded and shown, the party panel drawn again, then the batch page (DS:324E == 0) or the formula page
     private void RedrawAfterPartyInformation()
@@ -117,7 +124,7 @@ public sealed class AlchemyScreen(GameUi ui, PartyPanel panel, IReadOnlyList<For
         }
     }
 
-    // orig: R033+0x16FA (alc_view) R033+0x16FA (15D1:000A) matched, with R033+0x1950, R033+0x1A2A and R033+0x1ABE
+    // orig: R033+0x16FA (alchemy-screen-body) R033+0x16FA (15D1:000A) matched, with R033+0x1950, R033+0x1A2A and R033+0x1ABE
     // DORMANT: R033+0x1B9A (an empty drawing step) does nothing.
     /// <summary>The formula page of the character sheet's list: names, mystic number, description and ingredients. Esc or a click leaves.</summary>
     public void ShowFormula(GameState state, int member, int formula)

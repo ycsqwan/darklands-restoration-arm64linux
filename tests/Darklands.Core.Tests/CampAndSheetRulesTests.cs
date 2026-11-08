@@ -435,6 +435,21 @@ public sealed class CampAndSheetRulesTests
         Assert.Equal(price, new CampStay(s, place).DayCost());
     }
 
+    [Theory]
+    // the original's unit run of R036+0x1E80 (local/batch/evid1 t_alch.py): one formula byte 0x80 -> 1, 0x08 -> 1, 0x07 -> 1, 0 -> 0
+    [InlineData(0x80, true)]
+    [InlineData(0x08, true)]
+    [InlineData(0x07, true)]
+    [InlineData(0x00, false)]
+    public void AlchemyIsOfferedForAnyBitOfAFormulaByte(int value, bool offered)
+    {
+        var s = TestGame.Create();
+        var m = s.Party.Members[0];
+        Array.Clear(m.Formulas.Bytes);
+        m.Formulas.Bytes[5] = (byte)value;
+        Assert.Equal(offered, new CampStay(s, CampPlace.Inn).CanDoAlchemy(0));
+    }
+
     [Fact]
     public void WithoutTheMoneyNoDayPasses()
     {
@@ -460,7 +475,7 @@ public sealed class CampAndSheetRulesTests
         Assert.Equal((5, 11), (s.Date.Hour, (int)s.Date.Day));
     }
 
-    /// <summary>The day passes through advance_hours, so the hourglass shows once, before the clock moves (R036+0x147A).</summary>
+    /// <summary>The day passes through pass-hours, so the hourglass shows once, before the clock moves (R036+0x147A).</summary>
     [Fact]
     public void TheDayShowsTheHourglassBeforeTheClockMoves()
     {

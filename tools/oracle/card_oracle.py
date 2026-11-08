@@ -1,12 +1,12 @@
 """Card oracle: every card function of the ORIGINAL DARKLAND.EXE, run with the card engine's services.
 
 usage: python -I -B card_oracle.py <DARKLAND.EXE> <game folder> <states folder> <out cards.json.gz>
-           [--cards 2,6,0x13] [--workers 8] [--coverage DIR]
+           [--cards 2,6,0x13] [--workers 8] [--coverage DIR] [--cards-per-worker 8]
 
 The states folder holds the start states the C# exports (tests/Darklands.Cards.Tests/Oracle,
 CardOracleStates: DARKLANDS_CARD_ORACLE_EXPORT): for location 3 and 120 and options 0..9 a saved
 game in the original's format and its side values. Each state is booted once in a DOS machine
-(dosmachine.py): the world loader of the card engine (world_load, R043 1462:0100: DARKLAND.LST, .CTY,
+(dosmachine.py): the world loader of the card engine (world-read, R043 1462:0100: DARKLAND.LST, .CTY,
 .LOC, .DSC), then the original's own saved-game loader (R037 1C7D:0D24) on the saved game, then the
 values a saved game does not hold (random generator, bankers, city record, the card engine's
 variables as the C# card context starts them). The boot is kept as a snapshot.
@@ -14,12 +14,12 @@ variables as the C# card context starts them). The boot is kept as a snapshot.
 Each card (card table R136+0xD090 -> its RTLink vector -> record 44..135) then runs from every start
 state, choosing option 0..9 like the golden traces, plain and probing:
 
-* original code runs for real: the card, the card engine's rules (items_usable, saints_usable, the
+* original code runs for real: the card, the card engine's rules (usable-item-list, saints-available, the
   text expansion), R029 rules, R039/s030/s031/... helpers through their overlay vectors, the CRT;
 * stubbed (presentation and input): drawing the card (the picture, the party panel; the card's
-  .MSG is loaded for real), card_text (recorded: block, frame and the block as the original's
-  text_expand gives it), card_options + card_menu (recorded: block, option states; the choice comes
-  from the policy; probing, every offered line's hint handler opt_fn[k] is asked as Shift over the
+  .MSG is loaded for real), card-text-block (recorded: block, frame and the block as the original's
+  text-substitute gives it), card-option-lines + card-choice-menu (recorded: block, option states; the choice comes
+  from the policy; probing, every offered line's hint handler card-option-handler[k] is asked as Shift over the
   line does, and an item/saint line's choice is made in its pop-up box), the hourglass, message
   boxes, the full screens (shop, camp, ...), battles (result 0, as the C# without a battle);
 * recorded: every rand() draw, the next card, and the saved game the original's own writer (R037
@@ -49,42 +49,52 @@ from unicorn import UC_HOOK_MEM_READ  # noqa: E402
 from unicorn.x86_const import UC_X86_REG_CS, UC_X86_REG_IP  # noqa: E402
 
 # ---- DGROUP ---------------------------------------------------------------------------------
-CUR_LOC, CARD, NEXT_CARD, HOLDRAND = 0x907E, 0xA772, 0xE48A, 0x7B20
-PREV_SCREEN, CARD_BEFORE_PREVIOUS, MAP_LEAVE = 0xA88D, 0xA88F, 0xA891
-ADVANCE_HOURS = (P(0x1367), 0x05C8)
-CITY_REC, CITY_DESC = 0x9785, 0x978B
-OPT_ON, OPT_FN, OPT_FLAGS = 0xE99C, 0xEA14, 0xEE76
-CARD_ITEMS, CARD_SAINTS = 0xEE43, 0xEE4B
-MENU_MEMBER, MENU_SLOT, MENU_POPUP, POPUP_ALL = 0xEE6C, 0xEE6A, 0xEE6E, 0x5204
-ITEM_FN, SAINT_FN = 0xEC00, 0xECF6
+LOCATION_NOW, CARD, FOLLOWING_CARD, HOLDRAND = 0x907E, 0xA772, 0xE48A, 0x7B20
+EARLIER_SCREEN, CARD_BEFORE_PREVIOUS, MAP_LEAVE = 0xA88D, 0xA88F, 0xA891
+PASS_HOURS = (P(0x1367), 0x05C8)
+CITY_RECORD, CITY_DESCRIPTION = 0x9785, 0x978B
+CARD_OPTION_ENABLED, CARD_OPTION_HANDLER, OPT_FLAGS = 0xE99C, 0xEA14, 0xEE76
+CARD_ITEM_LINES, CARD_SAINT_LINES = 0xEE43, 0xEE4B
+MENU_OWNER_MEMBER, MENU_CHOICE_INDEX, POPUP_MENU_BOX, POPUP_ALL = 0xEE6C, 0xEE6A, 0xEE6E, 0x5204
+ITEM_HANDLER_TABLE, SAINT_HANDLER_TABLE = 0xEC00, 0xECF6
 POPUP_LAYOUT, ITEM_LAYOUT, SAINT_LAYOUT, LAYOUT_SIZE = 0xEA64, 0xEB5A, 0xEC50, 0xF6   # struct layout {..., +0xA6 handlers}
-MSG_BUF = 0x9085
+MENU_LAYOUT, SAVED_LAYOUT, LAYOUT_STATES = 0xE96E, 0xA778, 0x2E   # the menu's layout (+0x2E card-option-enabled DS:E99C, +0xA6 card-option-handler DS:EA14), card-mouse-handler's copy of it
+DIFFICULTY, LEADER = 0x906A, 0x907B   # bytes, as R043+0x2CE2 reads them
+# DARKLANDS_CARD_ORACLE_BOXKEY=1: a choice in a pop-up box is made with Enter (popup-menu-box stays 0), not with a click
+# DARKLANDS_CARD_ORACLE_BOXES=1: at every menu each item/saint line's box handlers are asked (trace lines "box <line> <member> <slot>: ...")
+BOX_KEY = os.environ.get("DARKLANDS_CARD_ORACLE_BOXKEY") == "1"
+BOX_PROBE = os.environ.get("DARKLANDS_CARD_ORACLE_BOXES") == "1"
+# DARKLANDS_CARD_ORACLE_OPTBLOCK=n: every run starts with settings-block DS:EE53 = n, and its trace ends with the value the card left
+SETTINGS_BLOCK = 0xEE53
+OPTBLOCK_START = int(os.environ["DARKLANDS_CARD_ORACLE_OPTBLOCK"]) if os.environ.get("DARKLANDS_CARD_ORACLE_OPTBLOCK") else None
+TEXT_BANK_BUFFER = 0x9085
 # text variables (the reference's names)
 VAR_CHOSEN = (0xEE8C, 0xEE8E, 0xEE90, 0xEE92, 0xEE94)
 VAR_MONEY = (0xEE9C, 0xEEA2, 0xEEA8, 0xEEAE, 0xED46)
 VAR_NUMBERS = (0xED4C, 0xED50)
 VAR_TEXTS = (0xED6D, 0xED95, 0xEDBD, 0xEDE5)
-VAR_ITEM, VAR_LOC, VAR_LOC2, VAR_SUPPORT, VAR_CITY_LOCATION = 0xED5C, 0xE89B, 0xED54, 0xED5E, 0xED52
+TEXT_SLOT_ITEM, TEXT_SLOT_PLACE, TEXT_SLOT_PLACE_TWO, VAR_SUPPORT, VAR_CITY_LOCATION = 0xED5C, 0xE89B, 0xED54, 0xED5E, 0xED52
 CONDITIONS = 0x9C30                 # the conditional passages of the texts (bytes)
-CARD_NAME = 0xE3D4
+CARD_TITLE = 0xE3D4
+IMAGE_BUFFER = 0xE3E3                    # the card's picture (card-run's second argument; the screens' redraw)
 BANKERS = 0x4BB6
 REPORT_SKILLS = 0x26BC
 SAINT_MESSAGES = 0x01BD             # "show saintly changes" (Alt-C)
-PARTY, PARTY_SIZE = 0x9C69, 0xA67E
+PARTY, PARTY_HEADCOUNT = 0x9C69, 0xA67E
 CARD_TABLE = (P(0x2DAE), 0x0000)
 SAVED = "saves/dksave0.sav".replace("/", "\\")   # what the original's writer creates (the folder is empty)
 # card engine (R043 150B) and services
-CARD_LOAD, CARD_LOAD_NEAR, MSG_LOAD = (P(0x150B), 0x000A), (P(0x150B), 0x0110), (P(0x150B), 0x020E)
-CARD_TEXT, CARD_OPTIONS, TEXT_EXPAND, CARD_MENU = (P(0x150B), 0x03B0), (P(0x150B), 0x049A), (P(0x150B), 0x06FE), (P(0x150B), 0x1142)
+CARD_RUN, CARD_RUN_NEAR, TEXT_BANK_READ = (P(0x150B), 0x000A), (P(0x150B), 0x0110), (P(0x150B), 0x020E)
+CARD_TEXT_BLOCK, CARD_OPTION_LINES, TEXT_SUBSTITUTE, CARD_CHOICE_MENU = (P(0x150B), 0x03B0), (P(0x150B), 0x049A), (P(0x150B), 0x06FE), (P(0x150B), 0x1142)
 HOURGLASS = (P(0x150B), 0x2A04)
-SAVE_RECT = (P(0x047C), 0x04D5)        # gfx_save_rect (screen under a box -> the segment of a DOS block)
-MESSAGE_BOX = (P(0x1367), 0x0C30)
+SAVE_RECT = (P(0x047C), 0x04D5)        # gfx-rect-save (screen under a box -> the segment of a DOS block)
+NOTICE_BOX = (P(0x1367), 0x0C30)
 FILM_PAN = (P(0x030B), 0x0004)        # root: plays <name>.PAN (the films), presentation
-SHOW_MESSAGE = (P(0x0000), 0x24BC)     # show_message (text, ticks): a box for a while
-HAS_ITEM, MEMBER_BIT = (P(0x0E76), 0x118E), (P(0x0E76), 0x1260)
+NOTICE_DISPLAY = (P(0x0000), 0x24BC)     # notice-display (text, ticks): a box for a while
+CARRIES_ITEM, MEMBER_FLAG_BIT = (P(0x0E76), 0x118E), (P(0x0E76), 0x1260)
 RAND = (P(0x06A1), 0x29B6)
 TIME = (P(0x06A1), 0x23A8)             # time(long *)
-WORLD_LOAD, SAV_LOAD, SAV_WRITE = (P(0x1462), 0x0100), (P(0x1C7D), 0x0D24), (P(0x1462), 0x2ACE)
+WORLD_READ, SAV_LOAD, SAV_WRITE = (P(0x1462), 0x0100), (P(0x1C7D), 0x0D24), (P(0x1462), 0x2ACE)
 
 
 def zero(m):
@@ -95,48 +105,50 @@ def zero(m):
 # given (name -> (link-time segment, offset, AX)). Everything else runs from the original bytes.
 PRESENTATION = {
     # root 0000: menu bar, party panel, boxes, keys
-    "menu_bar_run": (0x0000, 0x0000, 0), "party_panel_frames": (0x0000, 0x1588, 0), "party_panel_rows": (0x0000, 0x1716, 0),
-    "member_status_letter": (0x0000, 0x18FA, 0), "member_bars": (0x0000, 0x1A9C, 0), "draw_frame_box": (0x0000, 0x2286, 0),
-    "text_box": (0x0000, 0x23E6, 0), "show_difficulty": (0x0000, 0x1438, 0), "flush_keys": (0x0000, 0x1384, 0),
-    "copy_rect_clipped": (0x0000, 0x14F6, 0), "hot_keys": (0x0000, 0x0CAA, 0), "exit_if_requested": (0x0000, 0x1338, 0),
+    "menu-bar-loop": (0x0000, 0x0000, 0), "party-panel-frame-set": (0x0000, 0x1588, 0), "party-panel-row-set": (0x0000, 0x1716, 0),
+    "member-status-glyph": (0x0000, 0x18FA, 0), "member-gauge-bars": (0x0000, 0x1A9C, 0), "framed-box-paint": (0x0000, 0x2286, 0),
+    "text-box-paint": (0x0000, 0x23E6, 0), "difficulty-display": (0x0000, 0x1438, 0), "key-buffer-clear": (0x0000, 0x1384, 0),
+    "blit-clipped": (0x0000, 0x14F6, 0), "hotkey-table": (0x0000, 0x0CAA, 0), "quit-check": (0x0000, 0x1338, 0),
     # root 047C: graphics, mouse, keyboard, sound
-    "gfx_copy_rect": (0x047C, 0x0553, 0), "gfx_text": (0x047C, 0x055A, 0), "gfx_draw_pic": (0x047C, 0x05A5, 0),
-    "gfx_recolor_rect": (0x047C, 0x04DC, 0), "gfx_fill_rect": (0x047C, 0x0952, 0), "gfx_line": (0x047C, 0x0D62, 0),
-    "gfx_draw_sprite": (0x047C, 0x04EF, 0), "set_palette": (0x047C, 0x058B, 0),
-    "key_pressed": (0x047C, 0x073D, 1), "get_key": (0x047C, 0x0744, 0x1C0D), "sound_play": (0x047C, 0x078A, 0),
-    "mouse_set_cursor": (0x047C, 0x124F, 0), "mouse_move": (0x047C, 0x1266, 0),
-    "mouse_show": (0x047C, 0x1293, 0), "mouse_hide": (0x047C, 0x12C3, 0), "font_height": (0x047C, 0x051B, 8),
-    "char_width": (0x047C, 0x04E3, 6),
+    "gfx-rect-copy": (0x047C, 0x0553, 0), "gfx-text-draw": (0x047C, 0x055A, 0), "gfx-picture-draw": (0x047C, 0x05A5, 0),
+    "gfx-rect-recolour": (0x047C, 0x04DC, 0), "gfx-rect-fill": (0x047C, 0x0952, 0), "gfx-line-draw": (0x047C, 0x0D62, 0),
+    "gfx-sprite-draw": (0x047C, 0x04EF, 0), "palette-load": (0x047C, 0x058B, 0),
+    "key-waiting-test": (0x047C, 0x073D, 1), "read-key": (0x047C, 0x0744, 0x1C0D), "sound-start": (0x047C, 0x078A, 0),
+    "pointer-shape-set": (0x047C, 0x124F, 0), "pointer-move": (0x047C, 0x1266, 0),
+    "pointer-show": (0x047C, 0x1293, 0), "pointer-hide": (0x047C, 0x12C3, 0), "font-line-height": (0x047C, 0x051B, 8),
+    "glyph-width": (0x047C, 0x04E3, 6),
     "gfx_0545": (0x047C, 0x0545, 0), "gfx_04f8": (0x047C, 0x04F8, 0), "gfx_0568": (0x047C, 0x0568, 0),
     "gfx_056f": (0x047C, 0x056F, 0), "gfx_059e": (0x047C, 0x059E, 0),
-    # the driver calls of loading a picture into memory (root 0617:045C, the portrait add_member R029+0x4650 loads)
+    # the driver calls of loading a picture into memory (root 0617:045C, the portrait join-party-member R029+0x4650 loads)
     "gfx_0de6": (0x047C, 0x0DE6, 0), "gfx_05bc": (0x047C, 0x05BC, 0), "gfx_0f60": (0x047C, 0x0F60, 0),
     "gfx_05b5": (0x047C, 0x05B5, 0), "gfx_05ae": (0x047C, 0x05AE, 0),
     # root 0617: pictures
-    "pic_draw": (0x0617, 0x01B2, 0), "pic_draw_1": (0x0617, 0x0230, 0), "pic_draw_pal": (0x0617, 0x024A, 0),
-    "pic_draw_0": (0x0617, 0x0264, 0), "pic_draw_1r": (0x0617, 0x04D0, 0), "pic_draw_open": (0x0617, 0x04E2, 0),
-    "pic_draw_mem": (0x0617, 0x0546, 0),
+    "image-paint": (0x0617, 0x01B2, 0), "image-paint-variant-1": (0x0617, 0x0230, 0), "image-paint-palette": (0x0617, 0x024A, 0),
+    "image-paint-variant-0": (0x0617, 0x0264, 0), "image-paint-variant-1r": (0x0617, 0x04D0, 0), "image-paint-open": (0x0617, 0x04E2, 0),
+    "image-paint-from-memory": (0x0617, 0x0546, 0),
     # root 0265: text drawing
-    "draw_text_far": (0x0265, 0x0004, 0), "draw_text": (0x0265, 0x006E, 0), "draw_text_centered": (0x0265, 0x00C4, 0),
-    "draw_text_wrapped_far": (0x0265, 0x00F0, 0), "measure_text_wrapped_far": (0x0265, 0x0614, 0),
-    "measure_text_wrapped": (0x0265, 0x0654, 0), "text_pixel_width": (0x0265, 0x084E, 0),
-    "rect_copy_paged": (0x03EC, 0x000E, 0),
+    "text-paint-far-string": (0x0265, 0x0004, 0), "text-paint": (0x0265, 0x006E, 0), "text-paint-centred": (0x0265, 0x00C4, 0),
+    "text-paint-wrapped-far-string": (0x0265, 0x00F0, 0), "wrapped-text-size-far-string": (0x0265, 0x0614, 0),
+    "wrapped-text-size": (0x0265, 0x0654, 0), "text-width-px": (0x0265, 0x084E, 0),
+    "page-to-page-box-copy": (0x03EC, 0x000E, 0),
     # the card engine's drawing (R043 150B)
-    "card_redraw_01e0": (0x150B, 0x01E0, 0), "card_frame_28e6": (0x150B, 0x28E6, 0), "wait_continue": (0x150B, 0x2826, 0x1C0D),
+    "card_redraw_01e0": (0x150B, 0x01E0, 0), "card_frame_28e6": (0x150B, 0x28E6, 0), "press-to-continue": (0x150B, 0x2826, 0x1C0D),
     "hint_show_1d56": (0x150B, 0x1D56, 0), "card_redraw_13f2": (0x150B, 0x13F2, 0),
-    "palette_fade": (0x17E5, 0x0008, 0), "palette_17e5_01ec": (0x17E5, 0x01EC, 0), "palette_17e5_024c": (0x17E5, 0x024C, 0),
+    "palette-ramp": (0x17E5, 0x0008, 0), "palette_17e5_01ec": (0x17E5, 0x01EC, 0), "palette_17e5_024c": (0x17E5, 0x024C, 0),
     # saved games: the battle file
-    "battle_restore_vec": (0x09C0, 0x1B17, 0), "battle_save_vec": (0x09C0, 0x1B21, 0),
+    "battle-reload-overlay-entry": (0x09C0, 0x1B17, 0), "battle-store-overlay-entry": (0x09C0, 0x1B21, 0),
     "mem_log": (0x1462, 0x0000, 0),
 }
-DRAW_TEXT_WRAPPED = (P(0x0265), 0x0134)
+TEXT_PAINT_WRAPPED = (P(0x0265), 0x0134)
 # the full screens and the world's moves the cards reach (recorded; the C# OracleScreens records its own)
 BARTER, CAMP, ITEM_STORE = (P(0x0E76), 0x21AA), (P(0x0E76), 0x222A), (P(0x0E76), 0x225C)   # R029 wrappers (screen + card redraw)
 PRAYER = (P(0x1462), 0x0000)          # R034 saint prayer screen (thunk 09C0:1EAF): (who, saint, 1) -> result
-BATTLE_RUN = (P(0x0E76), 0x0000)      # R002 battle_run (thunk 09C0:18BF)
-CARDS_SHUTDOWN, CARDS_STARTUP = (P(0x1462), 0x054E), (P(0x1462), 0x078E)   # R043: the world to locs.tmp/events.tmp and back
-BATTLE_BYTE, BATTLE_RESULT = 0x907A, 0xA893   # DS:907A (cleared by battle_run), DS:A893
-SIDE_MESSAGE = (P(0x150B), 0x1F40)     # (who, colour): msg_buf beside a member's portrait, wait for a key
+BATTLE_ENTRY = (P(0x0E76), 0x0000)      # R002 battle-entry (thunk 09C0:18BF)
+CARDS_TEARDOWN, CARDS_SETUP = (P(0x1462), 0x054E), (P(0x1462), 0x078E)   # R043: the world to locs.tmp/events.tmp and back
+SOUND_START = (P(0x047C), 0x078A)      # root: sound-start(n), the driver's one command (a tune, an effect or a control number; 1 stops the music, 5 asks the number last played)
+MUSIC_PLAY = (P(0x1462), 0x09AE)      # R043 (thunk 09C0:18F1): music_play(x) = `if (DS:01BF) sound-start(x); else sound-start(1)`
+BATTLE_BYTE, BATTLE_OUTCOME = 0x907A, 0xA893   # DS:907A (cleared by battle-entry), DS:A893
+SIDE_MESSAGE = (P(0x150B), 0x1F40)     # (who, colour): text-bank-buffer beside a member's portrait, wait for a key
 
 
 class CardRun:
@@ -147,10 +159,13 @@ class CardRun:
         self.hand = hand                     # a handler call (see Oracle.run_card), else None
         self.menus = 0
         self.path = None                     # [n, ...]: the k-th menu chooses the (n mod count)-th enabled line (variant part "P2_0_1")
+        self.battles = None                  # [n, ...]: the results of the run's battles (variant part "B5"); None: 0
+        self.prayers = None                  # [-1 | 0 | 1, ...]: the answers of the prayer screen (variant part "Ya"); None: 0
+        self.nbattle = self.nprayer = 0
         self.force = None                    # (block, line): the first menu of that block chooses that line whatever its state
         self.lines: list[str] = []
-        self.card_name = ""
-        self.texts_name = ""                 # the .MSG whose blocks are loaded (card_load, or the oracle's preload)
+        self.card_title = ""
+        self.texts_name = ""                 # the .MSG whose blocks are loaded (card-run, or the oracle's preload)
         self.draws = 0
         self.stray: set[str] = set()         # out-of-bounds reads the original made (see Oracle.stray_read)
 
@@ -168,6 +183,8 @@ class Oracle:
         self.cards = self.card_table()
         self.names = card_names()
         for name, (seg, off, ax) in PRESENTATION.items():
+            if name == "sound-start":
+                continue                      # logged: see install()
             rec = "R043" if seg in (0x150B, 0x17E5) or (seg, off) == (0x1462, 0x0000) else None
             self.m.stub(P(seg), off, (lambda v: lambda m: (v, 0))(ax), name, record=rec)
         self.install()
@@ -190,6 +207,7 @@ class Oracle:
         if key in self.snapshots:
             self.m.restore(self.snapshots[key])
             self.initial_sav = self.initial_savs[key]
+            self.snapshots[key] = self.snapshots.pop(key)         # most recently used last
             return
         m = self.m
         if "clean" not in self.snapshots:
@@ -197,9 +215,9 @@ class Oracle:
         m.restore(self.snapshots["clean"])
         sav = (self.states / f"state-{key}.sav").read_bytes()
         extra = json.loads((self.states / f"state-{key}.json").read_text())
-        m.put_word(DS, CUR_LOC, struct.unpack_from("<h", sav, 0x7C)[0])
+        m.put_word(DS, LOCATION_NOW, struct.unpack_from("<h", sav, 0x7C)[0])
         m.ensure(43)
-        m.call(*WORLD_LOAD, [m.push_string("darkland.loc")])
+        m.call(*WORLD_READ, [m.push_string("darkland.loc")])
         m.vfs.put("saves\\oracle.sav", sav)
         m.ensure(37)
         m.call(*SAV_LOAD, [m.push_string("oracle.sav"), DS])
@@ -209,23 +227,29 @@ class Oracle:
         m.put_word(DS, REPORT_SKILLS, 1 if extra["reportSkillChanges"] else 0)
         m.write(DS, SAINT_MESSAGES, bytes([1 if extra["showSaintlyChanges"] else 0]))
         city = bytes.fromhex(extra["cityRecord"])
-        off, seg = m.word(DS, CITY_REC), m.word(DS, CITY_REC + 2)
+        off, seg = m.word(DS, CITY_RECORD), m.word(DS, CITY_RECORD + 2)
         m.write(seg, off, city)
-        # city_desc: the C# takes the description of the working city record's city (TextVariables, UNCERTAIN there)
+        # city-description: the C# takes the description of the working city record's city (TextVariables, UNCERTAIN there)
         dsc = (Path(self.game) / "DARKLAND.DSC").read_bytes()
-        m.write(DS, CITY_DESC, dsc[1 + 0x50 * extra["city"]:1 + 0x50 * (extra["city"] + 1)])
+        m.write(DS, CITY_DESCRIPTION, dsc[1 + 0x50 * extra["city"]:1 + 0x50 * (extra["city"] + 1)])
         self.reset_engine()
         self.initial_sav = self.initial_savs[key] = sav
         m.scratch_sp = m.scratch_sp   # strings pushed during the boot stay
         self.snapshots[key] = m.snapshot()
+        # bounded cache (cards2: a long run over thousands of start states grew without end): "clean" and the last 32 states stay;
+        # a miss only rebuilds the state, no run result changes
+        old = [k for k in self.snapshots if k != "clean"]
+        for k in old[:-32]:
+            del self.snapshots[k]
+            self.initial_savs.pop(k, None)
 
     def reset_engine(self):
         """The card engine's variables as a new C# CardContext has them."""
         m = self.m
         m.write(DS, OPT_FLAGS, bytes(20))
-        m.write(DS, OPT_ON, bytes(20))
-        m.write(DS, CARD_ITEMS, struct.pack("<8h", *([-1] * 8)))
-        for a in (MENU_MEMBER, MENU_SLOT, MENU_POPUP, POPUP_ALL, NEXT_CARD):
+        m.write(DS, CARD_OPTION_ENABLED, bytes(20))
+        m.write(DS, CARD_ITEM_LINES, struct.pack("<8h", *([-1] * 8)))
+        for a in (MENU_OWNER_MEMBER, MENU_CHOICE_INDEX, POPUP_MENU_BOX, POPUP_ALL, FOLLOWING_CARD):
             m.put_word(DS, a, 0)
         # the text variables as a new CardVariables has them: $ChosenOneName..$ChosenFiveName = members 0..4,
         # money, numbers, texts, names, item 0, $LocName/$LocName2 none, support 0, $CityLocation 0, no conditions
@@ -237,32 +261,34 @@ class Oracle:
             m.write(DS, a, bytes(4))
         for a in VAR_TEXTS:
             m.write(DS, a, bytes(40))
-        m.write(P(0x2E38), 0x1A96, bytes(5 * 30))            # var_named
-        m.put_word(DS, VAR_ITEM, 0)
-        m.put_word(DS, VAR_LOC, -1)
-        m.put_word(DS, VAR_LOC2, -1)
+        m.write(P(0x2E38), 0x1A96, bytes(5 * 30))            # text-slot-named
+        m.put_word(DS, TEXT_SLOT_ITEM, 0)
+        m.put_word(DS, TEXT_SLOT_PLACE, -1)
+        m.put_word(DS, TEXT_SLOT_PLACE_TWO, -1)
         m.write(DS, VAR_SUPPORT, bytes(14))
         m.put_word(DS, VAR_CITY_LOCATION, 0)
         m.write(DS, CONDITIONS, bytes(10))
+        if OPTBLOCK_START is not None:
+            m.put_word(DS, SETTINGS_BLOCK, OPTBLOCK_START & 0xFFFF)
 
     # ---- services ------------------------------------------------------------------------
     def install(self):
         m = self.m
         m.stub(*SAVE_RECT, self.save_rect)
-        m.stub(*CARD_LOAD, self.card_load, record="R043")
-        self.card_load.__func__.outside = True
-        m.stub(*CARD_LOAD_NEAR, self.card_load_near, record="R043")
-        self.card_load_near.__func__.outside = True
-        m.hook(*CARD_TEXT, self.card_text, record="R043")
-        m.hook(*CARD_OPTIONS, self.card_options, record="R043")
-        m.stub(*DRAW_TEXT_WRAPPED, self.draw_text_wrapped)
+        m.stub(*CARD_RUN, self.card_run, record="R043")
+        self.card_run.__func__.outside = True
+        m.stub(*CARD_RUN_NEAR, self.card_run_near, record="R043")
+        self.card_run_near.__func__.outside = True
+        m.hook(*CARD_TEXT_BLOCK, self.card_text_block, record="R043")
+        m.hook(*CARD_OPTION_LINES, self.card_option_lines, record="R043")
+        m.stub(*TEXT_PAINT_WRAPPED, self.text_paint_wrapped)
         m.stub(*SIDE_MESSAGE, self.side_message, record="R043")
-        m.stub(*CARD_MENU, self.card_menu, record="R043")
-        self.card_menu.__func__.outside = True
+        m.stub(*CARD_CHOICE_MENU, self.card_choice_menu, record="R043")
+        self.card_choice_menu.__func__.outside = True
         m.stub(*HOURGLASS, self.hourglass, record="R043")
-        m.stub(*MESSAGE_BOX, self.message_box)
+        m.stub(*NOTICE_BOX, self.notice_box)
         m.stub(*FILM_PAN, self.film)
-        m.stub(*SHOW_MESSAGE, self.message_box)
+        m.stub(*NOTICE_DISPLAY, self.notice_box)
         m.hook(*RAND, self.rand)
         # reads through index -1 of the location and event tables: the original then reads memory that holds something
         # else (a card run without its quest); the run is marked
@@ -275,16 +301,36 @@ class Oracle:
         # differ from machine to machine; the run is marked too. (The rules' event scans read empty slots so on every
         # run and are not counted.)
         m.uc.hook_add(UC_HOOK_MEM_READ, lambda uc, acc, addr, size, val, ud: self.null_read(uc), begin=0, end=0xFF)
+        # the screens end with the card's redraw (screen_redraw: a nested call, so the stubs run outside the emulation)
+        camp = lambda mm: (self.log("screen camp %d" % mm.sarg(0)), self.screen_redraw(mm))[1]
+        item_store = lambda mm: (self.log("screen itemstore"), self.screen_redraw(mm))[1]
+        self.barter.__func__.outside = camp.outside = item_store.outside = True
         m.stub(*BARTER, self.barter, record="R029")
-        m.stub(*CAMP, lambda mm: (self.log("screen camp %d" % mm.sarg(0)), (0, 0))[1], record="R029")
-        m.stub(*ITEM_STORE, lambda mm: (self.log("screen itemstore"), (0, 0))[1], record="R029")
+        m.stub(*CAMP, camp, record="R029")
+        m.stub(*ITEM_STORE, item_store, record="R029")
         m.stub(*PRAYER, self.prayer, record="R034")
-        m.stub(*BATTLE_RUN, self.battle, record="R002")
-        m.stub(*CARDS_SHUTDOWN, zero, record="R043")
-        m.stub(*CARDS_STARTUP, zero, record="R043")
+        m.stub(*BATTLE_ENTRY, self.battle, record="R002")
+        # sound: every sound-start(n) is a trace line "sound n" (the driver's command, whoever calls it: music_play, the battle's effects, a card's
+        # own call); music_play(x) also logs "music x" before it (the request, whatever the music option makes of it). cards-teardown ends with
+        # sound-start(1) (R043+0x0704, the music stops before a battle): the stub makes that call.
+        m.stub(*SOUND_START, self.sound_start, "sound-start")
+        m.hook(*MUSIC_PLAY, self.music_play, record="R043")
+        m.stub(*CARDS_TEARDOWN, self.cards_teardown, record="R043")
+        m.stub(*CARDS_SETUP, zero, record="R043")
+
+    def sound_start(self, m):
+        self.log("sound %d" % m.sarg(0))
+        return (0, 0)
+
+    def music_play(self, m):
+        self.log("music %d" % m.sarg(0))
+
+    def cards_teardown(self, m):
+        self.log("sound 1")
+        return (0, 0)
 
     def save_rect(self, m):
-        """gfx_save_rect: the screen under a box is kept in a DOS block, whose segment the caller frees afterwards
+        """gfx-rect-save: the screen under a box is kept in a DOS block, whose segment the caller frees afterwards
         (R037+0x43E6 through 044A:0164, which ends the game if DOS refuses): a real block, one paragraph."""
         seg = m.alloc(1)
         return (seg or 0, 0)
@@ -309,60 +355,81 @@ class Oracle:
             off, seg = m.word(P(0x290E), 0x207F + 4 * i), m.word(P(0x290E), 0x207F + 4 * i + 2)
         name = m.cstr(seg, off, 80).decode("latin-1")
         self.log("screen barter %d %X %s" % (i, (y << 16) | x, name))
+        return self.screen_redraw(m)
+
+    def screen_redraw(self, m):
+        """The stubbed screen wrappers of R029 (barter R029+0x21AA, camp +0x222A, item store +0x225C) end with
+        card-run(DS:E3D4, DS:E3E3) through thunk 09C0:1EA5: the card is redrawn with its picture buffer, which the
+        card may have changed (e.g. card 0x1D's back room). The thunk runs for real (its records loaded and the
+        caller's loaded back), so card-run logs it as the rules' redraw. A card that never loads itself (e.g. 0x4D)
+        leaves the buffers as the card before it did: empty in the oracle's start states, where nothing is redrawn."""
+        if m.cstr(DS, CARD_TITLE) and m.cstr(DS, IMAGE_BUFFER):
+            m.call(P(0x09C0), 0x1EA5, [CARD_TITLE, IMAGE_BUFFER, DS])
         return (0, 0)
 
     def prayer(self, m):
         self.log("prayer %d %d" % (m.sarg(0), m.sarg(1)))
-        return (0, 0)
+        seq = self.run.prayers if self.run is not None else None
+        answer = seq[min(self.run.nprayer, len(seq) - 1)] if seq else 0
+        if self.run is not None:
+            self.run.nprayer += 1
+        return (answer & 0xFFFF, 0)
 
     def battle(self, m):
-        """battle_run(mode, side, seed, 9 parameters): no battle, as the C# without one (result 0)."""
+        """battle-entry(mode, side, seed, 9 parameters): no battle, as the C# without one (result 0, or the variant part B<n> of the run key)."""
         args = [m.sarg(k) for k in range(12)]
         self.log("battle %d %d %s" % (args[1], args[2], " ".join(str(a) for a in args[3:])))
         m.write(DS, BATTLE_BYTE, bytes(1))
-        m.put_word(DS, BATTLE_RESULT, 0)
+        seq = self.run.battles if self.run is not None else None
+        if seq and self.run.nbattle > 200:
+            # a constant controlled result that makes the card fight again and again: both sides give up at the same battle (the C# test: more than 200 results taken)
+            raise Stop("battle loop")
+        result = seq[min(self.run.nbattle, len(seq) - 1)] if seq else 0
+        if self.run is not None:
+            self.run.nbattle += 1
+        m.put_word(DS, BATTLE_OUTCOME, result)
         return (0, 0)
 
     def shown(self, name: str, pic: str) -> str:
-        """card_load and card_load_near both load the picture and the card's texts; the trace says "show" when
+        """card-run and card-run-near both load the picture and the card's texts; the trace says "show" when
         the texts are another card's than the ones shown, else "picture" (the C# Show / ShowPicture)."""
-        line = "picture %s" % pic.lower() if name == self.run.card_name else "show %s %s" % (name, pic.lower())
-        self.run.card_name = self.run.texts_name = name
+        line = "picture %s" % pic.lower() if name == self.run.card_title else "show %s %s" % (name, pic.lower())
+        self.run.card_title = self.run.texts_name = name
         return line
 
-    def card_load(self, m):
+    def card_run(self, m):
         name = m.cstr(DS, m.arg(0)).decode("latin-1")
         pic = m.cstr(m.arg(2), m.arg(1)).decode("latin-1")
         # the rules redraw the card after a screen (thunk 09C0:1EA5 from R029): the C# screen does that itself
         caller = m.word(m.reg("SS"), m.reg("SP") + 2)
         if caller == TRAMPOLINE:
             self.log("redraw %s %s" % (name, pic.lower()))
-            self.run.card_name = self.run.texts_name = name
+            self.run.card_title = self.run.texts_name = name
         else:
             self.log(self.shown(name, pic))
-        m.call(*MSG_LOAD, [m.arg(0)])
+        m.call(*TEXT_BANK_READ, [m.arg(0)])
         return (0, 0)
 
-    def card_load_near(self, m):
+    def card_run_near(self, m):
         name = m.cstr(DS, m.arg(0)).decode("latin-1")
         pic = m.cstr(DS, m.arg(1)).decode("latin-1")
         self.log(self.shown(name, pic))
-        m.call(*MSG_LOAD, [m.arg(0)])
+        m.call(*TEXT_BANK_READ, [m.arg(0)])
         return (0, 0)
 
-    def card_text(self, m):
+    def card_text_block(self, m):
         block, how = m.sarg(0), m.sarg(1)
         # C# TextFrame: 0 and 2 draw on the picture, anything else on a blank page
         self.pending = "text %d %d" % (block, 0 if how in (0, 2) else 1)
 
-    def card_options(self, m):
-        self.options_block = m.sarg(0)
+    def card_option_lines(self, m):
+        self.settings_block = m.sarg(0)
         self.pending = None
         self.options_text = None
         self.pending_options = True
 
-    def draw_text_wrapped(self, m):
-        """The first text drawn after card_text / card_options is the block as text_expand gave it."""
+    def text_paint_wrapped(self, m):
+        """The first text drawn after card-text-block / card-option-lines is the block as text-substitute gave it."""
         text = m.cstr(DS, m.arg(1), 1200)
         if self.pending is not None:
             self.log("%s %s" % (self.pending, text.hex()))
@@ -373,17 +440,17 @@ class Oracle:
         return (0, 0)
 
     def side_message(self, m):
-        self.log("tell %d %s" % (m.sarg(0), m.cstr(DS, MSG_BUF, 400).decode("latin-1")))
+        self.log("tell %d %s" % (m.sarg(0), m.cstr(DS, TEXT_BANK_BUFFER, 400).decode("latin-1")))
         return (0, 0)
 
-    def card_menu(self, m):
+    def card_choice_menu(self, m):
         run = self.run
         run.menus += 1
         if run.menus > 50:
             raise Stop("The card keeps asking: it never moves on.")
-        block = self.options_block
+        block = self.settings_block
         lines = self.messages.option_lines(run.texts_name, block)
-        states = list(m.read(DS, OPT_ON, 20))[:lines]
+        states = list(m.read(DS, CARD_OPTION_ENABLED, 20))[:lines]
         self.log("menu %d [%s] %s" % (block, "".join(str(s) for s in states), self.options_text or ""))
         if run.hand is not None and run.menus == run.hand["menu"]:
             return self.hand_menu(block, run.hand)
@@ -405,24 +472,22 @@ class Oracle:
             for i, s in enumerate(states):
                 if s != 0 or (forced and i == choice):
                     self.log("hint %d: %s" % (i, self.hint(i)))
-        m.put_word(DS, MENU_POPUP, 0)
+        if BOX_PROBE:
+            self.box_probe(block)
+        m.put_word(DS, POPUP_MENU_BOX, 0)
         if run.probe:
             kind = self.messages.popup_kind(run.texts_name, block, choice)
             if kind is not None:
                 pc = self.popup_choice(kind)
                 if pc is not None:
-                    # card_mouse opens the box: DS:EA64 = DS:EB5A (items) / DS:EC50 (saints), so DS:EB0A = item_fn / saint_fn
-                    m.write(DS, POPUP_LAYOUT, m.read(DS, SAINT_LAYOUT if kind else ITEM_LAYOUT, LAYOUT_SIZE))
-                    m.put_word(DS, MENU_POPUP, 1)
-                    m.put_word(DS, MENU_MEMBER, pc[0])
-                    m.put_word(DS, MENU_SLOT, pc[1])
+                    self.box_choice(kind, pc[0], pc[1])
         self.log("choose %d" % choice)
         return (choice, 0)
 
     def hand_menu(self, block: int, hand: dict):
         """A handler call (DARKLANDS_CARD_ORACLE handler runs): at menu number hand["menu"] the card gets line hand["line"]
-        whatever the line's state, as the card loop's `k = card_menu(..)` would return it; the card then calls the line's
-        handler (opt_fn[k], or the pop-up's item_fn / saint_fn slot) and runs its action. With hand["hints"] every line's
+        whatever the line's state, as the card loop's `k = card-choice-menu(..)` would return it; the card then calls the line's
+        handler (card-option-handler[k], or the pop-up's item-handler-table / saint-handler-table slot) and runs its action. With hand["hints"] every line's
         hint handler (0..19) is asked first, as Shift over the line asks it. With hand["slot"] the choice is made in the
         line's item or saint pop-up box (the box the line's marker in the text opens) on that slot, whoever holds the item."""
         m = self.m
@@ -430,52 +495,123 @@ class Oracle:
         if hand.get("hints"):
             for i in range(20):
                 self.log("hint %d: %s" % (i, self.hint(i)))
-        m.put_word(DS, MENU_POPUP, 0)
+        m.put_word(DS, POPUP_MENU_BOX, 0)
         slot = hand.get("slot")
         if slot is not None:
             kind = self.messages.popup_kind(self.run.texts_name, block, line)
             if kind is not None:
-                member = self.popup_member(kind, slot)
-                m.write(DS, POPUP_LAYOUT, m.read(DS, SAINT_LAYOUT if kind else ITEM_LAYOUT, LAYOUT_SIZE))
-                m.put_word(DS, MENU_POPUP, 1)
-                m.put_word(DS, MENU_MEMBER, member)
-                m.put_word(DS, MENU_SLOT, slot)
+                self.box_choice(kind, self.popup_member(kind, slot), slot)
         self.log("choose %d" % line)
         return (line, 0)
+
+    def box_choice(self, saints: bool, member: int, slot: int):
+        """A choice in the line's item or saint box, as card-mouse-handler leaves it: the box opens (DS:EA64 = DS:EB5A items /
+        DS:EC50 saints, R043+0x239C; R043+0x2CE2 writes the entries' states at +0x2E), the pointer enters it (DS:A778 =
+        DS:E96E, DS:E96E = DS:EA64, R043+0x245E: card-option-enabled and card-option-handler are then the box's states and handler table) and the
+        entry is chosen: by a click (popup-menu-box = 1, the card calls DS:EB0A[menu-choice-index]) or, with BOX_KEY, by Enter
+        (popup-menu-box 0, the card calls card-option-handler[k]); menu-owner-member and menu-choice-index are the entry's."""
+        m = self.m
+        layout = bytearray(m.read(DS, SAINT_LAYOUT if saints else ITEM_LAYOUT, LAYOUT_SIZE))
+        layout[LAYOUT_STATES:LAYOUT_STATES + 20] = bytes(self.box_states(saints))
+        m.write(DS, POPUP_LAYOUT, bytes(layout))
+        m.write(DS, SAVED_LAYOUT, m.read(DS, MENU_LAYOUT, LAYOUT_SIZE))
+        m.write(DS, MENU_LAYOUT, bytes(layout))
+        m.put_word(DS, POPUP_MENU_BOX, 0 if BOX_KEY else 1)
+        m.put_word(DS, MENU_OWNER_MEMBER, member)
+        m.put_word(DS, MENU_CHOICE_INDEX, slot)
+
+    def box_states(self, saints: bool) -> list:
+        """The box entries' states, member * 4 + slot, as R043+0x2CE2 stores them (DS:EA92)."""
+        m = self.m
+        lst = struct.unpack("<4h", m.read(DS, CARD_SAINT_LINES if saints else CARD_ITEM_LINES, 8))
+        every = m.word(DS, POPUP_ALL)
+        basic = m.byte(DS, DIFFICULTY) == 0
+        expert = m.byte(DS, DIFFICULTY) == 2
+        leader = m.byte(DS, LEADER)
+        out = [0] * 20
+        for i in range(m.word(DS, PARTY_HEADCOUNT)):
+            if m.byte(DS, PARTY + 0x80 * i) in (0, 5):
+                continue
+            for j in range(4):
+                if lst[j] == -1:
+                    continue
+                if saints:
+                    rn = m.call(*MEMBER_FLAG_BIT, [i, lst[j]])[0]
+                    if rn != 0 or (basic and leader == i) or every == 1:
+                        out[i * 4 + j] = 2 if (basic and leader == i and rn == 0 and every == 0) else 1
+                else:
+                    rn = m.call(*CARRIES_ITEM, [i, lst[j]])[0]
+                    if rn != 0 or (basic and leader == i) or every == 1:
+                        if basic and leader == i and rn == 0 and every == 0:
+                            out[i * 4 + j] = 2
+                        elif not expert and rn == 2 and every == 0:
+                            out[i * 4 + j] = 2
+                        elif rn == 1 or every != 0:
+                            out[i * 4 + j] = 1
+        return out
+
+    def box_probe(self, block: int):
+        """BOX_PROBE: for each item/saint line of the block, the box's handler (item-handler-table / saint-handler-table row 0, as DS:EB0A after
+        the box opened) for every present member and listed slot: the hint and $ChosenOneName after it."""
+        m = self.m
+        for k, saints in enumerate(self.messages.popup_kinds(self.run.texts_name, block)):
+            if saints is None:
+                continue
+            lst = struct.unpack("<4h", m.read(DS, CARD_SAINT_LINES if saints else CARD_ITEM_LINES, 8))
+            table = SAINT_HANDLER_TABLE if saints else ITEM_HANDLER_TABLE
+            for i in range(m.word(DS, PARTY_HEADCOUNT)):
+                if m.byte(DS, PARTY + 0x80 * i) in (0, 5):
+                    continue
+                for j in range(4):
+                    if lst[j] == -1:
+                        continue
+                    off, seg = m.word(DS, table + 4 * j), m.word(DS, table + 4 * j + 2)
+                    if off == 0 and seg == 0:
+                        self.log("box %d %d %d: null" % (k, i, j))
+                        continue
+                    m.put_word(DS, MENU_OWNER_MEMBER, i)
+                    m.put_word(DS, MENU_CHOICE_INDEX, j)
+                    m.write(DS, TEXT_BANK_BUFFER, b"\0")
+                    ax, dx = m.call(seg, off, [])
+                    chance = ax - 0x10000 if ax & 0x8000 else ax
+                    member = dx - 0x10000 if dx & 0x8000 else dx
+                    msg = m.cstr(DS, TEXT_BANK_BUFFER, 300).decode("latin-1") if chance == -1 else ""
+                    chosen = m.word(DS, VAR_CHOSEN[0])
+                    self.log("box %d %d %d: %d '%s' %d c%d" % (k, i, j, chance, msg, member, chosen - 0x10000 if chosen & 0x8000 else chosen))
 
     def popup_member(self, saints: bool, slot: int) -> int:
         """The member the pop-up box gives a slot: the last who has the item / knows the saint, else the last present member."""
         m = self.m
-        lst = struct.unpack("<4h", m.read(DS, CARD_SAINTS if saints else CARD_ITEMS, 8))
+        lst = struct.unpack("<4h", m.read(DS, CARD_SAINT_LINES if saints else CARD_ITEM_LINES, 8))
         every = m.word(DS, POPUP_ALL) != 0
-        size = m.word(DS, PARTY_SIZE)
+        size = m.word(DS, PARTY_HEADCOUNT)
         present = [i for i in range(size - 1, -1, -1) if m.byte(DS, PARTY + 0x80 * i) not in (0, 5)]
         for i in present:
             if lst[slot] == -1:
                 break
-            if every or (m.call(*MEMBER_BIT, [i, lst[slot]])[0] != 0 if saints else m.call(*HAS_ITEM, [i, lst[slot]])[0] == 1):
+            if every or (m.call(*MEMBER_FLAG_BIT, [i, lst[slot]])[0] != 0 if saints else m.call(*CARRIES_ITEM, [i, lst[slot]])[0] == 1):
                 return i
         return present[0] if present else 0
 
     def hint(self, k: int) -> str:
-        """opt_fn[k]() as card_mouse asks it under Shift: menu_member/menu_slot = line / 4, line % 4."""
+        """card-option-handler[k]() as card-mouse-handler asks it under Shift: menu-owner-member/menu-choice-index = line / 4, line % 4."""
         m = self.m
-        m.put_word(DS, MENU_MEMBER, k // 4)
-        m.put_word(DS, MENU_SLOT, k % 4)
-        m.write(DS, MSG_BUF, b"\0")
-        off, seg = m.word(DS, OPT_FN + 4 * k), m.word(DS, OPT_FN + 4 * k + 2)
+        m.put_word(DS, MENU_OWNER_MEMBER, k // 4)
+        m.put_word(DS, MENU_CHOICE_INDEX, k % 4)
+        m.write(DS, TEXT_BANK_BUFFER, b"\0")
+        off, seg = m.word(DS, CARD_OPTION_HANDLER + 4 * k), m.word(DS, CARD_OPTION_HANDLER + 4 * k + 2)
         ax, dx = m.call(seg, off, [])
         chance = ax - 0x10000 if ax & 0x8000 else ax
         member = dx - 0x10000 if dx & 0x8000 else dx
-        msg = m.cstr(DS, MSG_BUF, 300).decode("latin-1") if chance == -1 else ""
+        msg = m.cstr(DS, TEXT_BANK_BUFFER, 300).decode("latin-1") if chance == -1 else ""
         return "%d '%s' %d" % (chance, msg, member)
 
     def popup_choice(self, saints: bool):
         """The member and slot the pop-up box lets the player choose (the C# TracingScreen.PopupChoice)."""
         m = self.m
-        lst = struct.unpack("<4h", m.read(DS, CARD_SAINTS if saints else CARD_ITEMS, 8))
+        lst = struct.unpack("<4h", m.read(DS, CARD_SAINT_LINES if saints else CARD_ITEM_LINES, 8))
         every = m.word(DS, POPUP_ALL) != 0
-        size = m.word(DS, PARTY_SIZE)
+        size = m.word(DS, PARTY_HEADCOUNT)
         for i in range(size - 1, -1, -1):
             status = m.byte(DS, PARTY + 0x80 * i)
             if status in (0, 5):
@@ -486,9 +622,9 @@ class Oracle:
                 if every:
                     return (i, j)
                 if saints:
-                    if m.call(*MEMBER_BIT, [i, lst[j]])[0] != 0:
+                    if m.call(*MEMBER_FLAG_BIT, [i, lst[j]])[0] != 0:
                         return (i, j)
-                elif m.call(*HAS_ITEM, [i, lst[j]])[0] == 1:
+                elif m.call(*CARRIES_ITEM, [i, lst[j]])[0] == 1:
                     return (i, j)
         return None
 
@@ -500,7 +636,7 @@ class Oracle:
         self.log("film %s" % m.cstr(DS, m.arg(0), 40).decode("latin-1").lower())
         return (0, 0)
 
-    def message_box(self, m):
+    def notice_box(self, m):
         self.log("tell -2 %s" % m.cstr(DS, m.arg(0), 400).decode("latin-1"))
         return (0, 0)
 
@@ -518,6 +654,7 @@ class Oracle:
     # ---- a run -------------------------------------------------------------------------------
     def run_card(self, card: int, key: str, option: int, probe: bool, hand: dict | None = None) -> dict:
         """hand: a handler call {"menu": n, "line": k, "hints": bool, "slot": s | None} (hand_menu); the other menus follow the policy."""
+        orig_key = key
         key, force, path = split_key(key)
         self.boot(key)
         m = self.m
@@ -526,18 +663,21 @@ class Oracle:
         self.run = CardRun(option, probe, self.messages, hand)
         self.run.force = force
         self.run.path = path
-        self.options_block = 0
+        self.run.battles, self.run.prayers = results_of(orig_key)
+        # a card kept fighting by a constant result can need more than the default budget to reach the battle bound both sides stop at
+        m.budget = 50_000_000 * (4 if self.run.battles else 1)
+        self.settings_block = 0
         self.pending = None
         self.options_text = None
         self.pending_options = False
         m.ensure(rec)
         self.card_code = self.m.extent(rec)
-        name = self.names.get(card)
+        name = texts_of(orig_key) or self.names.get(card)
         if name and (name + ".msg")[:12].lower() in self.messages.entries:
             # the card's own texts, as the card before it would usually have left them (some cards never load
             # theirs: they keep the previous card's, see CARDS.md)
             m.ensure(43)
-            m.call(*MSG_LOAD, [m.push_string(name)])
+            m.call(*TEXT_BANK_READ, [m.push_string(name)])
             self.run.texts_name = name
             m.ensure(rec)
         try:
@@ -552,6 +692,9 @@ class Oracle:
             end = "stops %s" % str(e)[:300]
             nxt = None
         self.in_card = False
+        if OPTBLOCK_START is not None:
+            ob = m.word(DS, SETTINGS_BLOCK)
+            self.run.lines.append("settings-block %d" % (ob - 0x10000 if ob & 0x8000 else ob))
         run, self.run = self.run, None
         state = m.read(DS, HOLDRAND, 4)
         result = {"trace": run.lines, "end": end, "random": "%08X" % struct.unpack("<I", state)[0], "draws": run.draws}
@@ -565,20 +708,20 @@ class Oracle:
         """Direct calls (no card function, no menu) of the handlers of a card file's dormant option table, which the card never
         installs or offers: steps = [["setup", addr], ["hint", k, addr], ["action", k, addr], ["popup", slot, addr], ["default", addr]],
         addr "seg:off" as linked. Every call is a far call of the original's code on the booted state; a hint is formatted as the
-        probe's `hint` lines, a pop-up handler is asked with menu_member 0 and the slot, an action is followed by `next N`."""
+        probe's `hint` lines, a pop-up handler is asked with menu-owner-member 0 and the slot, an action is followed by `next N`."""
         self.boot(key)
         m = self.m
         rec = self.cards[card][0]
         m.put_word(DS, CARD, card)
         self.run = CardRun(0, True, self.messages)
-        self.options_block = 0
+        self.settings_block = 0
         self.pending = None
         self.options_text = None
         self.pending_options = False
         m.ensure(43)
         name = self.names.get(card)
-        m.call(*MSG_LOAD, [m.push_string(name)])
-        self.run.texts_name = self.run.card_name = name
+        m.call(*TEXT_BANK_READ, [m.push_string(name)])
+        self.run.texts_name = self.run.card_title = name
         m.ensure(rec)
         self.card_code = m.extent(rec)
         end = "ok"
@@ -590,21 +733,21 @@ class Oracle:
                     m.call(P(seg), off, [])
                 elif st[0] in ("hint", "default", "popup"):
                     if st[0] == "popup":
-                        m.put_word(DS, MENU_MEMBER, 0)
-                        m.put_word(DS, MENU_SLOT, st[1])
+                        m.put_word(DS, MENU_OWNER_MEMBER, 0)
+                        m.put_word(DS, MENU_CHOICE_INDEX, st[1])
                     else:
-                        m.put_word(DS, MENU_MEMBER, st[1] // 4 if st[0] == "hint" else 0)
-                        m.put_word(DS, MENU_SLOT, st[1] % 4 if st[0] == "hint" else 0)
-                    m.write(DS, MSG_BUF, b"\0")
+                        m.put_word(DS, MENU_OWNER_MEMBER, st[1] // 4 if st[0] == "hint" else 0)
+                        m.put_word(DS, MENU_CHOICE_INDEX, st[1] % 4 if st[0] == "hint" else 0)
+                    m.write(DS, TEXT_BANK_BUFFER, b"\0")
                     ax, dx = m.call(P(seg), off, [])
                     chance = ax - 0x10000 if ax & 0x8000 else ax
                     member = dx - 0x10000 if dx & 0x8000 else dx
-                    msg = m.cstr(DS, MSG_BUF, 300).decode("latin-1") if chance == -1 else ""
+                    msg = m.cstr(DS, TEXT_BANK_BUFFER, 300).decode("latin-1") if chance == -1 else ""
                     self.log("%s %s: %d '%s' %d" % (st[0], st[1] if st[0] != "default" else 0, chance, msg, member))
                 elif st[0] == "action":
-                    m.put_word(DS, NEXT_CARD, 0)
+                    m.put_word(DS, FOLLOWING_CARD, 0)
                     m.call(P(seg), off, [])
-                    nxt = m.word(DS, NEXT_CARD)
+                    nxt = m.word(DS, FOLLOWING_CARD)
                     self.log("action %d: next %d" % (st[1], nxt - 0x10000 if nxt & 0x8000 else nxt))
         except Stop as e:
             end = "stops %s" % str(e)[:300]
@@ -618,15 +761,15 @@ class Oracle:
     def after_card(self, nxt: int):
         """What the main loop (root 03A1:000A) does after a card that does not start a battle:
         `if (DS:A772 != 0xc) DS:A891 = 0; DS:A88F = DS:A88D; DS:A88D = DS:A772; DS:A772 = next; thunk 09C0:190F(0)`
-        (advance_hours(0)); the C# CardDispatcher.RunCard does the same."""
+        (pass-hours(0)); the C# CardDispatcher.RunCard does the same."""
         m = self.m
         cur = m.word(DS, CARD)
         if cur != 0x0C:
             m.put_word(DS, MAP_LEAVE, 0)
-        m.put_word(DS, CARD_BEFORE_PREVIOUS, m.word(DS, PREV_SCREEN))
-        m.put_word(DS, PREV_SCREEN, cur)
+        m.put_word(DS, CARD_BEFORE_PREVIOUS, m.word(DS, EARLIER_SCREEN))
+        m.put_word(DS, EARLIER_SCREEN, cur)
         m.put_word(DS, CARD, nxt)
-        m.call(*ADVANCE_HOURS, [0])
+        m.call(*PASS_HOURS, [0])
 
     def final_sav(self) -> dict:
         m = self.m
@@ -658,9 +801,35 @@ def split_key(key: str):
             force = tuple(int(x) for x in p[1:].split("."))
         elif re.fullmatch(r"P\d+(_\d+)*", p):
             path = [int(x) for x in p[1:].split("_")]
+        elif re.fullmatch(r"B\d(_\d)*", p) or re.fullmatch(r"Y[cfa](_[cfa])*", p) or re.fullmatch(r"T\$\w+", p):
+            pass                                     # the controlled battle / prayer results (results_of), the preloaded texts (texts_of): no state change
         else:
             keep.append(p)
     return (head + ("-V" + "+".join(keep) if keep else "") + "-O" + option), force, path
+
+
+def texts_of(key: str):
+    """The variant part "T$Enter00": the message file the card before left loaded, preloaded instead of the card's own (a card that only
+    names itself, without card-run, reads its texts from it). None: the card's own."""
+    if "-V" in key:
+        for p in key.split("-V", 1)[1].rsplit("-O", 1)[0].split("+"):
+            if re.fullmatch(r"T\$\w+", p):
+                return p[1:]
+    return None
+
+
+def results_of(key: str):
+    """The controlled service results of a run key's variant: (battle results, prayer answers) or None each. Variant part "B5" (or "B0_5": the first
+    battle of the run ends with result 0, the later ones with 5), "Yc" / "Yf" / "Ya" (or "Yf_a": the prayer screen is cancelled (-1) / the
+    prayer fails (0) / is answered (1); the later prayers repeat the last). The harness's stubs return 0 for both when no part is given."""
+    battles = prayers = None
+    if "-V" in key:
+        for p in key.split("-V", 1)[1].rsplit("-O", 1)[0].split("+"):
+            if re.fullmatch(r"B\d(_\d)*", p):
+                battles = [int(x) for x in p[1:].split("_")]
+            elif re.fullmatch(r"Y[cfa](_[cfa])*", p):
+                prayers = [{"c": -1, "f": 0, "a": 1}[x] for x in p[1:].split("_")]
+    return battles, prayers
 
 
 def card_names() -> dict[int, str]:
@@ -690,7 +859,7 @@ class MessageFiles:
 
     def blocks(self, card: str):
         if card not in self.cache:
-            e = self.entries.get((card + ".msg")[:12].lower())   # catalog_find: strnicmp(.., 12)
+            e = self.entries.get((card + ".msg")[:12].lower())   # catalog-lookup: strnicmp(.., 12)
             out = []
             if e is not None:
                 d = self.data[e[0]:e[0] + e[1]]
@@ -708,6 +877,13 @@ class MessageFiles:
         if block < 0 or block >= len(bl):
             return 20
         return min(20, sum(1 for b in bl[block] if b in (0x15, 0x10, 0x16, 0x06)))
+
+    def popup_kinds(self, card: str, block: int):
+        """Per option line of the block: True the saints' box, False the items' box, None none."""
+        bl = self.blocks(card)
+        if block < 0 or block >= len(bl):
+            return []
+        return [{0x10: False, 0x16: True}.get(b) for b in bl[block] if b in (0x15, 0x10, 0x16, 0x06)][:20]
 
     def popup_kind(self, card: str, block: int, line: int):
         """True: the line opens the saints' box, False the items' box, None no box."""
@@ -730,10 +906,36 @@ def init_worker(exe_path, game, states, coverage_dir):
     _W["coverage"] = coverage_dir
 
 
+def commit_mb() -> float:
+    """This process's committed memory in MB (Windows PagefileUsage; 0 elsewhere): only for the optional DARKLANDS_CARD_ORACLE_MEMLOG file."""
+    try:
+        import ctypes
+        import ctypes.wintypes as w
+
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", w.DWORD), ("PageFaultCount", w.DWORD)] + [(n, ctypes.c_size_t) for n in (
+                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+        k = ctypes.WinDLL("kernel32")
+        k.GetCurrentProcess.restype = w.HANDLE
+        k.K32GetProcessMemoryInfo.argtypes = [w.HANDLE, ctypes.c_void_p, w.DWORD]
+        p = PMC()
+        p.cb = ctypes.sizeof(p)
+        k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(p), p.cb)
+        return p.PagefileUsage / 2**20
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def run_card_safe(card: int) -> tuple[int, dict]:
     """run_card_all; a failure of the emulator itself is reported and the worker's machine is made anew."""
     try:
-        return run_card_all(card)
+        res = run_card_all(card)
+        log = os.environ.get("DARKLANDS_CARD_ORACLE_MEMLOG")        # measuring only: pid, card, commit MB after the card
+        if log:
+            with open(log, "a") as f:
+                f.write("%d %X %.0f\n" % (os.getpid(), card, commit_mb()))
+        return res
     except Exception as e:  # noqa: BLE001
         exe_path, game, states, coverage_dir = _W["args"]
         _W["oracle"] = Oracle(Path(exe_path).read_bytes(), game, Path(states), coverage=bool(coverage_dir))
@@ -782,6 +984,9 @@ def main():
     ap.add_argument("--cards")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--coverage")
+    # a worker's machine grows by ~35 MB per card (measured; ~12 GB over 365 cards in one worker, 2026-10-28 golden run: access
+    # violations and MemoryError), so a worker is replaced after this many cards (0: never); the results do not change
+    ap.add_argument("--cards-per-worker", type=int, default=8)
     a = ap.parse_args()
     if a.coverage:
         os.makedirs(a.coverage, exist_ok=True)
@@ -798,7 +1003,8 @@ def main():
             if "error" not in v:
                 results[k] = v
     todo = [c for c in cards if c not in results]
-    with Pool(a.workers, initializer=init_worker, initargs=(a.exe, a.game, a.states, a.coverage)) as pool, \
+    with Pool(a.workers, initializer=init_worker, initargs=(a.exe, a.game, a.states, a.coverage),
+              maxtasksperchild=a.cards_per_worker or None) as pool, \
             partial.open("a", encoding="utf-8") as f:
         for k, v in pool.imap_unordered(run_card_safe, todo):
             f.write(json.dumps([k, v], separators=(",", ":")) + "\n")

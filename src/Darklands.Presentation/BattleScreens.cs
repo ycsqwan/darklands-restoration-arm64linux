@@ -11,7 +11,7 @@ namespace Darklands.Presentation;
 /// battlefield for the request, runs the tactical screen until the battle ends, hands the loot
 /// over and returns the result code (0 won, 2 fled, 3 lost, 4 surrendered, 5 all down …).
 /// </summary>
-// orig: battle_run R002+0x0000 (0E76:0000) draft
+// orig: battle-entry R002+0x0000 (0E76:0000) draft
 public sealed class BattleScreens
 {
     private readonly GameUi _ui;
@@ -46,7 +46,7 @@ public sealed class BattleScreens
 
     /// <summary>
     /// Runs one battle. <see cref="BattleRequest.Battlefield"/> is the battlefield type (the
-    /// card's <c>battle_enemy</c>, or <c>run_battle</c>'s first argument), <see cref="BattleRequest.Seed"/>
+    /// card's <c>battle-enemy-group</c>, or <c>battle-driver</c>'s first argument), <see cref="BattleRequest.Seed"/>
     /// the battle seed, the groups the three (enemy type, quality, number) specs.
     /// </summary>
     public int Battle(BattleRequest request)
@@ -72,7 +72,7 @@ public sealed class BattleScreens
             Fighting = false;
         }
         LastResultCard = screen.ResultCard;
-        // orig: R002+0x0000 at its end: `combat_flags &= 0xFE10` (bits 1, 2, 4, 8, 0x20, 0x40 and 0x80 cleared after every battle); tests: RevisitTests
+        // orig: R002+0x0000 at its end: `fight-flags &= 0xFE10` (bits 1, 2, 4, 8, 0x20, 0x40 and 0x80 cleared after every battle); tests: RevisitTests
         _state().BattleOrders.Flags &= 0xFE10;
         return result;
     }
@@ -93,11 +93,11 @@ public sealed class BattleScreens
     public const int FinishedText = 0x0FD8;
 
     /// <summary>
-    /// In a battle, for a party member who left the battlefield through an exit (cbt_floor DS:A6B4 = 0x9D, −99): R022+0x04E4's
+    /// In a battle, for a party member who left the battlefield through an exit (fighter-floor-level DS:A6B4 = 0x9D, −99): R022+0x04E4's
     /// "You can't view &lt;name&gt; at this time." for 150 ticks, and true; false otherwise (no battle, or the member is still there).
     /// The character sheet (R031+0x0124) and the loot screen (R040+0x0C22) ask it before showing a member.
     /// </summary>
-    // orig: R031+0x0124's `if (DS:907A == 1 && cbt_floor[m] == 0x9D) thunk 09C0:1D51(m)` (R031+0x0644..0x064B, 0x07A4..0x07AB,
+    // orig: R031+0x0124's `if (DS:907A == 1 && fighter-floor-level[m] == 0x9D) thunk 09C0:1D51(m)` (R031+0x0644..0x064B, 0x07A4..0x07AB,
     //   0x0837..0x083E: `cmp byte [di - 0x594C], 0x9D`, the byte table; portrait click, F1..F5, Enter on a member box);
     //   R022+0x04E4 matched: sprintf("%Fs%s%Fs", 286B:0212, name, 286B:0222), root 0000:24BC(buf, 0x96)
     public bool CannotViewMember(int member)
@@ -143,8 +143,8 @@ public sealed class BattleScreens
         return "Select " + FarText(p[0] | p[1] << 8);
     }
 
-    /// <summary>"BattleResults - victory" … (battle_run, the box after the battle; result 8 "leave").</summary>
-    // orig: battle_run R002+0x0000 (0E76:0000) draft (the switch on DS:A893)
+    /// <summary>"BattleResults - victory" … (battle-entry, the box after the battle; result 8 "leave").</summary>
+    // orig: battle-entry R002+0x0000 (0E76:0000) draft (the switch on DS:A893)
     internal static string ResultText(int result) => "BattleResults - " + result switch
     {
         0 => "victory",
@@ -156,7 +156,7 @@ public sealed class BattleScreens
         _ => "",
     };
 
-    private string FarText(int offset)
+    internal string FarText(int offset)
     {
         var bytes = Assets.Executable.Far(0x286B, offset, 60);
         var end = bytes.IndexOf((byte)0);
@@ -169,24 +169,28 @@ public sealed class BattleScreens
     public Core.Battles.Generation.GeneratedBattlefield? LastField { get; internal set; }
 
     /// <summary>The generator globals of the whole program (DS:E051 …), kept across battles and loads.</summary>
-    public Core.Battles.Generation.GenerationProcessMemory GenerationMemory { get; } = new();
+    public Core.Battles.Generation.GenerationProcessMemory GenerationMemory { get; init; } = new();
 
     public int LastFieldLocation { get; internal set; } = -1;
 
     /// <summary>DS:C866 / DS:C886: the battle view's centre cell, a global the next battle's first view is drawn around (unless its
     /// placement sets it).</summary>
-    // UNCERTAIN: (0, 0) here when a game is begun or loaded from the opening screen; the original's value then (the program's start,
-    // or a battle of the game played before) was not traced.
+    // C: (0, 0) when a game is begun or loaded from the opening screen at the program's start: DS:C866/C886 are in the BSS the start-up clears
+    // (root 06A1:009D..00B7); a game loaded after a battle of an earlier one keeps the last centre (DarklandsGame._battleViewCentre).
     public (int Column, int Row) ViewCentre { get; internal set; }
 
     /// <summary>seenpos (20A5:79A9): where each combatant last saw each other one near its path, a program global no battle start clears
     /// (only a path found writes it, R014+0xF568): the last battle's (or the battle a load left) arrays, null before any battle.</summary>
     public Darklands.Core.Battles.MapPoint[][]? SeenPositions { get; internal set; }
 
+    /// <summary>The cursor keys' state (DS:D728, DS:D73B, DS:D7FE, DS:D947, DS:D945), program globals no battle start clears: each battle
+    /// works on this one (DarklandsGame keeps it across loads; a battle file restored puts its bytes back).</summary>
+    public Darklands.Core.Battles.Tactics.CursorKeyState CursorKeys { get; internal set; } = new();
+
     /// <summary>The view centre now: the running battle's while one runs, else <see cref="ViewCentre"/>.</summary>
     public (int Column, int Row) CurrentViewCentre => Current?.ViewCentre ?? ViewCentre;
 
-    /// <summary>The card the last battle left for (battle_args: the level's card for its result).</summary>
+    /// <summary>The card the last battle left for (battle-start-arguments: the level's card for its result).</summary>
     public int LastResultCard { get; private set; }
 
     /// <summary>The loot of a pile or of the victory: to the loot screen, or kept in <see cref="LastLoot"/>.</summary>

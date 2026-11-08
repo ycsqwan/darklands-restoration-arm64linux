@@ -8,7 +8,7 @@ using Darklands.Simulation;
 namespace Darklands.Battles.Tests;
 
 /// <summary>
-/// In a battle a member who left the battlefield through an exit (cbt_floor 0x9D) is refused by the character sheet's own member
+/// In a battle a member who left the battlefield through an exit (fighter-floor-level 0x9D) is refused by the character sheet's own member
 /// switch (R031+0x0124: F1..F5, a portrait click, Enter on a member box) and skipped by the loot screen's D (R040+0x0DB4..0x0DC8),
 /// both after thunk 09C0:1D51 (R022+0x04E4, "You can't view ... at this time.").
 /// </summary>
@@ -101,5 +101,34 @@ public sealed class SheetCannotViewTests
         sheet.Show(state, 0);
         Assert.False(host.QuitRequested);
         Assert.Equal([1, 2], asked);
+    }
+
+    /// <summary>
+    /// Alt-Q read by the sheet itself (no hot keys installed): case 0x1000 R031+0x1C3C runs the clean-up R031+0x08F6 and the quit question root
+    /// 0000:13A0, whose "no" leaves the sheet up with the save and the load offered again (it quit at once before).
+    /// </summary>
+    [Fact]
+    public void AltQReadByTheSheetAsksAndTheSheetGoesOnAfterNo()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        // Alt-Q, "n", then Esc (the sheet leaves)
+        var host = new KeyHost(Spaced(Keys.AltQ, 0x316E, Keys.Escape));
+        var ui = new GameUi(host, new GameAssets(files));
+        var state = NewGame.Quickstart(world, 1, () => 1);
+        state.Data = world;
+        var formulas = FormulaBook.Load(files, world);
+        var panel = new PartyPanel(ui.Assets);
+        var offered = new List<int>();
+        var sheet = new CharacterSheetScreen(ui, panel, formulas, world.Items.Saints.Select(s => s.FullName).ToList(), new AlchemyScreen(ui, panel, formulas))
+        {
+            SaveAndLoad = offered.Add,
+        };
+        sheet.Show(state, 0);
+        Assert.False(host.QuitRequested);
+        Assert.Equal([2, 1, 1], offered);
     }
 }

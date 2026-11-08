@@ -31,7 +31,9 @@ public sealed class ScreenInputTests
         public int Pumped { get; private set; }
         public int Left => _frames.Count;
 
-        public void Present(Screen screen) { }
+        public Action<Screen>? Presented { get; set; }
+
+        public void Present(Screen screen) => Presented?.Invoke(screen);
 
         public void Sleep(int milliseconds) => _now += Math.Max(1, milliseconds);
 
@@ -118,6 +120,48 @@ public sealed class ScreenInputTests
         Assert.Equal(0, ui.TakeLeftReleases().Count);
     }
 
+    /// <summary>
+    /// The inn's roster: Down onto row 4 (past the four figure pictures) with the party member of roster entry 4 there loads
+    /// "pics\small.pic" (R038+0x045F..0x04CA) and the program ends (exit 99); fixed (DataSafe), the roster goes on.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AnArrowOntoAPartyMemberPastTheFigureListEndsTheProgramUnlessFixed(bool fixedGame)
+    {
+        (int, MouseState)[] frames = [Up(5, 5), Up(5, 5), Key(Keys.Down), Up(5, 5), Key(Keys.Down), Up(5, 5), Key(Keys.Down), Up(5, 5),
+            Key(Keys.Down), Up(5, 5), Key(Keys.Escape), Up(5, 5), Up(5, 5)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, state, panel, world))
+        {
+            return;
+        }
+        // DKSAVE0: six roster records, party slot 0 holds record 4, so row 4 (the fifth, past the four figure pictures) is a member
+        var saves = DarklandsGame.DefaultSaveDirectory(ui.Assets.Files.Root);
+        if (Directory.GetFiles(saves).FirstOrDefault(f => Path.GetFileName(f).Equals("DKSAVE0.SAV", StringComparison.OrdinalIgnoreCase)) is not { } sav)
+        {
+            return;
+        }
+        state = Darklands.Persistence.OriginalSaves.Read(File.ReadAllBytes(sav), [], "DKSAVE0.SAV", world).State;
+        state.Data = world;
+        Assert.Equal(4, state.Roster.PartySlots[0]);
+        state.Behaviour = fixedGame ? OriginalBehaviour.DataSafe : OriginalBehaviour.Faithful;
+        // the menus' shared row from the top (a new run of the program)
+        CharacterCreationScreen.ProgramStart();
+        var roster = new PartyRosterScreen(ui, panel, world);
+        if (fixedGame)
+        {
+            roster.Run(state, 0);
+            Assert.False(host.QuitRequested);
+        }
+        else
+        {
+            var exit = Assert.Throws<ProgramExitException>(() => roster.Run(state, 0));
+            Assert.Equal("pics\\small.pic: No such file or directory\n", exit.Printed);
+            Assert.Equal(99, exit.Code);
+        }
+    }
+
     /// <summary>The creation menu's exit R037+0x0348 clears the mouse driver's left-release count (root 047C:1320(6, 0, 0, 0)).</summary>
     [Fact]
     public void TheCreationMenuLeavesNoReleaseCountBehind()
@@ -132,6 +176,55 @@ public sealed class ScreenInputTests
         Assert.Null(new CharacterCreationScreen(ui, world, () => 1).Run());
         Assert.False(host.QuitRequested);
         Assert.Equal(0, ui.TakeLeftReleases().Count);
+    }
+
+    /// <summary>
+    /// A in the creation menu: the new member's figure colours are colours 235..242 (DS:E753, set by R037+0x0B9C..0x0C88, as the original's
+    /// DAC shows them), and only the filled slot's row is drawn: the three empty rows keep the menu's picture (R037+0x0D6F / 0x0D7A).
+    /// </summary>
+    [Fact]
+    public void AddingAMemberColoursItsFigureAndDrawsOnlyItsRow()
+    {
+        (int, MouseState)[] frames = [Up(5, 5), Up(5, 5), Key(Keys.ForCharacter('a')), Up(5, 5), Up(5, 5), Up(5, 5), Key(Keys.Escape), Up(5, 5)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, _, _, world))
+        {
+            return;
+        }
+        (byte[] Pixels, uint[] Palette)? first = null, added = null;
+        host.Presented = s =>
+        {
+            if (host.Left < 2)
+            {
+                return;
+            }
+            var shot = ((byte[])s.Pixels.Clone(), (uint[])s.Palette.Clone());
+            first ??= shot;
+            added = shot;
+        };
+        Assert.Null(new CharacterCreationScreen(ui, world, () => 1).Run());
+        Assert.NotNull(first);
+        Assert.NotNull(added);
+        var start = Darklands.Core.Characters.Creation.PortraitColours.InnStartPalette;
+        static uint Vga(byte r, byte g, byte b) => (uint)(Widen(r) << 16 | Widen(g) << 8 | Widen(b));
+        static int Widen(byte v) => (v & 0x3F) << 2 | (v & 0x3F) >> 4;
+        for (var i = 0; i < 8; i++)
+        {
+            Assert.Equal(Vga(start[3 * i], start[3 * i + 1], start[3 * i + 2]), added.Value.Palette[235 + i] & 0xFFFFFF);
+        }
+        // colours 243 and 244 keep the menu picture's own colours
+        Assert.Equal(first.Value.Palette[243] & 0xFFFFFF, added.Value.Palette[243] & 0xFFFFFF);
+        Assert.Equal(first.Value.Palette[244] & 0xFFFFFF, added.Value.Palette[244] & 0xFFFFFF);
+        // the first slot's row is drawn; slots 1..3 (y 0x28 .. 0x9F, x 0 .. 0x3B) are the menu's picture as before
+        Assert.Contains(Enumerable.Range(1, 0x26).SelectMany(y => Enumerable.Range(3, 0x36).Select(x => y * 320 + x)),
+            k => added.Value.Pixels[k] != first.Value.Pixels[k]);
+        for (var y = 0x28; y < 0xA0; y++)
+        {
+            for (var x = 0; x < 0x3C; x++)
+            {
+                Assert.Equal(first.Value.Pixels[y * 320 + x], added.Value.Pixels[y * 320 + x]);
+            }
+        }
     }
 
     /// <summary>The generator's exit R037+0x4ADC clears the mouse driver's left-release count too.</summary>
@@ -206,7 +299,7 @@ public sealed class ScreenInputTests
             (bool)typeof(CharacterSheetScreen).GetField("_open", flags)!.GetValue(sheet)!);
     }
 
-    // orig: R031+0x161C: the Ctrl-F1..F5 case tests `slot < party_size` (DS:A67E); the character menu's sheet has party_size 0
+    // orig: R031+0x161C: the Ctrl-F1..F5 case tests `slot < party-headcount` (DS:A67E); the character menu's sheet has party-headcount 0
     [Theory]
     [InlineData(false, 1)]
     [InlineData(true, 0)]
@@ -228,7 +321,7 @@ public sealed class ScreenInputTests
         state.Party.LeaderIndex = 0;
         sheet.Show(state, 0);
         Assert.False(host.QuitRequested);
-        // Ctrl-F2 (0x5F00) makes the second member the leader, unless party_size is 0
+        // Ctrl-F2 (0x5F00) makes the second member the leader, unless party-headcount is 0
         Assert.Equal(leader, state.Party.LeaderIndex);
     }
 
@@ -312,7 +405,7 @@ public sealed class ScreenInputTests
 
     /// <summary>
     /// P (R031+0x1B2C) has no count test either: a potion entry left past the end is drunk and taken (R031+0x4CC4: its count byte 1 -> 0,
-    /// item_delete), which lowers the pack's signed count to -1.
+    /// item-erase), which lowers the pack's signed count to -1.
     /// </summary>
     [Fact]
     public void PDrinksAnEntryPastThePacksEnd()
@@ -331,7 +424,7 @@ public sealed class ScreenInputTests
         Assert.Equal(-1, state.Party.Slot(0).Pack.Stacks);
     }
 
-    // orig: R037+0x01C0 (a press on the party column, x < 0x3C, opens member_sheet for slot y / 0x28 when the slot is filled)
+    // orig: R037+0x01C0 (a press on the party column, x < 0x3C, opens member-sheet-screen for slot y / 0x28 when the slot is filled)
     [Fact]
     public void TheCreationMenuOpensTheSheetOfAMembersFigure()
     {
@@ -350,6 +443,22 @@ public sealed class ScreenInputTests
         var game = new CharacterCreationScreen(ui, world, () => 1).Run();
         Assert.NotNull(game);
         Assert.Equal(1, game.Party.LeaderIndex);
+    }
+
+    // orig: R037+0x9DB2 case C: party-random-seed (DS:9C4A) = the BIOS tick word at 0040:006C, not time(0); the party "Begin the Adventure" starts holds it
+    // (lockstep chargen-created: the original's saved game +0x64 = 0x0B5A where the clock's seed was 7622)
+    [Fact]
+    public void TheCreatedPartysSeedIsTheBiosTickWordNotTheClocksSeed()
+    {
+        (int, MouseState)[] frames = [Up(5, 5), Key(Keys.ForCharacter('a')), Up(5, 5), Key(Keys.ForCharacter('b')), Up(5, 5)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, _, _, world))
+        {
+            return;
+        }
+        var game = new CharacterCreationScreen(ui, world, () => 7622, () => 0x0B5A).Run();
+        Assert.NotNull(game);
+        Assert.Equal(0x0B5A, game.Party.Seed);
     }
 
     // orig: R037+0x7F06 (the formulae box) waits for a key or the button; a press closes it and stays down, so R037+0x4664's loop takes it
@@ -413,10 +522,10 @@ public sealed class ScreenInputTests
     }
 
     /// <summary>
-    /// The card menu takes Up / Down only with the pointer over one of its lines and never a digit, as the original's card_menu;
+    /// The card menu takes Up / Down only with the pointer over one of its lines and never a digit, as the original's card-choice-menu;
     /// GameUi.KeyboardCardMenus (off by default) adds both.
     /// </summary>
-    // orig: R043+0x1BD2: Up 0x4800 (R043+0x1CE5) and Down 0x5000 (R043+0x1D46) need DS:ED6C == 1 (card_mouse R043+0x21D4: the pointer inside
+    // orig: R043+0x1BD2: Up 0x4800 (R043+0x1CE5) and Down 0x5000 (R043+0x1D46) need DS:ED6C == 1 (card-mouse-handler R043+0x21D4: the pointer inside
     // a line, R043+0x2232), Enter / Space (R043+0x1C77) a highlighted line (DS:E96F != 0xFF); a digit matches none of its compares
     [Theory]
     [InlineData(false, 1)]
@@ -478,5 +587,105 @@ public sealed class ScreenInputTests
         Assert.Throws<QuitGameException>(() => new CharacterGeneratorScreen(ui, data, world, creation).Run());
         Assert.False(chosen);
         Assert.Equal(0, hotKeys);
+    }
+
+    /// <summary>
+    /// A prayer on the creation's member sheet: St.Finnian's three skill boosts report in the side window (R043+0x29D0), each waiting for
+    /// a key and eating it (lockstep session carry-create-pray3: the original's stack R034+0x0102 &lt; R039+0x49C4 &lt; R043+0x29D0, and the
+    /// begun game agrees only with the reports' waits); the fourth key is left for the screen after.
+    /// </summary>
+    [Fact]
+    public void ASaintsSkillBoostsOnTheCreationSheetWaitForAKeyEach()
+    {
+        int a = Keys.ForCharacter('a'), b = Keys.ForCharacter('b'), c = Keys.ForCharacter('c'), d = Keys.ForCharacter('d');
+        (int, MouseState)[] frames = [Up(5, 5), Key(a), Up(5, 5), Key(b), Up(5, 5), Key(c), Up(5, 5), Key(d), Up(5, 5)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, game, _, world))
+        {
+            return;
+        }
+        var sheet = CharacterCreationScreen.SheetState(ui, world, new Darklands.Core.Randomness.MscRandom(3), 5);
+        sheet.Party = game.Party;
+        var before = sheet.Party.Members[0].Skills[(int)Darklands.Core.Characters.Skill.Streetwise];
+
+        Darklands.Core.Rules.SaintBook.Help(sheet, 0, 50);   // St.Finnian
+
+        Assert.IsType<SideWindowMessages>(sheet.Messages);
+        Assert.True(sheet.Party.Members[0].Skills[(int)Darklands.Core.Characters.Skill.Streetwise] > before);
+        Assert.Contains(sheet.Events.All(), e => e.Event.Kind == Darklands.Core.Events.EventKinds.TravelBlessing);
+        Assert.Equal(d, ui.WaitForAction().Key);
+    }
+
+    /// <summary>
+    /// A Standing saint's prayer on the creation's member sheet changes the start-up city's standing: the sheet's state holds the world's
+    /// location records (the round carry's note: before CarryOverSheetWorld it indexed an empty list).
+    /// </summary>
+    [Fact]
+    public void AStandingSaintOnTheCreationSheetFindsTheStartUpCity()
+    {
+        var host = new FrameHost(Up(5, 5));
+        if (Start(host) is not var (ui, game, _, world))
+        {
+            return;
+        }
+        var sheet = CharacterCreationScreen.SheetState(ui, world, new Darklands.Core.Randomness.MscRandom(3), 5);
+        sheet.Party = game.Party;
+        Assert.Equal(world.CreateLocations().Count, sheet.Locations.Count);
+        var before = sheet.Locations[5].Reputation;
+
+        Darklands.Core.Rules.SaintBook.Help(sheet, 0, 6);   // St.Alexis: Standing(10, 20) here first
+
+        Assert.NotEqual(before, sheet.Locations[5].Reputation);
+    }
+
+    /// <summary>
+    /// The text box (the save's comment, R037+0x43E6) hides the pointer before it draws (root 047C:12C3) and shows it after (root 047C:1293):
+    /// no frame shown while it waits has the pointer (vis10 session comm-inn, alts2: the original's screen has none).
+    /// </summary>
+    [Fact]
+    public void TheCommentBoxShowsNoPointerWhileItWaits()
+    {
+        (int, MouseState)[] frames = [Up(20, 20), Up(20, 20), Key(Keys.ForCharacter('x')), Up(20, 20), Key(Keys.Enter), Up(20, 20)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, _, _, _))
+        {
+            return;
+        }
+        var shown = new List<bool>();
+        host.Presented = _ => shown.Add(ui.PointerVisible);
+        Assert.True(ui.PointerVisible);
+
+        var text = new TextInputBox(ui).Ask("Save Game Comment:", SaveGameDialog.CommentLength, "Darklands");
+
+        Assert.Equal("Darklandsx", text);
+        Assert.True(shown.Count > 1);
+        Assert.All(shown[..^1], Assert.False);
+        Assert.True(shown[^1]);   // the screen put back, then the pointer
+    }
+
+    /// <summary>
+    /// The y/n question (yes-no-prompt root 0000:2522) hides the pointer before its box (0x257A, root 047C:12C3) and shows it after the box
+    /// is put back (0x25E4, root 047C:1293): no frame shown while it waits has the pointer (vis10 sessions D-751050 "Delete this Game?" and
+    /// batpal-screens "Quit to DOS?": the original's screens have none).
+    /// </summary>
+    [Fact]
+    public void TheYesNoQuestionShowsNoPointerWhileItWaits()
+    {
+        (int, MouseState)[] frames = [Up(20, 20), Up(20, 20), Key(Keys.ForCharacter('x')), Up(20, 20), Key(Keys.ForCharacter('n')), Up(20, 20)];
+        var host = new FrameHost(frames);
+        if (Start(host) is not var (ui, _, _, _))
+        {
+            return;
+        }
+        var shown = new List<bool>();
+        host.Presented = _ => shown.Add(ui.PointerVisible);
+        Assert.True(ui.PointerVisible);
+
+        var yes = new MessageBox(ui).Ask("Quit to DOS?");
+
+        Assert.False(yes);
+        Assert.True(shown.Count > 1);
+        Assert.All(shown[..^1], Assert.False);
+        Assert.True(shown[^1]);   // the screen put back, then the pointer
     }
 }

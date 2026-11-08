@@ -75,7 +75,9 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
         {
             return null;
         }
-        // orig: root 044A:0100 asm: int 1Bh (Ctrl-Break) to the game's handler. DIVERGENCE: no Ctrl-Break here.
+        // orig: root 044A:0100 asm: int 1Bh (Ctrl-Break) to the game's handler root 044A:013F (DS:07F4 = 0xFF): GameUi.CtrlBreakPressed (a
+        //   Ctrl-Break before it, DOS's, is GameUi.QuitCheck's divergence)
+        // C: GameUi.QuitCheck (quit-check root 0000:1338); lockstep sessions kbreak-card-quit, kbreak-menu-quit
         return GameStart(config.Driver) ? new StartUpResult(config.NoAnimations, config.Driver) : null;
     }
 
@@ -91,6 +93,20 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
         {
             Console.Write(row, 0, Entry(row));
         }
+        return Configuration(hold: true);
+    }
+
+    /// <summary>
+    /// The configuration as a new run of the program reads it again (CONFIG.DRK and the command line; DarklandsGame.RestartProgram): no banner,
+    /// and a stop (an unknown argument, a missing driver) shows nothing; null then.
+    /// </summary>
+    // orig: R000+0x0114 again in the next run of the program (the original reads CONFIG.DRK once per run, before the banner's wait)
+    public StartUpResult? ReadConfiguration() =>
+        Configuration(hold: false) is { } config ? new StartUpResult(config.NoAnimations, config.Driver) : null;
+
+    /// <summary>CONFIG.DRK and the command line (the part of R000+0x0114 after the banner); <paramref name="hold"/>: a stop holds its messages.</summary>
+    private (bool NoAnimations, bool Report, string Driver)? Configuration(bool hold)
+    {
         // orig: fopen("config.drk", "rb"): missing, the driver is "nsound.dlc"; else fread(DS:A86E, 8, 1, f) (card, port, IRQ, DMA)
         // and the card's letter + "sound.dlc"
         // C: a shorter file leaves the rest of the eight bytes as they were (zero at the start of the program).
@@ -169,7 +185,10 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
         (bool, bool, string)? Stop()
         {
             // orig: exit(0) after the loop: the messages stay under the banner and DOS comes back
-            HoldText();
+            if (hold)
+            {
+                HoldText();
+            }
             return null;
         }
     }
@@ -180,7 +199,7 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
     // available = the owned blocks from the program's on + the largest free block; at (14, 0): with too little memory or -O the three
     // figures (entries 15, 16, 17); too little: with -O entry 18 and on, else exit(0); then the wait of 3 to 4 seconds
     // DIVERGENCE (host): there is no DOS memory here: the program's block is its EXE's load size (header) plus its minimum allocation and the
-    // PSP, the free memory a constant; the check always passes, the -O figures are an estimate. dk.tmp (the first 0x42 bytes of DGROUP, saved at start-up and put back by quit_to_dos before exit, the C runtime's copyright string, which its exit code compares to detect a null-pointer write) is not written.
+    // PSP, the free memory a constant; the check always passes, the -O figures are an estimate. dk.tmp (the first 0x42 bytes of DGROUP, saved at start-up and put back by exit-to-system before exit, the C runtime's copyright string, which its exit code compares to detect a null-pointer write) is not written.
     private bool MemoryCheck(bool report, string driver)
     {
         var needed = ProgramBlockBytes() + 0x4B6B0 + DriverBytes(driver[0]);
@@ -251,7 +270,8 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
             return false;
         }
         // the graphics screen: black, the default palette until the first picture sets its own
-        // UNCERTAIN: the driver's mouse pointer (shown after commonsp.img) is left out until the start screen, as during the opening.
+        // C: the pointer is drawn only once pointer-show root 047C:1293 sets DS:6A81 (the only writer of 1, root 047C:12BD; 047C:131C
+        //   puts a saved value back); start-up sets its shape only (root 047C:124F) and nothing on the way to the start screen calls 1293 (b32).
         _graphicsMode = true;
         _graphicsRow = _graphicsColumn = 0;
         ui.Canvas.UsePalette(Content.Formats.Graphics.Palette256.DefaultVga);
@@ -353,11 +373,18 @@ public sealed class StartUp(GameUi ui, GameFiles files, IReadOnlyList<string> co
             return true;
         }
         bytes = [];
+        Exit(ProgramExitException.FileNotFound(name).Printed);
+        return false;
+    }
+
+    /// <summary>The program's end with a message: the text screen cleared, the message printed and held (a game's <see cref="ProgramExitException"/>).</summary>
+    // orig: root 0617:067E draft: int 10h mode 3, perror(name), exit(99)
+    public void Exit(string printed)
+    {
         _graphicsMode = false;
         Console.SetMode();
-        Console.Printf(name + ": No such file or directory\n");
+        Console.Printf(printed);
         HoldText();
-        return false;
     }
 
     // DIVERGENCE: the original returns to DOS with its message on the screen; here the screen stays until a key, a click or the

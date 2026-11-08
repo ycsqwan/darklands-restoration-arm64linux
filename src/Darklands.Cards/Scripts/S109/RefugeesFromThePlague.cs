@@ -19,15 +19,20 @@ public sealed class RefugeesFromThePlague : Card
     private const int AmbushPicture = 33;
     private const int PrayerPicture = 289;
 
+    // C: the card's picture buffer (image-buffer, DS:E3E3): the pictures shown through it (R109+0x25D6, 0x26B4, 0x2830, 0x2884, 0x2930, 0x2B39)
+    // C: stay in it, and the prayer for guidance shows it again (R109+0x2ACE).
+    private int _cardPicture;
+
     public override int Number => 263;
 
     public override int Run(CardContext c)
     {
+        _cardPicture = RefugeesPicture;
         Show(c, RefugeesPicture);
         c.Next = Number;
         var menu = Menu(c, 0);
         menu.Set(OptionState.Enabled, 0, 1, 9);
-        // C: (unsigned)money_pfennigs(purse): the low 16 bits of the long, unsigned, then / 20 + 1.
+        // C: (unsigned)purse-in-pfennigs(purse): the low 16 bits of the long, unsigned, then / 20 + 1.
         var gift = Money.From(0, 0, Math.Clamp((ushort)c.State.Party.Purse.TotalPfennigs / 20 + 1, 1, 480));
         c.Variables.Money[0] = gift;
         if (c.State.Party.Purse < gift)
@@ -68,6 +73,14 @@ public sealed class RefugeesFromThePlague : Card
 
     private static OptionHint SelectASaint() => OptionHint.Say("Select a person and a saint.");
 
+    /// <summary>Shows a picture through the card's picture buffer, which keeps it.</summary>
+    // C: _fstrcpy(image-buffer, image-file-names[n]), then card-run-near(card-title, image-buffer).
+    private void ShowCardPicture(CardContext c, int picture)
+    {
+        _cardPicture = picture;
+        ShowPicture(c, picture);
+    }
+
     /// <summary>"I think this is an ambush": go on, avoid them, or pray (lines 2, 3 and 4 of <paramref name="block"/>).</summary>
     private static void SenseTheAmbush(CardContext c, CardMenu menu, int block, bool withPrayer)
     {
@@ -83,9 +96,9 @@ public sealed class RefugeesFromThePlague : Card
 
     /// <summary>The "refugees" draw weapons: bargain, pray, fight or surrender.</summary>
     // orig: R109+0x291E (1A52:077E) matched (also inlined in 03fc and 05ae)
-    private static void SpringTheAmbush(CardContext c, CardMenu menu)
+    private void SpringTheAmbush(CardContext c, CardMenu menu)
     {
-        ShowPicture(c, AmbushPicture);
+        ShowCardPicture(c, AmbushPicture);
         menu.Block = 5;
         menu.Set(OptionState.Enabled, 5, 6, 7, 8);
         menu.Set(OptionState.Hidden, 0, 1, 2, 3, 4, 9);
@@ -95,14 +108,14 @@ public sealed class RefugeesFromThePlague : Card
 
     /// <summary>Most such bands (86 in 100) are true refugees; otherwise they are bandits, sensed or not.</summary>
     // orig: R109+0x259C (1A52:03FC) matched; tests: CardSmokeTests
-    // C: rand_mod(100) <= party_max_attr(3): the query draws nothing.
-    private static void GiveFoodAndClothing(CardContext c, CardMenu menu, Money gift)
+    // C: roll-below(100) <= party-stat-top(3): the query draws nothing.
+    private void GiveFoodAndClothing(CardContext c, CardMenu menu, Money gift)
     {
         if (c.Random(100) <= 85)
         {
             c.PassHours(1);
             c.State.Party.Purse = c.State.Party.Purse.Subtract(gift);
-            ShowPicture(c, RefugeesPicture);
+            ShowCardPicture(c, RefugeesPicture);
             c.Screen.Text(1);
             c.PracticeSkill(Who.Everybody, (int)Skill.Virtue, 7, 10, -1);
             c.LeaveForTheMap();
@@ -120,10 +133,10 @@ public sealed class RefugeesFromThePlague : Card
     /// <summary>For true refugees the prayer cures them (or at least comforts them); for bandits, an answered prayer unmasks them.</summary>
     // orig: R109+0x274E (1A52:05AE) matched; tests: CardSmokeTests
     // C: the band's nature is rolled after the prayer.
-    private static void PrayForTheirCure(CardContext c, CardMenu menu)
+    private void PrayForTheirCure(CardContext c, CardMenu menu)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -147,7 +160,7 @@ public sealed class RefugeesFromThePlague : Card
         }
         if (answer != 0)
         {
-            ShowPicture(c, 16);
+            ShowCardPicture(c, 16);
             SenseTheAmbush(c, menu, 12, withPrayer: false);
             return;
         }
@@ -155,10 +168,10 @@ public sealed class RefugeesFromThePlague : Card
     }
 
     // orig: R109+0x2A18 (1A52:0878) matched; tests: CardSmokeTests
-    private static void PrayForGuidance(CardContext c, CardMenu menu)
+    private void PrayForGuidance(CardContext c, CardMenu menu)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -173,16 +186,16 @@ public sealed class RefugeesFromThePlague : Card
             ShowPicture(c, PrayerPicture);
             c.Screen.Text(2);
         }
-        ShowPicture(c, RefugeesPicture);
+        ShowPicture(c, _cardPicture);
         c.Next = 263;
     }
 
     // orig: R109+0x2B16 (1A52:0976) matched; tests: CardSmokeTests
-    private static void Bargain(CardContext c, CardMenu menu, int chance)
+    private void Bargain(CardContext c, CardMenu menu, int chance)
     {
         if (c.Random(100) <= chance)
         {
-            ShowPicture(c, AmbushPicture);
+            ShowCardPicture(c, AmbushPicture);
             menu.Block = 6;
             menu.Set(OptionState.Enabled, 7, 8);
             menu.Set(OptionState.Hidden, 0, 1, 2, 3, 4, 5, 6, 9);
@@ -197,7 +210,7 @@ public sealed class RefugeesFromThePlague : Card
     private static void PrayToStopTheAttack(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -224,7 +237,7 @@ public sealed class RefugeesFromThePlague : Card
 
     /// <summary>The bandits; whatever happens, the party moves on.</summary>
     // orig: R109+0x2424 (1A52:0284) matched; tests: CardSmokeTests
-    // C: arguments right to left: rand_mod(5) + 3 is drawn before rand_mod(3); then run_battle draws its seed (-1).
+    // C: arguments right to left: roll-below(5) + 3 is drawn before roll-below(3); then battle-driver draws its seed (-1).
     private static void FightTheBandits(CardContext c)
     {
         var lore = c.PartyLoreLevel();

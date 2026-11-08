@@ -45,8 +45,11 @@ not meant for players.
 | `display.resolution` | | `--resolution WxH` | window size, e.g. `"1440x800"`; when set it replaces `scale` |
 | `display.fullscreen` | false | `--fullscreen` | |
 | `display.hdPack` | none | `--hd-pack <folder>` | a folder of replacement pictures (an HD pack, below); not part of the original, the game plays the same |
+| `display.cleanDrawing` | false | `--clean-drawing` | false = the screens are drawn as in the 1992 game, including its drawing oddities; true = the cleaner drawing of 0.9.5 (the game plays the same) |
 | `sound.card` | `"config"` | `--sound`, `--no-audio` (= `none`) | `config` (the card of CONFIG.DRK, as the original), `adlib`, `sb`, `sbpro2`, `mt32`, `cm32l`, `speaker` (not emulated: silent), `none` |
 | `sound.mt32Roms` | `MT32_ROMS` next to the program | `--mt32-roms`; `DARKLANDS_MT32_ROMS` | MT-32 / CM-32L ROMs; without them the OPL3 FM drivers play instead, with a warning |
+| `sound.audioPack` | none | `--audio-pack <folder>`; `DARKLANDS_AUDIO_PACK` | a folder of replacement music and battle effects (an audio pack, [PACKS.md](PACKS.md)); not part of the original, the game plays the same |
+| `sound.soundFont` | `SOUNDFONT` folder next to the program | `--soundfont <file>` | the SoundFont (`.sf2`) that plays the audio pack's `.mid` files ([PACKS.md](PACKS.md)); a SoundFont named in the pack wins; none found: those cues are skipped |
 | `sound.configDrk` | absent (commented out in the template) | | replaces CONFIG.DRK's words (below) |
 | `startup.launcher` | false | `--setup` (once), `--no-launcher` | the launcher at every start; false: only when needed (below) |
 | `startup.banner` | true | `--no-banner` | the BANNER.DAT banner and the start-up checks |
@@ -54,6 +57,7 @@ not meant for players.
 | `startup.commandLine` | `[]` | `-- <words>` | the game's own DOS command line (`-Q`, `-O`, `-A<letter>`), a list of words or one string |
 | `textFont` | built-in | `--text-font`; `DARKLANDS_TEXT_FONT` | 4096-byte VGA BIOS 8x16 font dump, or its base64 |
 | `screenshotsFolder` | current folder | `--screenshots` | |
+| `mods` | `[]` | `--mod <folder or name>` (once per mod; replaces the file's list) | mods to play with, in load order: a mod's folder, or the name of a folder in a `mods` folder next to the program, in the game folder or next to it ([MODS.md](MODS.md)); not part of the original: a game with a mod plays differently and its saves get a companion file |
 | `sdl.library` | the `SDL2.dll` next to the program (shipped on Windows), else the system's | `--sdl` | the SDL2 library to load (SDL host only) |
 | `console.enabled` | true | `--no-console` | the developer console (SDL host; below) |
 | `console.font` | the bundled DejaVu Sans Mono | | a TrueType (.ttf) file for the console, e.g. `"C:/Windows/Fonts/consola.ttf"` |
@@ -70,7 +74,16 @@ proportions); it shows only where the original picture is still seen, so menus, 
 they are. A replaced picture fades, greys or lightens with the original (the card's option fade); colour cycling and
 recoloured figures do not change a replacement yet. Problems (a
 missing folder, a broken PNG) are reported on the console and the original pictures are kept. The headless host takes
-the same key from `--settings`, or the step `hdpack:<folder>`, and then also saves `<name>.hd.png` for each shot.
+the same key from `--settings`, or the step `hdpack:<folder>`, and then also saves `<name>.hd.png` for each shot
+(and `<name>.assets.txt`, the asset names on that screen). The guide for pack makers: [PACKS.md](PACKS.md).
+
+### `sound.audioPack`
+
+A folder of `.ogg` or `.wav` files named after the game's pieces of music and battle effects (`travel-1.ogg`,
+`battle-death.wav`, the catalogue in [PACKS.md](PACKS.md)), with an optional `audio.json`. The game's own sound drivers
+keep running underneath, muted while a replacement plays, so the game's timing does not change. Problems (a missing
+folder, an unknown name, a file that cannot be read) are reported on the console and the game's own sound plays there.
+The headless host takes the same key from `--settings`, the environment variable, or the step `audiopack:<folder>`.
 
 ### `sound.configDrk`
 
@@ -125,6 +138,7 @@ When nothing is found, or the folder named does not hold the game, the launcher 
 ## Launcher (SDL host)
 
 The launcher is the settings screen shown before the game: the game folder, the window size, fullscreen, the HD pack,
+the audio pack (both: None, the packs in a `packs` folder, or a folder browsed for or dropped; [PACKS.md](PACKS.md)),
 the sound card and the Roland ROM folder (MT-32 and/or CM-32L; with a sound test: ten seconds of the game's music through the drivers the game
 will use) and the start-up screen and opening animation. Beside them: the release notes (`RELEASE_NOTES.md` next to the
 program, copied there by the build from `releases/<version>/release-notes.md` when that is there), a link to the version's
@@ -171,11 +185,20 @@ Commands (`help` lists them, `help <command>` shows one):
 | `heal [slot\|all]` | endurance and strength back to their maximums |
 | `saint grant\|remove <slot\|all> <number>` | a saint known or forgotten |
 | `item find <text>` / `item grant <slot\|all> <code> [quality] [count]` | finds item codes; puts items in packs |
-| `music on\|off` | the game's music option (as Alt-M) |
+| `music on
+| `report [text]` | makes a problem report (a zip) and opens its folder and the issue form; nothing is sent ([REPORTING.md](REPORTING.md)) |\|off` | the game's music option (as Alt-M) |
+| `report [text]` | makes a problem report (a zip) and opens its folder and the issue form; nothing is sent ([REPORTING.md](REPORTING.md)) |
 | `clear` | empties the console |
 
 The commands change the game being played between two frames; a screen shows a change the next time it
 draws. The headless host runs the same commands with the step `console:<command>`.
+
+## Logs and reports folders
+
+Beside the settings file (or, when that folder cannot be written, in `%APPDATA%\DarklandsRestoration`) the program keeps a `logs`
+folder (one `darklands-<date>-<time>.log` per run, the newest 5) and a `reports` folder (the report zips, the newest 10);
+`logs\session` holds the helper files of the reports (the last frame, the copy of the saved game last loaded). Nothing in them
+is sent anywhere; see [REPORTING.md](REPORTING.md).
 
 ## Example
 

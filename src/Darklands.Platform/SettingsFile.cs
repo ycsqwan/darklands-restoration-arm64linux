@@ -155,6 +155,7 @@ public static class SettingsFile
                     case "savesFolder": settings.SavesFolder = FilePath(name, value); break;
                     case "textFont": settings.TextFont = FilePath(name, value); break;
                     case "screenshotsFolder": settings.ScreenshotsFolder = FilePath(name, value); break;
+                    case "mods": settings.Mods = Words(name, value)?.Select(Environment.ExpandEnvironmentVariables).ToList() ?? settings.Mods; break;
                     case "display": Section(name, value, settings, Display); break;
                     case "sound": Section(name, value, settings, Sound); break;
                     case "startup": Section(name, value, settings, Startup); break;
@@ -221,6 +222,7 @@ public static class SettingsFile
                     break;
                 case "fullscreen": settings.Fullscreen = Boolean(key, property.Value) ?? settings.Fullscreen; break;
                 case "hdPack": settings.HdPack = FilePath(key, property.Value); break;
+                case "cleanDrawing": settings.CleanDrawing = Boolean(key, property.Value) ?? settings.CleanDrawing; break;
                 default: Unknown(key); break;
             }
         }
@@ -244,6 +246,8 @@ public static class SettingsFile
                     }
                     break;
                 case "mt32Roms": settings.Mt32Roms = FilePath(key, property.Value); break;
+                case "audioPack": settings.AudioPack = FilePath(key, property.Value); break;
+                case "soundFont": settings.SoundFont = FilePath(key, property.Value); break;
                 case "configDrk": ConfigDrk(key, property.Value, settings); break;
                 default: Unknown(key); break;
             }
@@ -467,7 +471,10 @@ public static class SettingsFile
             "fullscreen": false,
             // A folder of replacement pictures (an HD pack: one PNG per picture of the game, named after it). Not part of the
             // original; the game plays the same. "": the original pictures. Command line: --hd-pack <folder>.
-            "hdPack": ""
+            "hdPack": "",
+            // false: the screens are drawn as in the 1992 game, including its drawing oddities; true: the cleaner drawing of 0.9.5.
+            // The game plays the same either way. Command line: --clean-drawing.
+            "cleanDrawing": false
           },
 
           "sound": {
@@ -479,6 +486,14 @@ public static class SettingsFile
             // Without the ROMs the OPL3 FM drivers play (with a warning).
             // Command line: --mt32-roms <folder>; environment: DARKLANDS_MT32_ROMS.
             "mt32Roms": "",
+            // A folder of replacement music and battle effects (an audio pack: .ogg or .wav files named after the game's
+            // pieces, docs/PACKS.md). Not part of the original; the game plays the same. "": the game's own sound.
+            // Command line: --audio-pack <folder>; environment: DARKLANDS_AUDIO_PACK.
+            "audioPack": "",
+            // The SoundFont (.sf2 file) that plays the audio pack's .mid files (General MIDI; docs/PACKS.md). A SoundFont named in the
+            // pack's own pack.json wins. "": the first .sf2 in the SOUNDFONT folder next to the program. None found: the .mid cues are
+            // skipped and the game's own music plays. Command line: --soundfont <file>.
+            "soundFont": "",
             // To replace values of CONFIG.DRK as if the file held them, remove the // before "configDrk" (any field may be left out).
             // card is the install program's number (0 AdLib, 1 Covox, 2 Sound Blaster, 3 SB Pro, 4 SB Pro 2, 5 PAS, 6 PAS 16,
             // 7 Roland, 127 speaker) or a name (adlib, sb, sbpro2, roland, speaker, none); it also picks the driver files
@@ -506,6 +521,12 @@ public static class SettingsFile
 
           // Where screenshots go. "": the current folder. Command line: --screenshots <folder>.
           "screenshotsFolder": "",
+
+          // Mods to play with (new cards and encounters, docs/MODS.md), a list: a mod's folder, or the name of a folder in a
+          // "mods" folder next to the program, in the game folder or next to it, e.g. ["wayside-shrine"]. Not part of the
+          // original: a game with a mod plays differently and its saves get a companion file (DKSAVEn.MODS.JSON); the .SAV stays
+          // one the original game loads. []: none, the game's own cards. Command line: --mod <folder or name> (once per mod).
+          "mods": [],
 
           // Settings of the SDL2 host only.
           "sdl": {

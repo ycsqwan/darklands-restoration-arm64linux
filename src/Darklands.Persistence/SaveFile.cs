@@ -11,11 +11,11 @@ namespace Darklands.Persistence;
 /// </summary>
 // orig: written by R037+0x2ACE (1462:2ACE) draft (unmatched: a loop-test operand order),
 // read by R037+0x8ED4 (1C7D:0D24) matched and (header skipped, party block and records only)
-// load_saved_game R037+0x4184 (1462:4184) matched; the draft's write order (2ace) checked
+// saved-game-read R037+0x4184 (1462:4184) matched; the draft's write order (2ace) checked
 // against the 19 saved games and SAVES\DEFAULT of the player's folder, which all split and join back byte for byte; tests: OriginalSaveTests
 // C: the loader reads the location table as one block of 0x5DCE bytes (2 + 414 x 0x3A) whatever its count says, and takes the rest of
 // the file as CACHE.TMP; every file the game writes has 414 records, so the count decides here (SAVES\DEFAULT, which the game only
-// reads with load_saved_game, holds 405 and round-trips too).
+// reads with saved-game-read, holds 405 and round-trips too).
 public sealed class SaveFile
 {
     public const int HeaderSize = 0xEF;
@@ -32,16 +32,16 @@ public sealed class SaveFile
     /// <summary>The 0xEF-byte header (place, comment, the game's global words; see <see cref="OriginalSaves"/>).</summary>
     public byte[] Header { get; set; } = new byte[HeaderSize];
 
-    /// <summary>party_size (+0xEF): one more than the last party slot in use.</summary>
+    /// <summary>party-headcount (+0xEF): one more than the last party slot in use.</summary>
     public int PartySize { get; set; }
 
     /// <summary>The roster entry in each party slot (+0xF3, −1 empty).</summary>
     public int[] PartyIds { get; } = [-1, -1, -1, -1, -1];
 
-    /// <summary>member_shield (+0xFD): the figure image of each slot, four bytes ("F60\0").</summary>
+    /// <summary>member-shield-picture (+0xFD): the figure image of each slot, four bytes ("F60\0").</summary>
     public byte[] Images { get; set; } = new byte[PartySlots * ImageSize];
 
-    /// <summary>member_palette (+0x111): the figure colours of each slot, 24 bytes.</summary>
+    /// <summary>member-colours (+0x111): the figure colours of each slot, 24 bytes.</summary>
     public byte[] Palettes { get; set; } = new byte[PartySlots * PaletteSize];
 
     /// <summary>The characters' records (+0x189), in roster order.</summary>
@@ -95,6 +95,38 @@ public sealed class SaveFile
         }
         file.Cache = at < data.Length ? data[at..].ToArray() : [];
         return file;
+    }
+
+    /// <summary>
+    /// Whether the file is too short for what its own counts say: shorter than the header and party block, a character, event or
+    /// location record (the table is 414 records when the file holds them) that runs past the end. The cache, the rest of the file, has
+    /// no length of its own. The load of <see cref="OriginalSaves.Read"/> reads such a file out of what is missing (zeros here).
+    /// </summary>
+    // C: the walk of Parse(fixedLocationTable: true) in arithmetic: every file the game writes (with no status-0 party slot, FixSaveWriterSkipsEmptySlots) ends after its location table
+    public static bool RunsPastTheEnd(ReadOnlySpan<byte> data)
+    {
+        const int partyBlock = 2 + 2 + PartySlots * 2 + PartySlots * ImageSize + PartySlots * PaletteSize;
+        if (data.Length < HeaderSize + partyBlock)
+        {
+            return true;
+        }
+        long at = HeaderSize + partyBlock + (long)BinaryPrimitives.ReadUInt16LittleEndian(data[(HeaderSize + 2)..]) * CharacterSize;
+        if (at + 2 > data.Length)
+        {
+            return true;
+        }
+        at += 2 + (long)BinaryPrimitives.ReadUInt16LittleEndian(data[(int)at..]) * EventSize;
+        if (at + 2 > data.Length)
+        {
+            return true;
+        }
+        long locations = BinaryPrimitives.ReadUInt16LittleEndian(data[(int)at..]);
+        at += 2;
+        if (data.Length - at >= (long)LocationCount * LocationSize)
+        {
+            locations = LocationCount;
+        }
+        return at + locations * LocationSize > data.Length;
     }
 
     public byte[] ToBytes()

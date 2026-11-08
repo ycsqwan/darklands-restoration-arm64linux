@@ -6,16 +6,16 @@ namespace Darklands.Core.Battles.Tactics;
 /// <summary>What a level's trigger record calls (its handler word +6 before R024 relocates it to a far pointer).</summary>
 public enum TriggerHandler
 {
-    /// <summary>0: secret_door_search (R023 0812).</summary>
+    /// <summary>0: hidden-door-search (R023 0812).</summary>
     SecretDoor = 0,
 
     /// <summary>1: a hidden trap is discovered (R014 19CD:255A, thunk 09C0:17F7).</summary>
     HiddenTrap = 1,
 
-    /// <summary>2: trap_spell (R023 0D88).</summary>
+    /// <summary>2: trap-spell-effect (R023 0D88).</summary>
     SpellTrap = 2,
 
-    /// <summary>4: trap_missile (R023 0E30).</summary>
+    /// <summary>4: trap-shot (R023 0E30).</summary>
     MissileTrap = 4,
 
     /// <summary>5: a pit (R014 19CD:2312, thunk 09C0:181F).</summary>
@@ -38,7 +38,7 @@ public enum TriggerHandler
 /// menu entries that follow from it.
 /// </summary>
 // orig: R023 draft (3 of 16 functions byte-matched; offsets checked against the asm where they mattered);
-// party_locations and its helpers R014 19CD:1ADE..2232, the trigger handlers 19CD:2312..255A, cbt_location_action 0E76:2170; level_switch
+// party-place-table and its helpers R014 19CD:1ADE..2232, the trigger handlers 19CD:2312..255A, fighter-goto-action 0E76:2170; level-change
 // R024 059A and the level preparation R024 0000
 public sealed partial class TacticalBattle
 {
@@ -80,6 +80,19 @@ public sealed partial class TacticalBattle
 
     /// <summary>The flags table (DS:A696) as the program holds it when the battle starts (the last battle's, or the last load's battle file); null: zeros.</summary>
     public IReadOnlyList<ushort>? StaleFlags { get; set; }
+
+    /// <summary>The path bytes (fighter-path-table, 13 × 250) and path indices (DS:D6FB) as the program holds them when the battle starts (the last
+    /// battle's, or the last load's battle file); null: what the combatants hold (zeros).</summary>
+    public (byte[] Paths, byte[] Indices)? StalePaths { get; set; }
+
+    /// <summary>The battle variables as the program holds them when the battle starts (the program's battle file: the last battle's, or the
+    /// last load's); null: a fresh program's zeros. A new battle takes from them the tables no battle's start resets: the attack facings
+    /// (DS:D3FE), the placed base loads (DS:C1C1) and the saved path with its length (2E38:0C64, DS:DA43).</summary>
+    public byte[]? StaleVariables { get; set; }
+
+    /// <summary>DS:07E6: the timer's rate word, which the timer's set-up (root 047C:0066) makes 1 whenever it is installed, as at every
+    /// battle's start (R002+0x0093); a battle taken up from a saved game reads the file's (R003+0x0CE8). Only the battle file shows it.</summary>
+    public int TimerRate { get; set; } = 1;
 
     private Generation.BattlefieldStore Store => Field.Store;
 
@@ -173,7 +186,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>After a level is shown: the twins of linked doors, and the cells of the wall groups not opened yet are hidden.</summary>
-    // orig: level_switch R024+0x059A (1EF8:059A) draft (after loading the files)
+    // orig: level-change R024+0x059A (1EF8:059A) draft (after loading the files)
     private void LevelShown()
     {
         Array.Clear(_twinDoor);
@@ -206,7 +219,7 @@ public sealed partial class TacticalBattle
     /// in (the flags, the "place changed" bit, the leader's menu entries), then the triggers it
     /// stands in; the enemies spring the trap triggers; enemies open the unlocked doors they walk into.
     /// </summary>
-    // orig: party_locations R014+0xDC14 (19CD:26A4) draft
+    // orig: party-place-table R014+0xDC14 (19CD:26A4) draft
     // C: entering or leaving a place skips the member's triggers this tick (goto entered/left).
     private void PartyLocations()
     {
@@ -387,20 +400,95 @@ public sealed partial class TacticalBattle
         Menus.Set(OrdersItem.PickLock, 2);
     }
 
-    /// <summary>The weakest Eater-Water (item 99) in member i's pack (FIND_PICK).</summary>
-    // orig: the FIND_PICK / FIND_PICK2 macros of (checked against the asm of 19CD:1E92)
-    private void FindEaterWater(int i)
+    /// <summary>The weakest Eater-Water (item 99) in member i's pack (pick-finder-macro).</summary>
+    // orig: the pick-finder-macro / pick-finder-macro-two macros of (checked against the asm of 19CD:1E92)
+    private void FindEaterWater(int i) => Battle[i].DissolveSlot = WeakestEaterWater(Battle[i]);
+
+    private const int EaterWater = 99;
+
+    /// <summary>The stack of the weakest Eater-Water in the pack (the first of the lowest quality), −1 none.</summary>
+    private static int WeakestEaterWater(Combatant c)
     {
-        var c = Battle[i];
-        c.DissolveSlot = -1;
+        var slot = -1;
         var best = 100;
         for (var n = 0; n < c.Items.Count; n++)
         {
-            if (c.Items[n].Code == 99 && (byte)c.Items[n].Quality < best)
+            if (c.Items[n].Code == EaterWater && (byte)c.Items[n].Quality < best)
             {
-                c.DissolveSlot = n;
+                slot = n;
                 best = (byte)c.Items[n].Quality;
             }
+        }
+        return slot;
+    }
+
+    /// <summary>The Eater-Water of a Dissolve Lock order is used up: use-up-slot(m, DS:C7CD[m]).</summary>
+    // orig: fighter-goto-action R014+0x2256..0x2263 (checked against the asm): use-up-slot 18BF:0FA4 (R014+0xB434) with the byte
+    //   DS:C7CD[m] and no test of it; the slot is written only by FindEaterWater (command-menu-build R014+0xDF28 when order mode opens, and
+    //   R014+0xD04E / 0xD402 for the leader at each running tick), and the character sheet works in order mode (R022+0x02F7 tests
+    //   DS:A6B3 and DS:A6B2) without building the menu again, so an item given or dropped there moves the pack under the slot.
+    private void UseUpDissolveSlot(int i)
+    {
+        var c = Battle[i];
+        // C: the slot is a byte: no Eater-Water found (−1) is 255.
+        var slot = c.DissolveSlot & 0xFF;
+        if (Battle.Behaviour.FixStaleDissolveSlot)
+        {
+            // DIVERGENCE: with the fix (data safety, switchable; on in the player's game) only an Eater-Water is used up: the slot's stack
+            //   when it still is one, else the weakest the pack holds (none: nothing; the lock opens as in the original).
+            if (slot >= c.Items.Count || c.Items[slot].Code != EaterWater)
+            {
+                slot = WeakestEaterWater(c);
+            }
+            if (slot >= 0)
+            {
+                Attacks.ConsumeSlot(Battle, i, slot);
+            }
+            return;
+        }
+        // BUG: OriginalBehaviour.FixStaleDissolveSlot - the stack at the slot is used up whatever it is now; past the last stack it is the
+        //   stale entry there (its count byte decremented, and when that was 0 or 1 the pack's count goes down: the last stack is lost, an
+        //   empty pack's count becomes −1).
+        ConsumeSlotAsOriginal(i, slot);
+    }
+
+    /// <summary>use-up-slot(m, k) of a party member m (−1..4) with a slot byte k (0..255), with no test of either, as the original.</summary>
+    // orig: use-up-slot R014+0xB434 (checked against the asm), the party branch (m < 5, signed): entry m × 64 + k of the five packs
+    //   (2E38:003E, 6 bytes, count at +4) decremented in place; old count − 1 > 0: done; else member m's count byte (DS:9CD3 + 0x80m,
+    //   signed) shifts the entries above k down only when count − 1 > k, then goes down by one.
+    private void ConsumeSlotAsOriginal(int m, int k)
+    {
+        if (m >= Combatant.PartySlots)
+        {
+            return;
+        }
+        if (m >= 0 && k < Pack.Size)
+        {
+            Attacks.ConsumeSlot(Battle, m, k);
+            return;
+        }
+        // BUG: OriginalBehaviour.FixStaleDissolveSlot - slot 255 is entry m × 64 + 255 of the five packs (2E38:003E): for members 0 and 1
+        //   entry 63 of member m + 3's pack, for member −1 (nobody selected) member 2's entry 63, whose count byte is decremented; when it
+        //   was 0 or 1, use-up-slot's removal (no shift, k past the count) lowers member m's own count.
+        var entry = m * Pack.Size + k;
+        if (entry < 0 || entry >= Combatant.PartySlots * Pack.Size)
+        {
+            // DIVERGENCE: entry m × 64 + k outside the packs (member −1 with a slot below 64: before them, from 2E38:FEBE after the
+            //   wrap; members 2..4 with slot 255: past them, in the formula and saint tables and the item-definition far pointers,
+            //   2E38:07BE..), which the battle does not hold: nothing is changed (the original's write there is not modelled).
+            return;
+        }
+        var other = Battle[entry / Pack.Size].Items;
+        var stale = other[entry % Pack.Size];
+        other[entry % Pack.Size] = stale with { Count = (byte)(stale.Count - 1) };
+        if (stale.Count - 1 <= 0)
+        {
+            if (m < 0)
+            {
+                // DIVERGENCE: member −1's count byte DS:9C53 (before the party's records) is not held by the battle: not modelled.
+                return;
+            }
+            Battle[m].Items.Stacks = (sbyte)(Battle[m].Items.Stacks - 1);
         }
     }
 
@@ -641,6 +729,9 @@ public sealed partial class TacticalBattle
     /// <summary>DS:CA29: the battle is stopped (a pit or a timed exit): the ticks do nothing more.</summary>
     private bool _stopped;
 
+    /// <summary>DS:CA29: the battle is stopped (a pit or an alarm): fight-tick returns before its draw from then on.</summary>
+    public bool Stopped => _stopped;
+
     /// <summary>An alarm outside real combat: furniture n is removed, the battle ends after a moment with result 7 and the trigger is remembered.</summary>
     // orig: R014+0xD966 (19CD:23F6) draft
     private void FurnitureAlarm(int i, int k, byte n, int card) => Alarm(i, k, n, card, FurnitureRemovalAt, true);
@@ -675,7 +766,7 @@ public sealed partial class TacticalBattle
             NextTickAt = (ushort)(Clock + 1000);
             _stopped = true;
         }
-        // C: effect_start(a, b, c): a furniture record holds them at +6, +8 and +5, a wall record at +4, +6 and +8; c zero-extended
+        // C: effect-begin(a, b, c): a furniture record holds them at +6, +8 and +5, a wall record at +4, +6 and +8; c zero-extended
         // (checked against the asm of both handlers).
         if (furniture)
         {
@@ -743,7 +834,7 @@ public sealed partial class TacticalBattle
 
     /// <summary>A member searches: with perception above the roll the secret door is found (its wall cleared, its group uncovered).</summary>
     /// <param name="record">Low byte the door, high byte a second trigger to switch (0xFF none).</param>
-    // orig: secret_door_search R023+0x0812 (1EF8:0812) draft
+    // orig: hidden-door-search R023+0x0812 (1EF8:0812) draft
     private void SearchSecretDoor(int who, int h, ushort record, int roll)
     {
         var c = Battle[who];
@@ -881,7 +972,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>A spell trap goes off at the one who stepped on it ("Oops!"); it and its twin are switched off.</summary>
-    // orig: trap_spell R023+0x0D88 (1EF8:0D88) matched
+    // orig: trap-spell-effect R023+0x0D88 (1EF8:0D88) matched
     private void SpellTrap(int who, int h, int t)
     {
         _view.Message(OopsText, 60);
@@ -900,7 +991,7 @@ public sealed partial class TacticalBattle
     /// A dart trap (and its twin t2) shoots its volley from a wall along a line: who stands in a
     /// dart's line dodges by agility or is hit by the dart weapon against armour.
     /// </summary>
-    // orig: trap_missile R023+0x0E30 (1EF8:0E30) draft
+    // orig: trap-shot R023+0x0E30 (1EF8:0E30) draft
     // C: the dart lines use the walking half sizes DS:119A / DS:11A6 of the party for the members (the combat boxes are put back after).
     private void MissileTrap(int who, int h, int t, int t2)
     {

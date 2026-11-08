@@ -45,13 +45,19 @@ public sealed class GameScreens2 : IGameScreens
 
     /// <summary>
     /// The game's menu-bar keys (Alt-Q, Alt-P, Alt-S …) while the sheet is up; true when one was handled.
-    /// UNCERTAIN: which keys the original's menu_bar_run takes inside the sheet is not traced; only the Alt keys are passed.
     /// </summary>
+    // orig: the sheet's loop runs menu-bar-loop(DS:9419, 0) (R031+0x06CA = root 0000:0000), which calls hotkey-table root 0000:0CAA when a key
+    //   waits (root 0000:0029..0x0033): every key of its table is taken in the sheet too, Alt-O (0x1800, then R022+0x051C only if DS:9893 == 1)
+    //   and F6 (0x4000, only if DS:987F == 1) among them; R031 writes neither flag
+    // C: in the game those keys never come here: the sheet's GameUi.KeyAfterTheMouse -> GameUi.Poll hands every key to GameUi.GameKey first
+    //   (HotKeys.Handle; in a battle BattleScreen.BattleHotKey), which takes F6 and Alt-O (tests: PartyIconsDirtyTests, SheetHotKeyTests). This
+    //   is the fallback for a key GameKey left: in a battle's sheet Alt-O with the battle's Change Marching Order greyed (DS:9893 = 2 there,
+    //   R022+0x009D), which the original refuses as well, so Alt-O and F6 stay out of this list (b32 C-fix, U-96d507).
     public Func<int, bool>? MenuBarKey
     {
         get => _sheet.MenuBarKey;
         set => _sheet.MenuBarKey = value is null ? null : key => key is Keys.AltQ or Keys.AltP or Keys.AltS or Keys.AltL or Keys.AltD
-            or Keys.AltF or Keys.AltM or Keys.AltC && value(key);
+            or Keys.AltF or Keys.AltM or Keys.AltC && _ui.InMenuBarLoop(() => value(key));
     }
 
     /// <summary>The saint page the sheet's Saints list opens (member, saint).</summary>
@@ -87,7 +93,7 @@ public sealed class GameScreens2 : IGameScreens
 
     public void Alchemy(int member, int place) => Keeping(() => _alchemy.Use(_state, _state.Party.Resolve(member), place));
 
-    // orig: barter_open R032+0x0000 sets DS:9920 = DS:9934 = 2 and barter_close R032+0x076C sets them to 1
+    // orig: barter_open R032+0x0000 sets DS:9920 = DS:9934 = 2 and trade-screen-close R032+0x076C sets them to 1
     public void Barter(int shop, string name, long categories)
     {
         SetSaveAndLoad(2);

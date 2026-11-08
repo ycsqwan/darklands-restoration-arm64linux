@@ -93,7 +93,87 @@ public sealed class BattleUiTests
     }
 
     /// <summary>
-    /// A won fight: the loot screen, then the battle view again in the battle's colours (palette_restore, floor_view_draw, combat_draw), the
+    /// The loot screen over a won fight: the panel rows are drawn again before it (R014+0xE5AF, 0x26 lines a row, the order letters included)
+    /// and R040 draws its picture right of the party column only (it draws the panel for D alone, R040+0x0D8B): the first frame shows that
+    /// column, and a dead member's row keeps the battle's hatching on its last line (vis10 session D-56a675).
+    /// </summary>
+    [Fact]
+    public void TheLootScreenKeepsTheBattlesPartyColumn()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var steps = new List<string> { "wait:5", "key:space" };
+        for (var k = 0; k < 30; k++)
+        {
+            steps.Add("wait:600");
+            steps.Add("key:esc");
+        }
+        byte[]? column = null;
+        var first = -1;
+        Session? session = null;
+        session = new Session(files, new BattleRequest(0x11, 60256, [(18, 0, 1), (-1, 0, 0), (-1, 0, 0)]), loot: (screens, items, money) =>
+        {
+            column ??= [.. session!.Ui.Canvas.Screen.Pixels];
+            first = first < 0 ? session!.Frames.Count : first;
+            screens.Loot(items, money);
+        });
+        session.State.Party.Members[3].Status = Darklands.Core.Characters.CharacterStatus.Dead;
+        Assert.Equal(0, session.Fight(steps));
+        Assert.NotNull(column);
+        var shown = session.Frames[first].Pixels;
+        // the dead member's row: its line 0x26 is the battle's (the hatching down to it), the lines above it were drawn again with the hatching
+        var battle = session.Frames[first - 1].Pixels;
+        var line = (3 * PartyPanel.RowHeight + 1 + 0x26) * Screen.Width;
+        Assert.True(battle.AsSpan(line + 3, 0x36).SequenceEqual(shown.AsSpan(line + 3, 0x36)), "the dead member's last line is not the battle's");
+        Assert.Contains(Enumerable.Range(3, 0x36), x => shown[line + x] == 7);
+        for (var y = 0; y < Screen.Height; y++)
+        {
+            for (var x = 0; x < PartyPanel.Width; x++)
+            {
+                Assert.True(column[y * Screen.Width + x] == shown[y * Screen.Width + x], $"the party column differs at ({x},{y})");
+            }
+        }
+        // the loot picture is there right of the column
+        Assert.False(column.AsSpan(PartyPanel.Width).SequenceEqual(shown.AsSpan(PartyPanel.Width)));
+    }
+
+    /// <summary>
+    /// The loot screen shows the driver's pointer (loot-split-entry's pointer-show R040+0x0194) as the gauntlet with hot spot (0, 0), which
+    /// loot-view sets before it (R014+0xE598); the battle draws its own pointer again afterwards (vis10 session D-56a675: the original's loot
+    /// screen has the gauntlet at the mouse, the C#'s had no pointer).
+    /// </summary>
+    [Fact]
+    public void TheLootScreenShowsTheGauntlet()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var steps = new List<string> { "wait:5", "key:space" };
+        for (var k = 0; k < 30; k++)
+        {
+            steps.Add("wait:600");
+            steps.Add("key:esc");
+        }
+        (bool Visible, Darklands.Content.Formats.Battles.RowRunSprite? Shape, (int, int) HotSpot)? during = null;
+        Session? session = null;
+        session = new Session(files, new BattleRequest(0x11, 60256, [(18, 0, 1), (-1, 0, 0), (-1, 0, 0)]), loot: (screens, items, money) =>
+        {
+            during ??= (session!.Ui.PointerVisible, session.Ui.PointerShape, session.Ui.PointerHotSpot);
+            screens.Loot(items, money);
+        });
+        Assert.Equal(0, session.Fight(steps));
+        Assert.NotNull(during);
+        Assert.True(during.Value.Visible);
+        Assert.Null(during.Value.Shape);   // the gauntlet
+        Assert.Equal((0, 0), during.Value.HotSpot);
+        Assert.Null(session.Ui.PointerShape);
+    }
+
+    /// <summary>
+    /// A won fight: the loot screen, then the battle view again in the battle's colours (palette-reload, floor-view-paint, fight-draw), the
     /// "BattleResults - victory" box over it, the box taken away. The picture of before the battle never comes back in the battle's colours.
     /// </summary>
     [Fact]
@@ -153,7 +233,7 @@ public sealed class BattleUiTests
         Assert.InRange(x1, 190, 319);
         Assert.InRange(y0, 80, 100);
         Assert.InRange(y1, 100, 120);
-        // the box's ground is colour 0xFF (show_message's f0e)
+        // the box's ground is colour 0xFF (notice-display's f0e)
         var ground = 0;
         for (var y = y0; y <= y1; y++)
         {
@@ -217,6 +297,36 @@ public sealed class BattleUiTests
         Assert.Equal(view.ToMap(run.Ui.Mouse.X, run.Ui.Mouse.Y), (tb.CursorPoint.X, tb.CursorPoint.Y));
     }
 
+    /// <summary>
+    /// DS:07D6 is a program global the timer counts outside the battles too: a direction key already held when a battle begins (in order mode) moves the
+    /// pointer at the speed of the count since the last let-go, read as a signed word (R014+0x36C4: 0x8000 and up is slow), and the time
+    /// since the last battle screen ended counts in it (root 047C:000A at every timer callback, cleared only by R014+0x38AE).
+    /// </summary>
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0x200, true)]
+    public void AKeyHeldIntoABattleTakesItsSpeedFromTheProgramsCount(int ticksOutside, bool slow)
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.CursorKeys.HeldCallbacks = 0x7F00;
+        run.CursorKeys.TimerTicksAtLeave = run.Ui.Timer.Ticks - ticksOutside;
+        // the battle begins in order mode (its first combat tick pauses it): the key is held from before its start
+        run.Play("move:120,140", "kdown:4D", "wait:10");
+        var tb = run.Screen.Tactics!;
+        Assert.True(tb.CursorKeysOn);
+        var x0 = run.Ui.Mouse.X;
+        run.Play("wait:40");
+        var moved = run.Ui.Mouse.X - x0;
+        // 1 pixel a combat tick against 10
+        Assert.True(slow ? moved is > 0 and <= 12 : moved >= 30, $"the pointer moved {moved} pixels");
+        run.Play("kup:4D", "wait:3");
+        Assert.Equal(0, run.CursorKeys.HeldCallbacks & 0xFFF0);
+    }
+
     /// <summary>F10 opens the menu bar from the keyboard: the battle stands still while it is up; Esc closes it with nothing chosen.</summary>
     [Fact]
     public void F10OpensTheKeyboardMenuAndTheBattleWaits()
@@ -235,6 +345,29 @@ public sealed class BattleUiTests
         run.Play("key:esc", "wait:30");
         Assert.True(clock != tb.Battle.Clock, $"clock {clock}, paused {tb.Paused}");
         Assert.False(tb.InOrderMode);
+    }
+
+    /// <summary>
+    /// The bar over a battle shows the driver's pointer as the battle's hand with hot spot (0, 0): root 0000:0000+0x0084..0x00C4 sets
+    /// DS:A693 (running) or DS:A691 (paused) when another shape is in use, nothing when the hand is (vis10 session uncert-cme-menus: the
+    /// order hand over the Orders menu in the original's screen, the gauntlet in the C#'s); the battle draws its own pointer again after.
+    /// </summary>
+    [Fact]
+    public void TheBarOverABattleShowsTheBattlesHand()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5", "move:150,120", "wait:5", "key:f10", "wait:2");
+        var tb = run.Screen.Tactics!;
+        Assert.True(run.Ui.PointerVisible);
+        Assert.Equal(run.Assets.Images[tb.PauseByte == 0 ? BattleImages.NormalPointer : BattleImages.OrderPointer]!.AssetName, run.Ui.PointerShape?.AssetName);
+        Assert.Equal((0, 0), run.Ui.PointerHotSpot);
+        run.Play("key:esc", "wait:5");
+        Assert.False(run.Ui.PointerVisible);
+        Assert.Null(run.Ui.PointerShape);
     }
 
     /// <summary>
@@ -338,7 +471,7 @@ public sealed class BattleUiTests
     }
 
     /// <summary>
-    /// show_message (root 0000:24BC) over a battle: the caller waits in delay_ticks (root 0410:0302) for the message's ticks while the timer
+    /// notice-display (root 0000:24BC) over a battle: the caller waits in wait-ticks (root 0410:0302) for the message's ticks while the timer
     /// callback (root 047C:000A) counts DS:07D1 and, unless the clock stands, the combat clock; no tick of the battle runs meanwhile and the box is
     /// gone when the call returns ("USE STAIRS..." DS:064A from R014+0xBF8C, R014+0xC3E0, R016+0x00F0; the direct calls of R014+0xBCA8 with the
     /// party split: DS:07D1 +150 at the delay's return, the clock +150 in castle-p600, unmoved in the paused states). The message is shown
@@ -380,8 +513,492 @@ public sealed class BattleUiTests
         Assert.Equal(seen[2].Ticks, seen[3].Ticks);
     }
 
+    /// <summary>
+    /// The original hides the mouse pointer (pointer-hide root 047C:12C3) before the box of notice-display (root 0000:24BC) and shows it again
+    /// (root 047C:1293) after the wait: while a message waits, the frame does not depend on where the pointer is.
+    /// </summary>
+    [Fact]
+    public void NoPointerIsDrawnWhileAMessageWaits()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        Session? run = null;
+        var shown = new List<byte[]>();
+        run = new Session(files, Corridor, sheet: (ui, _) =>
+        {
+            ui.PointerVisible = false;
+            var frames = run!.Frames;
+            run.Screen.Message(TacticalBattle.UseStairsText, 0x96);
+            shown.Add(frames[^1].Pixels);
+        });
+        using (run)
+        {
+            run.Recording = true;
+            run.Play("wait:10", "key:space", "wait:5");
+            run.MovePointer(100, 60);
+            run.Play("key:f1", "wait:200");
+            run.MovePointer(250, 120);
+            run.Play("key:f1", "wait:200");
+        }
+        Assert.Equal(2, shown.Count);
+        // (the rest of the picture may move: animated ground and sprites) the two places the pointer stood in are the same in both frames
+        foreach (var (px, py) in new[] { (100, 60), (250, 120) })
+        {
+            for (var y = py; y < py + 16; y++)
+            {
+                Assert.True(shown[0].AsSpan(y * 320 + px, 16).SequenceEqual(shown[1].AsSpan(y * 320 + px, 16)), $"the pointer is drawn near {px},{py}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The battle bar's Game > Difficulty > Expert (R000+0x083E: DS:99EC[2] = difficulty-hard-set, root 0000:1428) sets the difficulty and
+    /// shows difficulty-display(1)'s box (root 0000:1438: notice-display(text, 0x3C), root 0000:24BC) in the card window's font that menu-bar-loop
+    /// put back before the sub-item (root 0000:019D..0x01A9: font 3), with the pointer hidden meanwhile (root 047C:12C3); the original's
+    /// screen: vis10 session tleads-battle-difficulty (the box's pixels identical).
+    /// </summary>
+    [Fact]
+    public void TheBattleBarsDifficultyChoiceShowsItsBox()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5");
+        run.State.Difficulty = Difficulty.Standard;
+        run.Recording = true;
+        // the right button held on Game, down to Difficulty, right onto its sub-menu's Expert, let go (lockstep session gen-bhurtk-02)
+        run.Play("rdown:79,4", "wait:5", "move:99,32", "wait:25", "move:189,48", "wait:25", "rup", "wait:20");
+        Assert.Equal(Difficulty.Expert, run.State.Difficulty);
+        const string text = "Difficulty is now set to Expert";
+        var font = run.Ui.CardText;
+        var width = font.Measure(text);
+        var x = 60 + (260 - width) / 2;
+        var y = 100 - font.LineHeight / 2;
+        // the text on the box's fill as the box draws it (font 3; font 1 would stand a row lower)
+        var expected = new Screen();
+        var canvas = new Darklands.Presentation.Graphics.Canvas(expected);
+        canvas.Fill(0, 0, Screen.Width, Screen.Height, 0xFF);
+        font.Draw(canvas, x, y, text, MessageBox.TextColor);
+        bool Boxed(byte[] f) => Enumerable.Range(y - 1, font.LineHeight + 1)
+            .All(row => Enumerable.Range(x - 2, width + 4).All(px => f[row * Screen.Width + px] == expected.Pixels[row * Screen.Width + px]));
+        var boxed = run.Frames.FindIndex(f => Boxed(f.Pixels));
+        Assert.True(boxed >= 0, "no frame shows the box");
+        // no pointer in the box's frame: the pointer drawn over it at the mouse changes it
+        var shown = new Screen();
+        run.Frames[boxed].Pixels.CopyTo(shown.Pixels, 0);
+        Darklands.Presentation.Graphics.SpriteDrawing.Draw(new Darklands.Presentation.Graphics.Canvas(shown), run.Ui.Assets.CommonSprites.Pointer, 189, 48);
+        Assert.False(shown.Pixels.AsSpan().SequenceEqual(run.Frames[boxed].Pixels), "the pointer is drawn while the box waits");
+    }
+
+    /// <summary>
+    /// The battle's pointer is the mouse driver's: when the bar comes up (and while its Difficulty box waits) the battle's last pointer does
+    /// not stay in the picture where the mouse was before the right button (root 0000:0000 swaps the driver's shape, R014's frames stop).
+    /// </summary>
+    [Fact]
+    public void TheBattlesPointerDoesNotStayUnderTheBar()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5", "move:150,120", "wait:5");
+        run.Recording = true;
+        run.Play("rdown:79,4", "wait:5", "move:99,32", "wait:25", "move:189,48", "wait:25", "rup", "wait:20");
+        // the frames from the bar's and the box's time (the first is the battle's last pass, presented as the button goes down)
+        var under = run.Frames.Skip(1).Take(20).ToList();
+        Assert.NotEmpty(under);
+        var bad = new List<string>();
+        foreach (var image in new[] { BattleImages.NormalPointer, BattleImages.OrderPointer })
+        {
+            var sprite = run.Assets.Images[image];
+            foreach (var f in under)
+            {
+                var shown = new Screen();
+                f.Pixels.CopyTo(shown.Pixels, 0);
+                Darklands.Presentation.Graphics.SpriteDrawing.Draw(new Darklands.Presentation.Graphics.Canvas(shown), sprite, 150, 120);
+                if (shown.Pixels.AsSpan().SequenceEqual(f.Pixels))
+                {
+                    bad.Add($"{image}:{under.IndexOf(f)}");
+                }
+            }
+        }
+        Assert.True(bad.Count == 0, "the battle's pointer stays at (150,120) under the bar " + string.Join(" ", bad));
+    }
+
+    /// <summary>A hot key's screen (Alt-S: the save's comment dialog) is drawn over a picture without the battle's pointer (vis10 session D-b797f7).</summary>
+    [Fact]
+    public void AHotKeysScreenIsDrawnWithoutTheBattlesPointer()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        byte[]? picture = null;
+        run.Screens.Save = _ => picture = (byte[])run.Ui.Canvas.Screen.Pixels.Clone();
+        run.Play("wait:10", "key:space", "wait:5", "move:150,120", "wait:5");
+        // C: DS:9934 offers the save in a battle kept in the game (this test fight is not): offered here
+        run.Screen.Tactics!.Menus.SaveGame = 1;
+        run.Play("key:alts", "wait:5");
+        Assert.NotNull(picture);
+        foreach (var image in new[] { BattleImages.NormalPointer, BattleImages.OrderPointer })
+        {
+            var shown = new Screen();
+            picture.CopyTo(shown.Pixels, 0);
+            Darklands.Presentation.Graphics.SpriteDrawing.Draw(new Darklands.Presentation.Graphics.Canvas(shown), run.Assets.Images[image], 150, 120);
+            Assert.False(shown.Pixels.AsSpan().SequenceEqual(picture), $"the battle's pointer ({image}) is in the picture at (150,120)");
+        }
+    }
+
+    /// <summary>
+    /// The enemy information (E, R021+0x02CE / R021+0x03FE) draws in the side window's font, slot 1 (6 pixels high), and shows the driver's
+    /// pointer while it waits (pointer-show root 047C:1293 after the window), in the battle's shape at the mouse (vis10 session
+    /// tester-einfo-gate: 0 pixels differ in the window and the pointer).
+    /// </summary>
+    [Fact]
+    public void TheEnemyInfoDrawsInTheSideWindowsFontWithThePointerShown()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5", "move:150,120", "wait:5");
+        Assert.Single(run.Screen.Tactics!.EnemyInfoKinds());
+        run.Recording = true;
+        run.Play("key:e", "wait:5");
+        var frame = run.LastFrame!;
+        // one kind: the picture at y 50, the name in colour 0x0E at y 50 + 0x20
+        var rows = new List<int>();
+        for (var y = 0x52; y < 0x52 + 8; y++)
+        {
+            for (var x = 3; x < 3 + 0x36; x++)
+            {
+                if (frame[y * 320 + x] == 0x0E)
+                {
+                    rows.Add(y);
+                }
+            }
+        }
+        Assert.NotEmpty(rows);
+        Assert.True(rows.Max() - 0x52 < run.Ui.Assets.Font(1).CharacterHeight, $"the name reaches row {rows.Max() - 0x52}: not font slot 1");
+        var drawn = new[] { BattleImages.NormalPointer, BattleImages.OrderPointer }.Any(image =>
+        {
+            var shown = new Screen();
+            frame.CopyTo(shown.Pixels, 0);
+            Darklands.Presentation.Graphics.SpriteDrawing.Draw(new Darklands.Presentation.Graphics.Canvas(shown), run.Assets.Images[image], 150, 120);
+            return shown.Pixels.AsSpan().SequenceEqual(frame);
+        });
+        Assert.True(drawn, "the battle's pointer is not shown at (150,120) while the enemy information waits");
+    }
+
+    /// <summary>
+    /// Alt-S in a battle: while the game is written the driver's pointer shows at the mouse in the battle's last shape (R037+0x2ACE's
+    /// pointer-show R037+0x2B97 after the "Saving Game" box; vis10 session D-b797f7: the order pointer in the original's "saving" shot);
+    /// the battle draws its own pointer again afterwards.
+    /// </summary>
+    [Fact]
+    public void ABattlesSaveShowsTheBattlesPointerWhileItWrites()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        (bool Visible, Darklands.Content.Formats.Battles.RowRunSprite? Shape, (int, int) HotSpot)? during = null;
+        run.Screens.Save = _ => during = (run.Ui.PointerVisible, run.Ui.PointerShape, run.Ui.PointerHotSpot);
+        run.Play("wait:10", "key:space", "wait:5", "move:150,120", "wait:5");
+        run.Screen.Tactics!.Menus.SaveGame = 1;
+        run.Play("key:alts", "wait:5");
+        Assert.NotNull(during);
+        Assert.True(during.Value.Visible);
+        Assert.NotNull(during.Value.Shape);
+        Screen Drawn(Darklands.Content.Formats.Battles.RowRunSprite sprite)
+        {
+            var screen = new Screen();
+            Darklands.Presentation.Graphics.SpriteDrawing.Draw(new Darklands.Presentation.Graphics.Canvas(screen), sprite, 100, 100);
+            return screen;
+        }
+        // the battle's shape at the mouse: the glove while running, the order hand while paused (R014+0x33A2)
+        var shape = Drawn(during.Value.Shape!).Pixels;
+        Assert.Contains(new[] { BattleImages.NormalPointer, BattleImages.OrderPointer }, image => Drawn(run.Assets.Images[image]).Pixels.AsSpan().SequenceEqual(shape));
+        Assert.False(Drawn(run.Ui.Assets.CommonSprites.Pointer).Pixels.AsSpan().SequenceEqual(shape));
+        Assert.Equal((0, 0), during.Value.HotSpot);
+        Assert.False(run.Ui.PointerVisible);
+        Assert.Null(run.Ui.PointerShape);
+    }
+
+    /// <summary>
+    /// The battle's party panel as the panel rows (root 0000:1716) draws it: each name at (4, 0x28 * i + 2); an away member's row holds the bars' (root 0000:1A9C)
+    /// "???? ???? ????" instead of the bars and no order letter; a dead member's row is hatched; the order letter is in the name's colour (vis10 sessions
+    /// tleads-battle-difficulty, the synthetic save DKSAVE0-away24).
+    /// </summary>
+    [Fact]
+    public void TheBattlesPanelDrawsTheNamesAtTheirRowAndAnAwayMembersQuestionMarks()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.State.Party.Members[1].Status = Darklands.Core.Characters.CharacterStatus.Away;
+        run.State.Party.Members[2].Status = Darklands.Core.Characters.CharacterStatus.Dead;
+        run.Play("wait:10");
+        var frame = run.LastFrame!;
+        var text = new Darklands.Presentation.Graphics.TextPainter(run.Ui.Assets.Font(1));
+        bool Unchanged(Action<Darklands.Presentation.Graphics.Canvas> draw)
+        {
+            var shown = new Screen();
+            frame.CopyTo(shown.Pixels, 0);
+            draw(new Darklands.Presentation.Graphics.Canvas(shown));
+            return shown.Pixels.AsSpan().SequenceEqual(frame);
+        }
+        var name = run.State.Party.Members[0].ShortName;
+        Assert.Contains(new byte[] { 0x0E, 0x0F, 7 }, c => Unchanged(canvas => text.Draw(canvas, 4, 2, name, c)));
+        Assert.True(Unchanged(canvas => PartyPanel.DrawUnknownBars(canvas, text, 1)), "the away member's row has no question marks");
+        // no letter for the away member: its row background at (6, 0x28 + 0x1F) is not overdrawn by a '-'
+        Assert.False(Unchanged(canvas => text.Draw(canvas, 6, 0x28 + 0x1F, "-", 7)), "the away member's row has an order letter");
+        Assert.True(Unchanged(canvas => PartyPanel.DrawHatching(canvas, 2 * PartyPanel.RowHeight + 1, 0x27)), "the dead member's row is not hatched");
+    }
+
+    /// <summary>
+    /// The battle panel's order letter is drawn in the colour of the member's name (root 0000:18FA runs after the bars, which leave the name's
+    /// colour set in the window): the leader's yellow, white for the others, grey for a member who is gone; an away member has none (vis10 session
+    /// tleads-battle-difficulty).
+    /// </summary>
+    [Fact]
+    public void TheBattlesOrderLetterIsInTheColourOfTheMembersName()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.State.Party.Members[2].Status = CharacterStatus.Dead;
+        run.State.Party.Members[3].Status = CharacterStatus.Away;
+        run.Play("wait:10");
+        var frame = run.LastFrame!;
+        var text = new Darklands.Presentation.Graphics.TextPainter(run.Ui.Assets.Font(1));
+        bool Unchanged(Action<Darklands.Presentation.Graphics.Canvas> draw)
+        {
+            var shown = new Screen();
+            frame.CopyTo(shown.Pixels, 0);
+            draw(new Darklands.Presentation.Graphics.Canvas(shown));
+            return shown.Pixels.AsSpan().SequenceEqual(frame);
+        }
+        var colours = new byte[] { 0x0E, Darklands.Presentation.Graphics.Palette.White, 7 };
+        var seen = new Dictionary<int, byte>();
+        for (var i = 0; i < 2; i++)
+        {
+            var letter = run.Ui.BattleStatusLetter?.Invoke(i);
+            Assert.NotNull(letter);
+            var name = run.State.Party.Members[i].ShortName;
+            // the name's colour: yellow for the leader, grey for a member who is not the selected one, else white
+            var own = colours.Where(c => Unchanged(canvas => text.Draw(canvas, 4, i * PartyPanel.RowHeight + 2, name, c))).ToList();
+            Assert.Single(own);
+            var expected = own[0];
+            Assert.True(Unchanged(canvas => text.Draw(canvas, 6, i * PartyPanel.RowHeight + 0x1F, letter.ToString()!, expected)), $"the letter of member {i} is not in the name's colour {expected}");
+            foreach (var other in colours.Where(c => c != expected))
+            {
+                Assert.False(Unchanged(canvas => text.Draw(canvas, 6, i * PartyPanel.RowHeight + 0x1F, letter.ToString()!, other)), $"the letter of member {i} is also drawn in {other}");
+            }
+            seen[i] = expected;
+        }
+        Assert.Equal((byte)0x0E, seen[run.Screen.Tactics!.Battle.Leader]);
+        Assert.Null(run.Ui.BattleStatusLetter?.Invoke(3));
+        // the dead member (row 2) has a grey name
+        Assert.True(Unchanged(canvas => text.Draw(canvas, 4, 2 * PartyPanel.RowHeight + 2, run.State.Party.Members[2].ShortName, 7)), "the dead member's name is not grey");
+    }
+
+    /// <summary>
+    /// The order letter's patch DS:A6C2 is the 10 x 7 block of the row background under the letter's place: the bytes of the block the
+    /// emulated original made at start-up (root 0000:F01E..F026, vis10 session visleads-order-letter), row by row.
+    /// </summary>
+    [Fact]
+    public void TheLetterPatchIsTheRowBackgroundUnderTheLetter()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        string[] measured =
+        [
+            "9c9d9c9c9d9d9c9d9d9c", "9d9c9c9c9d9c9d9c9c9e", "9d9e9c9c9e9d9d9d9e9d", "9e9d9e9d9d9d9e9d9d9e",
+            "9e9d9d9d9d9d9e9f9d9e", "9f9e9f9f9e9d9e9e9e9f", "9e9e9e9e9f9f9f9f9e9f",
+        ];
+        var assets = new GameAssets(files);
+        for (var row = 0; row < 5; row++)
+        {
+            var screen = new Screen();
+            PartyPanel.DrawLetterPatch(new Darklands.Presentation.Graphics.Canvas(screen), assets.CommonSprites, row);
+            var y0 = row * PartyPanel.RowHeight + 0x1F;
+            for (var y = 0; y < Screen.Height; y++)
+            {
+                for (var x = 0; x < Screen.Width; x++)
+                {
+                    var inside = x is >= 6 and < 6 + PartyPanel.LetterPatchWidth && y >= y0 && y < y0 + PartyPanel.LetterPatchHeight;
+                    var expected = inside ? Convert.FromHexString(measured[y - y0])[x - 6] : (byte)0;
+                    Assert.True(expected == screen.Pixels[y * Screen.Width + x], $"row {row}: pixel ({x}, {y}) is {screen.Pixels[y * Screen.Width + x]:X2}, not {expected:X2}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// An order key in order mode draws the chosen order's letter alone in the member's row: the patch DS:A6C2, then the letter in colour
+    /// 0xFF (R016+0x15BE); it stays until the panel rows are drawn again (Enter ends order mode). W after F draws F (the flee bit is still
+    /// set when the letter is drawn) and leaves the flee bit cleared (vis10 session visleads-order-letter, the original hooked).
+    /// </summary>
+    [Fact]
+    public void AnOrderKeyDrawsItsLetterWhiteUntilTheRowIsDrawnAgain()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5", "key:1", "wait:3");
+        var tb = run.Screen.Tactics!;
+        Assert.True(tb.InOrderMode);
+        var row = tb.Selected;
+        var text = new Darklands.Presentation.Graphics.TextPainter(run.Ui.Assets.Font(1));
+        void LetterShown(char letter)
+        {
+            Assert.Equal(letter, run.Screen.OrderLetterShown(row));
+            var frame = run.LastFrame!;
+            var shown = new Screen();
+            frame.CopyTo(shown.Pixels, 0);
+            var canvas = new Darklands.Presentation.Graphics.Canvas(shown);
+            PartyPanel.DrawLetterPatch(canvas, run.Ui.Assets.CommonSprites, row);
+            text.Draw(canvas, 6, row * PartyPanel.RowHeight + 0x1F, letter.ToString(), 0xFF);
+            Assert.True(shown.Pixels.AsSpan().SequenceEqual(frame), $"the row's cell does not show {letter} in colour 0xFF over the patch");
+            Assert.Contains((byte)0xFF, frame);
+        }
+        run.Play("key:f", "wait:3");
+        LetterShown('F');
+        Assert.NotEqual(0, (int)(tb.Battle[row].Flags & TacticalFlags.Following));
+        run.Play("key:w", "wait:3");
+        LetterShown('F');
+        Assert.Equal(0, (int)(tb.Battle[row].Flags & TacticalFlags.Following));
+        run.Play("key:b", "wait:3");
+        LetterShown('B');
+        run.Play("key:enter", "wait:5");
+        Assert.False(tb.InOrderMode);
+        Assert.Null(run.Screen.OrderLetterShown(row));
+    }
+
+    /// <summary>
+    /// H with Halt on outside order mode and nobody selected (DS:A6B2 = 0xFF) runs R016+0x15BE for "row -1" (y = -9): the original draws the
+    /// patch's 10 x 7 pixels at (6..15, 0..6), no letter (vis10 run uncert-order-letter-none, the original hooked at R016+0x15BE: A6B2 = 0xFF,
+    /// A6B0 = 0x400, A6D1 = 10; 70 pixels, the same bytes as the patch, after each H).
+    /// </summary>
+    [Fact]
+    public void HWithNobodySelectedDrawsTheLetterCellAtTheTop()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        string[] measured =
+        [
+            "9c9d9c9c9d9d9c9d9d9c", "9d9c9c9c9d9c9d9c9c9e", "9d9e9c9c9e9d9d9d9e9d", "9e9d9e9d9d9d9e9d9d9e",
+            "9e9d9d9d9d9d9e9f9d9e", "9f9e9f9f9e9d9e9e9e9f", "9e9e9e9e9f9f9f9f9e9f",
+        ];
+        using var run = new Session(files, Corridor);
+        run.Play("wait:10", "key:space", "wait:5");
+        var tb = run.Screen.Tactics!;
+        if (tb.InOrderMode)
+        {
+            run.Play("key:enter", "wait:5");
+        }
+        Assert.False(tb.InOrderMode);
+        Assert.Equal(-1, tb.Selected);
+        Assert.Equal(0, run.Screen.OrderCellRowsShown);
+        run.Play("key:h", "wait:3");
+        Assert.Equal(PartyPanel.LetterPatchHeight, run.Screen.OrderCellRowsShown);
+        var frame = run.LastFrame!;
+        for (var y = 0; y < PartyPanel.LetterPatchHeight; y++)
+        {
+            for (var x = 6; x < 6 + PartyPanel.LetterPatchWidth; x++)
+            {
+                var expected = Convert.FromHexString(measured[y])[x - 6];
+                Assert.True(expected == frame[y * Screen.Width + x], $"pixel ({x}, {y}) is {frame[y * Screen.Width + x]:X2}, not {expected:X2}");
+            }
+        }
+        // Enter with nobody selected: command-mode-end draws the frames of "member -1" and the rows (R014+0xC01A); the panel page's cell then
+        // holds the first row, so the next H leaves only the patch's top line (the original's screen read before and after R016+0x15BE)
+        run.Play("key:enter", "wait:5");
+        Assert.Equal(1, run.Screen.OrderCellRowsShown);
+        run.Play("key:h", "wait:3");
+        Assert.Equal(1, run.Screen.OrderCellRowsShown);
+        frame = run.LastFrame!;
+        for (var x = 6; x < 6 + PartyPanel.LetterPatchWidth; x++)
+        {
+            Assert.Equal(Convert.FromHexString(measured[0])[x - 6], frame[x]);
+        }
+    }
+
+    /// <summary>
+    /// Alt-Q in a battle (the hot keys table, root 0000:0CAA, which runs in font 1): the question "Quit to DOS?" is the card window's box
+    /// (rows 93..106), run with font 1 and the font put back after; "no" leaves the fight as it was; "yes" ends the program (root 0000:13A0).
+    /// </summary>
+    [Theory]
+    [InlineData("n", false)]
+    [InlineData("y", true)]
+    public void AltQInABattleAsksInFontOneAndYesQuits(string answer, bool quits)
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        using var run = new Session(files, Corridor);
+        var keys = new HotKeys(run.Ui, run.State, run.Ui.Options);
+        var quit = false;
+        var fonts = new List<int>();
+        run.Ui.GameKey = key =>
+        {
+            fonts.Add(run.Ui.CardWindowFont);
+            try
+            {
+                return keys.Handle(key);
+            }
+            catch (QuitGameException)
+            {
+                quit = true;
+                throw;
+            }
+        };
+        run.Play("wait:10", "key:space", "wait:5");
+        run.Recording = true;
+        run.Play("key:altq", "wait:15", "key:" + answer, "wait:15");
+        Assert.Equal([1], fonts);
+        Assert.Equal(quits, quit);
+        // the box: the first frame that differs from the one before it by a block of rows 93..106 (the card window's centre)
+        var frames = run.Frames;
+        Assert.True(frames.Count > 2);
+        int top = -1, bottom = -1;
+        for (var k = 1; k < frames.Count && top < 0; k++)
+        {
+            var changed = Enumerable.Range(0, Screen.Height)
+                .Where(y => Enumerable.Range(0, Screen.Width).Count(x => frames[k].Pixels[y * Screen.Width + x] != frames[k - 1].Pixels[y * Screen.Width + x]) > 20)
+                .ToList();
+            if (changed.Count >= 10)
+            {
+                (top, bottom) = (changed[0], changed[^1]);
+            }
+        }
+        Assert.Equal(93, top);
+        Assert.Equal(106, bottom);
+        Assert.Equal(3, run.Ui.CardWindowFont);
+    }
+
     /// <summary>A battle on the player's files with a host that replays the headless host's steps.</summary>
-    private sealed class Session : IDisposable
+    internal sealed class Session : IDisposable
     {
         private readonly StepHost _host;
         private readonly BattleScreens _screens;
@@ -396,7 +1013,7 @@ public sealed class BattleUiTests
             _state = Simulation.NewGame.Quickstart(WorldData.Load(files), 1, () => 1);
             var world = WorldData.Load(files);
             _state.Data = world;
-            var lootScreens = new GameScreens(Ui, new PartyPanel(Ui.Assets), _state, new NoScreens());
+            var lootScreens = new GameScreens(Ui, new PartyPanel(Ui), _state, new NoScreens());
             _screens = new BattleScreens(Ui, () => _state, loot is null ? null : (items, money) => loot(lootScreens, items, money));
             if (sheet is not null)
             {
@@ -419,11 +1036,22 @@ public sealed class BattleUiTests
 
         public BattleAssets Assets { get; }
 
+        public BattleScreens Screens => _screens;
+
         public BattleScreen Screen => _screens.Current!;
+
+        public GameState State => _state;
+
+        /// <summary>The program's cursor keys' state the battles share (DS:D7FE, DS:D945, DS:07D6 ...).</summary>
+        public CursorKeyState CursorKeys => _screens.CursorKeys;
 
         public byte[]? LastFrame => _host.Last?.Pixels;
 
         public List<(byte[] Pixels, uint[] Palette)> Frames => _host.Frames;
+
+        public bool Recording { set => _host.Recording = value; }
+
+        public void MovePointer(int x, int y) => _host.MovePointer(x, y);
 
         private bool _started;
 
@@ -472,7 +1100,7 @@ public sealed class BattleUiTests
             }
         }
 
-        /// <summary>Plays the steps until the battle ends; returns battle_result.</summary>
+        /// <summary>Plays the steps until the battle ends; returns battle-outcome.</summary>
         public int Fight(IEnumerable<string> steps)
         {
             _host.Queue(steps);
@@ -615,6 +1243,8 @@ public sealed class BattleUiTests
                         "esc" => Keys.Escape,
                         "f10" => Keys.F10,
                         "f1" => Keys.F1,
+                        "alts" => Keys.AltS,
+                        "altq" => Keys.AltQ,
                         "down" => Keys.Down,
                         "up" => Keys.Up,
                         "right" => Keys.Right,

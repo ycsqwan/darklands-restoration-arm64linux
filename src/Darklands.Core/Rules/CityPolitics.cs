@@ -20,8 +20,8 @@ public static class CityPolitics
     /// <summary>The 11 bits that count for a side's strength.</summary>
     private static readonly int[] StrengthBits = [0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x80, 0x40, 0x200, 0x400, 0x1000];
 
-    /// <summary>Which side holds <paramref name="bit"/> here: −1, 1, or 0 (<c>loc_side_get</c>).</summary>
-    // orig: loc_side_get_impl R039+0x0A34 (1462:0A34) matched; tests: WorldRulesTests
+    /// <summary>Which side holds <paramref name="bit"/> here: −1, 1, or 0 (<c>place-side-read</c>).</summary>
+    // orig: place-side-read-inner R039+0x0A34 (1462:0A34) matched; tests: WorldRulesTests
     public static int SideOf(GameState s, int bit)
     {
         var minus = s.Events.FactValue(Group, 1, s.CurrentLocation);
@@ -29,8 +29,8 @@ public static class CityPolitics
         return (bit & minus) != 0 ? -1 : plus != 0 ? 1 : 0;
     }
 
-    /// <summary>Gives <paramref name="bit"/> to side −1, side 1, or neither (<c>loc_side_set</c>).</summary>
-    // orig: loc_side_set_impl R039+0x0A7E (1462:0A7E) matched; tests: WorldRulesTests
+    /// <summary>Gives <paramref name="bit"/> to side −1, side 1, or neither (<c>place-side-write</c>).</summary>
+    // orig: place-side-write-inner R039+0x0A7E (1462:0A7E) matched; tests: WorldRulesTests
     public static void SetSide(GameState s, int bit, int side)
     {
         var here = s.CurrentLocation;
@@ -56,10 +56,10 @@ public static class CityPolitics
     public static int NeutralCount(GameState s) => AllBits.Count(b => SideOf(s, b) == 0);
 
     /// <summary>
-    /// A side's strength (<c>side1_strength</c> for −1, <c>side2_strength</c> for 1): 2 per bit it
+    /// A side's strength (<c>side-one-power</c> for −1, <c>side-two-power</c> for 1): 2 per bit it
     /// holds and 1 per neutral bit, of 11 bits, doubled; 1 when nothing.
     /// </summary>
-    // orig: side2_strength_impl R039+0x0BF6 (1462:0BF6) matched; side1_strength_impl R039+0x0D46 (1462:0D46) matched; tests: WorldRulesTests
+    // orig: side-two-power-inner R039+0x0BF6 (1462:0BF6) matched; side-one-power-inner R039+0x0D46 (1462:0D46) matched; tests: WorldRulesTests
     // C: all eleven side tests come before the eleven neutral tests (the scans' last slot ends the same).
     public static int Strength(GameState s, int side)
     {
@@ -67,9 +67,9 @@ public static class CityPolitics
         return v != 0 ? v << 1 : 1;
     }
 
-    /// <summary>A side's strength in percent of the other's (<c>side1_percent</c> for −1, <c>side2_percent</c> for 1).</summary>
-    // orig: side1_percent_impl R039+0x0E96 (1462:0E96) matched; side2_percent_impl R039+0x0EAA (1462:0EAA) matched; tests: WorldRulesTests
-    // C: the other side's strength is computed first (v_si), then this side's * 100 / it.
+    /// <summary>A side's strength in percent of the other's (<c>side-one-share</c> for −1, <c>side-two-share</c> for 1).</summary>
+    // orig: side-one-share-inner R039+0x0E96 (1462:0E96) matched; side-two-share-inner R039+0x0EAA (1462:0EAA) matched; tests: WorldRulesTests
+    // C: the other side's strength is computed first (local-in-si), then this side's * 100 / it.
     public static int Percent(GameState s, int side)
     {
         var other = Strength(s, -side);
@@ -77,16 +77,18 @@ public static class CityPolitics
     }
 
     /// <summary>
-    /// The outcome of an uprising here (<c>conflict_outcome</c>): <paramref name="partySide"/>
+    /// The outcome of an uprising here (<c>fight-resolution</c>): <paramref name="partySide"/>
     /// is the side the party took, <paramref name="winner"/> the side that won, and
     /// <paramref name="leadingSide"/> the side that started it (0: none; then a chance is
     /// computed and a number drawn, both unused). Unrest for 4 weeks, the city's politics
     /// quest is resolved, the uprising flag set, and the standing changes; helping the
     /// winning side without a pact (facts 0x24 / 0x25) earns fame.
     /// </summary>
-    // orig: conflict_outcome_impl R039+0x0EBE (1462:0EBE) matched
-    // C: with c == 0 side2_percent is called up to six times and pct is set to 0 either way; only the rand_mod(100) draw matters.
-    // C: the reward (give_reward) comes before the standing change (its draws).
+    // orig: fight-resolution-inner R039+0x0EBE (1462:0EBE) matched
+    // BUG: open-quest-resolve (R029+0x3E06, called at R039+0x0F3E) clears the group's facts here, the pacts 0x24 and 0x25 included, before the
+    //   branches test them (place-flag, R039+0x0F77 and after): with the politics quest under way the pact branches never run.
+    // C: with c == 0 side-two-share is called up to six times and pct is set to 0 either way; only the roll-below(100) draw matters.
+    // C: the reward (award-prize) comes before the standing change (its draws).
     public static void ConflictOutcome(GameState s, int partySide, int winner, int leadingSide)
     {
         if (leadingSide == 0)
@@ -169,8 +171,17 @@ public static class CityPolitics
     /// random side.
     /// </summary>
     // orig: R039+0x0558 (1462:0558) matched; tests: WorldRulesTests
-    // C: loc_query(loc, 0x21) and loc_query(loc, 0) are called first and their results dropped (pure reads).
-    // DIVERGENCE: `while (!loc_query(loc, d + 3))` loops forever in a city without any shop; here the search stops after seven days.
+    // C: place-query(loc, 0x21) and place-query(loc, 0) are called first and their results dropped (pure reads).
+    // DIVERGENCE: `while (!place-query(loc, d + 3))` loops forever in a city without any shop; here the search stops after seven days.
+    // BUG: the facts made here are 0xC, 6, 7, 0x17, 0x14, 3, 5, 4, 9, 0xA, 0x23, 1 and 2 (R039+0x0558): none of type 8, the guild secret the
+    //   guild cards (R062..R065) clear and read, so that fact never exists.
+    // BUG: fact 0x17 (the guild the agitators meet in, a bit 1 << d for the first d from a random one with place-query(loc, d + 3)) can be
+    //   d = 0, the local merchants (place-query 3), whom no guild card asks for: the guild cards compare it with 2, 4, 8, 0x10, 0x20, 0x40,
+    //   so in such a city no guild master leads the party to the agitators (kept).
+    // DORMANT: nothing in the original calls this function (tools/faithfulness/coverage.py: R039+0x0558 is not reachable from any entry
+    //   point, thunk, call, data table or code pointer; no RTLink thunk names it), and it alone creates the politics quest and the first
+    //   daily politics fact (expiry handler 2, DailyPolitics): no politics season, and so none of its facts (the agitators' guild above,
+    //   the unrest DailyPolitics makes), ever exists in a game the original plays. Kept as the original has it.
     public static void SetUpCity(GameState s, int loc)
     {
         if (s.Events.QuestAt(Group, loc) || LocationRules.Query(s, loc, 32) == 2)
@@ -211,8 +222,8 @@ public static class CityPolitics
     /// location, and the seventh-day test the current city record's seed.
     /// </summary>
     // orig: R029+0x4180 (0E76:4180) matched; tests: WorldRulesTests; FidelityFixTests
-    // BUG: loc_side_get/loc_side_set and side*_percent work on cur_loc, not the event's city (kept).
-    // C: bit = 1 << rand_mod(16) is a 16-bit int (0x8000 is negative) compared with the market day fact.
+    // BUG: place-side-read/place-side-write and side-*-share work on location-now, not the event's city (kept).
+    // C: bit = 1 << roll-below(16) is a 16-bit int (0x8000 is negative) compared with the market day fact.
     public static void DailyPolitics(GameState s, TimedEvent e)
     {
         var city = e.Location;
@@ -228,11 +239,13 @@ public static class CityPolitics
         {
             SetSide(s, (short)bit, -SideOf(s, (short)bit));
         }
-        // C: loc_query(city, 0x21) + cur_day is a 16-bit int: a seed near 32767 wraps before the % 7.
+        // C: place-query(city, 0x21) + day-now is a 16-bit int: a seed near 32767 wraps before the % 7.
         if ((short)(LocationRules.Query(s, city, 33) + s.Date.Day) % 7 == 0)
         {
             int strength;
             int unrest;
+            // BUG: setup makes no fact 0 (the leaning); the scan (EventLog.Next) finds the politics quest, whose value is the city's number, so
+            //   the leaning is that number: 1 is read as "leaning 1" for the city numbered 1, anything else but -1 and 1 as "none".
             var leaning = log.FactValue(Group, 0, city);
             if (leaning == -1)
             {
@@ -258,6 +271,8 @@ public static class CityPolitics
                     unrest = 0x16;
                 }
             }
+            // BUG: the unrest (fact 0x15 or 0x16) lasts 0x1E0 = 480 hours (20 days); it is created again, as one more event, every seventh day its test holds, while an earlier one still runs; and it has no expiry handler (0): nothing settles it
+            //   but a card the party meets in the city. Kept; never reached in the original's play (no politics season starts: SetUpCity).
             if (!log.Fact(Group, 7, city) || (!log.Fact(Group, 6, city) && strength > 0x96) || strength > 0x10B)
             {
                 log.Create(-2, city, 0, fact, unrest, 0x63, 0, 0x1E0, 0, Group);

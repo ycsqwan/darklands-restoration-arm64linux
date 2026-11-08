@@ -27,7 +27,7 @@ namespace Darklands.Cards.Scripts;
 //   other: R123+0x0BEE, R123+0x10C0, R123+0x1162
 // DORMANT (generated): option slots 10..19 keep the default handler R123+0x1162 ("screwed up.") and are never shown.
 // DORMANT (generated): option line(s) 3, 4, 5, 6, 7, 8, 9 are never enabled (every assignment sets their flag to 0).
-// DORMANT (generated): card_items stays all -1, so no line opens an item pop-up.
+// DORMANT (generated): card-item-lines stays all -1, so no line opens an item pop-up.
 // C: the card-engine globals DS:EE70 / DS:EE72 the C sets are the pop-up boxes' drawing flags (R043+0x2ACA, see DIVERGENCE_REVIEW); presentation only, not modelled.
 public sealed class BlightedWitchRitualSite : Card
 {
@@ -35,8 +35,6 @@ public sealed class BlightedWitchRitualSite : Card
 
     private const int BlightedWoodPicture = 139;
     private const int DreamPicture = 90;
-
-    private bool _searched;
 
     public override int Run(CardContext c)
     {
@@ -48,8 +46,9 @@ public sealed class BlightedWitchRitualSite : Card
         c.SetCardSaints(3, 0x0F, 0x2B, 0x44);
         menu[2] = c.SaintsUsable();
 
-        // The original keeps "the site has been searched" in options_block; the option text is always block 0.
-        _searched = false;
+        // The original keeps "the site has been searched" in settings-block (R123+0x0A26 = 0, R123+0x0CC6 / R123+0x0DE0 = 1; a later
+        // card may read it); the option text is always block 0.
+        c.OptionsBlock = 0;
         var assured = OptionHint.Saying(SuccessAssured);
         var showAgain = new MenuLine(_ => ShowTheWoodAgain(c), assured);
         return menu.Run(
@@ -65,7 +64,7 @@ public sealed class BlightedWitchRitualSite : Card
 
     /// <summary>The best Perception plus the best Woodwise; the whole party acts.</summary>
     // orig: R123+0x0CEC matched
-    // C: the order of the two calls only changes best_member, which this hint does not read (r.b = −2).
+    // C: the order of the two calls only changes top-scoring-member, which this hint does not read (r.b = −2).
     private static OptionHint SearchChance(CardContext c)
     {
         var perception = c.PartyMaxAttribute((int)Attribute.Perception);
@@ -77,19 +76,19 @@ public sealed class BlightedWitchRitualSite : Card
     private void Investigate(CardContext c, int chance)
     {
         c.PassHours(1);
-        if (_searched)
+        if (c.OptionsBlock != 0)
         {
             c.Screen.Text(1);
             FightTheWolves(c);
             return;
         }
-        _searched = true;
+        c.OptionsBlock = 1;
         c.Screen.Text(c.Random(100) < chance ? 4 : 5);
     }
 
     // orig: R123+0x0BEE matched
-    // C: run_battle's only random argument is the count (rand_mod(5) + 3). A result outside 0..4 (the switch's default
-    //   and its −64..−1 cases) returns at once and the card stays (next_card unchanged).
+    // C: battle-driver's only random argument is the count (roll-below(5) + 3). A result outside 0..4 (the switch's default
+    //   and its −64..−1 cases) returns at once and the card stays (following-card unchanged).
     private static void FightTheWolves(CardContext c)
     {
         var wolves = c.Random(5) + 3;
@@ -118,10 +117,10 @@ public sealed class BlightedWitchRitualSite : Card
     /// </summary>
     // orig: R123+0x0D16 matched
     // C: an int function that falls off its end without a value (except `return 0` after a cancelled prayer); the
-    //   menu ignores it. A failed prayer loads +0x0C73, the card's own picture, then pic_buf again (the same one).
+    //   menu ignores it. A failed prayer loads +0x0C73, the card's own picture, then image-buffer again (the same one).
     private void CallASaint(CardContext c, CardMenu menu)
     {
-        var result = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var result = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (result == -1)
         {
             return;
@@ -148,7 +147,7 @@ public sealed class BlightedWitchRitualSite : Card
                     break;
             }
             c.PassHours(1);
-            _searched = true;
+            c.OptionsBlock = 1;
         }
         else
         {

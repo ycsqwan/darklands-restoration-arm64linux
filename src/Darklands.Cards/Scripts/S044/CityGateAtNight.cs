@@ -24,9 +24,9 @@ public sealed class CityGateAtNight : Card
 
     // orig: R044+0x28E8 (1AC6:0008) matched (entry: music, the bribe amount, option states and the menu loop)
     // orig: R044+0x3148 (1AC6:0868) matched (init helper: enables all 20 option lines and clears the item and saint slots; the card then fills lines 0..5, 2 items and 2 saints)
-    // DORMANT: R044+0x31BA (1AC6:08DA): the init helper points opt_fn[0..19] at this "screwed up." default; lines 6..19 stay enabled but the card's MSG has no line for them and the menu cannot select them, so it never runs.
-    // DORMANT: item_fn[k][2..3] and saint_fn[k][2..3] are never installed by this file; the pop-ups hold only 2 items (slots 0..1) and 2 saints (slots 0..1), the other slots stay empty (-1). The C# PotionChance slot > 1 branch ("screwed up.") has no counterpart function here.
-    // C: item_fn/saint_fn are set identically for all 5 member rows (k = 0..4); the handlers read the member from menu_member, so the C# keeps one handler per slot.
+    // DORMANT: R044+0x31BA (1AC6:08DA): the init helper points card-option-handler[0..19] at this "screwed up." default; lines 6..19 stay enabled but the card's MSG has no line for them and the menu cannot select them, so it never runs.
+    // DORMANT: item-handler-table[k][2..3] and saint-handler-table[k][2..3] are never installed by this file; the pop-ups hold only 2 items (slots 0..1) and 2 saints (slots 0..1), the other slots stay empty (-1). The C# PotionChance slot > 1 branch ("screwed up.") has no counterpart function here.
+    // C: item-handler-table/saint-handler-table are set identically for all 5 member rows (k = 0..4); the handlers read the member from menu-owner-member, so the C# keeps one handler per slot.
     public override int Run(CardContext c)
     {
         c.PlayMusic(6);
@@ -241,7 +241,7 @@ public sealed class CityGateAtNight : Card
     private static OptionHint SaintChance(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var low = c.SaintChanceLow(c.MenuMember, saint);
         return OptionHint.Say(c.ChanceText(low, c.SaintChanceHigh(c.MenuMember, saint)));
     }
@@ -249,7 +249,7 @@ public sealed class CityGateAtNight : Card
     // orig: R044+0x2FC4 (1AC6:06E4) matched
     private static void CallUponASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

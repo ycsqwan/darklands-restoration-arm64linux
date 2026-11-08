@@ -86,7 +86,7 @@ public sealed class VillageSchulz : Card
     {
         c.Variables.Money[0] = Money.From(c.LocationQuery(c.Here, 2) * 5, 0, 0);
         c.RandomName(c.Here + 2000, 0, 0);
-        // C: nearest_loc_type takes the village's position word pair (+4, +6) as one long.
+        // C: closest-place-of-kind takes the village's position word pair (+4, +6) as one long.
         var village = c.State.Locations[c.Here];
         c.Variables.Location = c.NearestLocationOfType(village.X, village.Y, 2);
         c.StartQuest3(9, c.Variables.Location, c.Here + 2000, 0x0F, 1, 0);
@@ -133,7 +133,7 @@ public sealed class VillageSchulz : Card
     // orig: R077+0x1A9C (1996:04BC) matched; R077+0x1B8A (1996:05AA) matched; tests: CardSmokeTests
     private static void Pray(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -166,8 +166,8 @@ public sealed class VillageSchulz : Card
         {
             ShowPicture(c, 160);
             c.Screen.Text(0x0A);
-            // C: arguments are evaluated right to left: the second group (rand_mod(4)) is drawn
-            // before the first (rand_mod(3)); party_lore_level draws nothing.
+            // C: arguments are evaluated right to left: the second group (roll-below(4)) is drawn
+            // before the first (roll-below(3)); party-lore-rating draws nothing.
             var third = c.PartyLoreLevel() / 4 + 1;
             var second = c.Random(4) + c.PartyLoreLevel() / 3 + 1;
             var first = c.Random(3) + c.PartyLoreLevel() / 4 + 3;

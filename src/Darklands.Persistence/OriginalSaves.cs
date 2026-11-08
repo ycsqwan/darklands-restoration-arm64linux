@@ -10,7 +10,15 @@ using static Darklands.Persistence.RecordBytes;
 namespace Darklands.Persistence;
 
 /// <summary>A saved game read back: the game, and the options and comment it was saved with.</summary>
-public sealed record LoadedGame(GameState State, bool Music, bool SoundEffects, string Comment);
+public sealed record LoadedGame(GameState State, bool Music, bool SoundEffects, string Comment)
+{
+    /// <summary>What the saved game's companion file (a game saved with mods) did; <see cref="ModdedLoad.None"/> without one.</summary>
+    public ModdedLoad Mods { get; init; } = ModdedLoad.None;
+
+    /// <summary>The party slots naming a record an earlier slot already named: the reader left them empty, their shield letter 0.</summary>
+    // orig: R037+0x96BE..0x96D3 (the record read into the first slot naming it); the load screen then asks for "picsshield.pic" (OriginalBehaviour.FixLoadTwoSlotsOneRecord)
+    public IReadOnlyList<int> SlotsWithoutRecord { get; init; } = [];
+}
 
 /// <summary>
 /// The original's saved games (SAVES\DKSAVEn.SAV and its battle file .BSV) ↔ the game state. Every
@@ -22,11 +30,11 @@ public sealed record LoadedGame(GameState State, bool Music, bool SoundEffects, 
 // orig: save R037+0x2ACE (1462:2ACE) draft; load R037+0x8ED4 (1C7D:0D24)
 // matched; tests: OriginalSaveTests
 // C: the header, as both functions read and write it (offsets in the file):
-//   +00 place name (0x15 bytes: the current location's name, or "Wilderness"), +15 comment (0x4F bytes), +64 party_seed,
-//   +66 the word 7, +68 year, month, day, hour, +70 florins, groschen, pfennigs, +76 a zero long, +7A party_fame, +7C cur_loc,
-//   +7E party_x, +80 party_y, +82 DS:A772 (the card), +84 DS:E898 (the card's text state), +86 saved_card, +88 saved_card2,
-//   +8A prev_screen, +8C DS:9072/9074/9076 (bank notes), +92 DS:9078 (philosopher's stone), +94 DS:A67C (hirelings), +96 game_difficulty
-//   (bit 7: saved in a battle), +97 DS:DB27, +99 DS:DA34, +9B marching_order[6], +A1 leader, +A2 opt_music, +A3 opt_sound, +A4 DS:A891,
+//   +00 place name (0x15 bytes: the current location's name, or "Wilderness"), +15 comment (0x4F bytes), +64 party-random-seed,
+//   +66 the word 7, +68 year, month, day, hour, +70 florins, groschen, pfennigs, +76 a zero long, +7A party-renown, +7C location-now,
+//   +7E party-map-column, +80 party-map-row, +82 DS:A772 (the card), +84 DS:E898 (the card's text state), +86 remembered-card, +88 remembered-card-second,
+//   +8A earlier-screen, +8C DS:9072/9074/9076 (bank notes), +92 DS:9078 (philosopher's stone), +94 DS:A67C (hirelings), +96 difficulty-setting
+//   (bit 7: saved in a battle), +97 DS:DB27, +99 DS:DA34, +9B column-order[6], +A1 leader, +A2 music-setting, +A3 sound-setting, +A4 DS:A891,
 //   +A6 a zero byte, +A7 36 zero words.
 public static class OriginalSaves
 {
@@ -47,6 +55,15 @@ public static class OriginalSaves
     private const int SavedCardAt = 0x86;
     private const int SavedCard2At = 0x88;
     private const int PreviousCardAt = 0x8A;
+
+    /// <summary>The highest card number of the game's table: the original save format holds no other (mods' cards go to a companion file).</summary>
+    public const int LastOriginalCard = 365;
+
+    /// <summary>The map's card (0x0C): what a modded game's save names for a card number above 365 that no mod knows.</summary>
+    public const int MapCard = 0x0C;
+
+    /// <summary>The header offsets of the card, the two remembered cards and the previous card (ModdedSaves.CardsOf's order).</summary>
+    public static readonly int[] CardFieldOffsets = [CardAt, SavedCardAt, SavedCard2At, PreviousCardAt];
     private const int BankNotesAt = 0x8C;
     private const int PhilosophersStoneAt = 0x92;
     private const int HirelingsAt = 0x94;
@@ -64,7 +81,7 @@ public static class OriginalSaves
     private const int Version = 7;
 
     /// <summary>The comment the save dialog offers.</summary>
-    // orig: `char comment[0x29] = "Darklands"` in save_game R037+0x2A68 (1462:2A68) matched
+    // orig: `char comment[0x29] = "Darklands"` in game-store-entry R037+0x2A68 (1462:2A68) matched
     public const string DefaultComment = "Darklands";
 
     /// <summary>The place name of a game saved outside any location.</summary>
@@ -80,11 +97,11 @@ public static class OriginalSaves
     /// the saintly-changes option, a city record it does not reread) carries over from it.
     /// </summary>
     // orig: R037+0x8ED4 (1C7D:0D24) matched
-    // C: the loader reads the header in the order of its fields, then `if (game_difficulty & 0x80) { DS:9081 |= 1; game_difficulty &= 0x7f; }`,
-    // show_difficulty(1) and the "Loading Game" box (the presentation's), the party block, the party's records into their slots (the
-    // others are skipped), the slot colours, the events, the location block, load_saved_game (which rebuilds charactr.tmp, locs.tmp and an
-    // empty cache.tmp and recounts party_size from the slots' status), the rest of the file as cache.tmp, then city_desc and city_rec
-    // of cur_loc from darkland.dsc and darkland.cty, and battle_restore (the .BSV).
+    // C: the loader reads the header in the order of its fields, then `if (difficulty-setting & 0x80) { DS:9081 |= 1; difficulty-setting &= 0x7f; }`,
+    // difficulty-display(1) and the "Loading Game" box (the presentation's), the party block, the party's records into their slots (the
+    // others are skipped), the slot colours, the events, the location block, saved-game-read (which rebuilds charactr.tmp, locs.tmp and an
+    // empty cache.tmp and recounts party-headcount from the slots' status), the rest of the file as cache.tmp, then city-description and city-record
+    // of location-now from darkland.dsc and darkland.cty, and battle-reload (the .BSV).
     // C: `if (party[je][1] < 'A') party[je][1] = 'A';` for each party member: a shield letter below A becomes A.
     // C: DS:9081 bit 0 (a game saved in a battle) is GameState.ResumeBattle: the game takes the battle up from the .BSV (GameState.BattleFile).
     // DIVERGENCE: the missing-file exits ("load", "cache", "city": printf and exit(1)) are the caller's (a missing .SAV is not listed;
@@ -127,7 +144,7 @@ public static class OriginalSaves
             state.BattleOrders.Result = orders.Result;
         }
         state.Date = new GameDate((short)Word(h, DateAt + 6), (short)Word(h, DateAt + 4), (short)Word(h, DateAt + 2), (short)Word(h, DateAt));
-        // C: DS:A67C is read from the save (load_saved_game: fread(&DS:A67C, 2, 1, fi)).
+        // C: DS:A67C is read from the save (saved-game-read: fread(&DS:A67C, 2, 1, fi)).
         state.HirelingCount = Word(h, HirelingsAt);
         state.CurrentCard = Word(h, CardAt);
         state.SavedCard = Word(h, SavedCardAt);
@@ -147,7 +164,7 @@ public static class OriginalSaves
         }
         var party = new Party
         {
-            // C: party_seed is read as an int; the game uses it as an unsigned 16-bit seed (NewGame.PartySeed).
+            // C: party-random-seed is read as an int; the game uses it as an unsigned 16-bit seed (NewGame.PartySeed).
             Seed = UWord(h, SeedAt),
             Purse = ReadMoney(h, PurseAt),
             Fame = Word(h, FameAt),
@@ -156,14 +173,29 @@ public static class OriginalSaves
             LeaderIndex = (sbyte)h[LeaderAt],
         };
         var used = new HashSet<int>();
+        var withoutRecord = new List<int>();
         for (var slot = 0; slot < SaveFile.PartySlots; slot++)
         {
             var id = file.PartyIds[slot];
             Character member;
-            if (id >= 0 && id < state.Roster.Characters.Count)
+            if (id >= 0 && id < state.Roster.Characters.Count && !used.Add(id))
             {
-                // C: a second slot naming the same record gets its own copy (combatants), as the original reads it twice.
-                member = used.Add(id) ? state.Roster.Characters[id] : state.Roster.Characters[id].Copy();
+                // C: a second slot naming a record already read: saved-game-read R037+0x8ED4 reads each record into the FIRST slot naming it
+                // C: (R037+0x96BE..0x96D3 searches the slots from 0), so this slot gets nothing and keeps the slot memory (status 0 after the
+                // C: load's clear, zeros after start-up); ids[] keep naming the record (CharacterRoster.KeepSecondSlot), and the writer
+                // C: R037+0x2ACE writes the record from the first slot again (R037+0x3520..0x3531): such a save stays as it was.
+                withoutRecord.Add(slot);
+                // C: the load screen then exits (code 99): R037+0x86DA..0x8754 loads pics\shield<letter>.pic for every slot whose id is not
+                //   -1, and this slot's letter byte (DS:9C6A + 0x80 x slot) is 0, so "pics\shield.pic" is missing (lockstep session
+                //   carry-dup-resave: program exit 99 at R037+0x84BA+0x29F); the slot is listed in SlotsWithoutRecord, and DarklandsGame.LoadSavedGame
+                //   reproduces the exit (the original bug's switch FixLoadTwoSlotsOneRecord, on in DataSafe: the game goes on with the slot empty).
+                member = new Character { Status = CharacterStatus.Empty, Weapon = new EquippedItem(-1, 0), MissileWeapon = new EquippedItem(-1, 0) };
+                state.Roster.PartySlots[slot] = id;
+                state.Roster.KeepSecondSlot(member, id);
+            }
+            else if (id >= 0 && id < state.Roster.Characters.Count)
+            {
+                member = state.Roster.Characters[id];
                 state.Roster.PartySlots[slot] = id;
                 // C: charactr.tmp keeps the record as read until the member leaves through R037+0x3B58 (CharacterRoster.StoredRecord).
                 state.Roster.KeepStored(member, state.Roster.Characters[id].Copy());
@@ -175,7 +207,7 @@ public static class OriginalSaves
             else
             {
                 // C: a slot without a record keeps the status the load left (party[i][0] = 0): an empty slot.
-                // C: the load reads no record into it, so the slot memory is the program's (zero after start-up): add_member there keeps
+                // C: the load reads no record into it, so the slot memory is the program's (zero after start-up): join-party-member there keeps
                 // C: weapon and missile qualities 0 (record +0x58/+0x5A), not the 25 of an empty hand.
                 member = new Character { Status = CharacterStatus.Empty, Weapon = new EquippedItem(-1, 0), MissileWeapon = new EquippedItem(-1, 0) };
                 state.Roster.MarkOffRoster(member);
@@ -184,7 +216,7 @@ public static class OriginalSaves
             member.ImagePalette = file.Palettes[(slot * SaveFile.PaletteSize)..((slot + 1) * SaveFile.PaletteSize)];
             party.Members.Add(member);
         }
-        // C: load_saved_game recounts party_size as the last slot whose status is not 0, plus one; the empty slots after it are not part of the
+        // C: saved-game-read recounts party-headcount as the last slot whose status is not 0, plus one; the empty slots after it are not part of the
         // C: party but keep what was read into them (Party.TrimToSize).
         party.TrimToSize();
         state.Party = party;
@@ -206,7 +238,7 @@ public static class OriginalSaves
         if (!bsv.IsEmpty)
         {
             battle = BattleSaveFile.Parse(bsv);
-            // C: battle_restore runs last: its DS:DA34 (and marching order) replace the header's.
+            // C: battle-reload runs last: its DS:DA34 (and marching order) replace the header's.
             state.Battlefield.ClearedLevels = battle.ClearedLevels;
             battle.MarchingOrder.CopyTo(state.MarchingOrder);
             state.LastCastleFlags = battle.LastCastleFlags;
@@ -225,7 +257,7 @@ public static class OriginalSaves
         }
         if (state.BattleFile is { } held)
         {
-            // C: the compressor's work area is the program's (load_buf + 0x4E20), not the saved game's.
+            // C: the compressor's work area is the program's (read-buffer + 0x4E20), not the saved game's.
             held.Compressor = running?.BattleFile?.Compressor ?? held.Compressor;
         }
         // C: DS:9081 bit 0: the main loop starts the battle again instead of the card.
@@ -237,17 +269,17 @@ public static class OriginalSaves
             Images = (byte[])file.Images.Clone(),
             Palettes = (byte[])file.Palettes.Clone(),
         };
-        return new LoadedGame(state, h[MusicAt] == 1, h[SoundAt] == 1, Text(h, CommentAt, CommentLength));
+        return new LoadedGame(state, h[MusicAt] == 1, h[SoundAt] == 1, Text(h, CommentAt, CommentLength)) { SlotsWithoutRecord = withoutRecord };
     }
 
     /// <summary>
-    /// city_rec after a load: the record of cur_loc read from DARKLAND.CTY. Outside the cities the
+    /// city-record after a load: the record of location-now read from DARKLAND.CTY. Outside the cities the
     /// read lands elsewhere in the file: in the wilderness (−1) the seek fails and the record is the
     /// file's first 0x26E bytes (the city count byte and most of city 0); past the last city nothing is
     /// read and the record stays as it was.
     /// </summary>
-    // orig: `fseek(f2b, (long)cur_loc * 0x26e + 1, 0); _dos_read(hj, city_rec, 0x26e, &id);` in R037+0x8ED4
-    // C: the read is CityFile.Read over the running game's record: from the start screen that is the record world_load read at
+    // orig: `fseek(f2b, (long)location-now * 0x26e + 1, 0); _dos_read(hj, city-record, 0x26e, &id);` in R037+0x8ED4
+    // C: the read is CityFile.Read over the running game's record: from the start screen that is the record world-read read at
     // C: start-up for the random first city (NewGame.StartUp, which the game passes as the running state).
     private static void LoadCityRecord(GameState state, GameState? running)
     {
@@ -259,18 +291,25 @@ public static class OriginalSaves
 
     // ---- writing ------------------------------------------------------------------------
 
+    /// <summary>Sets the in-battle bit (bit 7 of the difficulty byte) of written .SAV bytes, as the original's writer does for any save made while
+    /// a battle runs (R037+0x2B57 under `if (DS:907A == 1)`): the headless host's state step, which writes the game without a battle argument.</summary>
+    public static void MarkWrittenInBattle(byte[] sav) => sav[DifficultyAt] |= InBattleBit;
+
+    /// <summary>True when the .SAV bytes were written in a battle (the in-battle bit).</summary>
+    public static bool WrittenInBattle(ReadOnlySpan<byte> sav) => (sav[DifficultyAt] & InBattleBit) != 0;
+
     /// <summary>
     /// The saved game of a state: the .SAV bytes and the .BSV bytes (the program's battle file: the last battle's or the last
     /// load's, zeros in a program that has had neither).
     /// </summary>
     /// <param name="comment">The comment typed in the save dialog; null keeps the one the game was read with.</param>
     // orig: R037+0x2ACE (1462:2ACE) draft (unmatched: the `nel > ixn` loop test's operand order)
-    // C: `if (DS:907A == 1)` (saving in a battle): the members' readied items are put away (thunk 09C0:1CCF/1cc5/1cbb), game_difficulty |= 0x80,
+    // C: `if (DS:907A == 1)` (saving in a battle): the members' readied items are put away (thunk 09C0:1CCF/1cc5/1cbb), difficulty-setting |= 0x80,
     // locs.tmp and events.tmp are read back into memory first (the events into slots 0..n-1 over the battle's: EventLog.Reload), and the
     // box is drawn in colour 9; after the file is written every event is freed again (EventLog.ReleaseAfterSave): the battle goes on with an
     // empty table, and what it had added is lost (in slots n and up it was saved with the game).
     // C: in a battle the party's records are its combatant records (PartyRecordInBattle) and the battle file is written from the battle.
-    // C: party_size is recomputed from the slots of charactr.tmp every time (DKSAVE40, written by another tool with 6, is saved with 4);
+    // C: party-headcount is recomputed from the slots of charactr.tmp every time (DKSAVE40, written by another tool with 6, is saved with 4);
     // then charactr.tmp's count nd and, for each of the nd roster entries in order: a party member's record from memory (combatants,
     // saints, formulas, pack) with one charactr.tmp record read past it, nothing at all when the slot's status `party[je][0]` is 0, any
     // other entry the next record read from charactr.tmp. A status-0 slot (a loaded file can have them: DKSAVE40 has two) so leaves the
@@ -280,9 +319,18 @@ public static class OriginalSaves
     // DIVERGENCE: the bytes after the place name and the comment are stack left-overs in the original; a new text is followed by zeros.
     // C: the .BSV: the battle-state save R003+0x00DC writes the program's battle file (GameState.BattleFile: the battle's variables and the last
     // battlefield's levels and files); before any battle or battle file (a new game) the variables are the program's zeros.
+    // DIVERGENCE: no original: in a game with mods (savedCardOf not null) a number above LastOriginalCard is never written: a mod's new
+    //   card is written as the game's card savedCardOf gives for it, any other as the map (MapCard), so the original game loads every
+    //   file written here (ModdedSaves keeps the real number). Without mods (savedCardOf null) every number is written as it is, as the
+    //   original writes it (a garbled file read back keeps its words).
     public static (byte[] Sav, byte[] Bsv) Write(GameState state, string? comment = null, bool music = true, bool soundEffects = true,
-        Core.Battles.Battle? inBattle = null)
+        Core.Battles.Battle? inBattle = null, Func<int, int?>? savedCardOf = null)
     {
+        int Card(int number) =>
+            number <= LastOriginalCard || savedCardOf is null ? number
+            : savedCardOf(number) is { } saved && saved is >= 0 and <= LastOriginalCard ? saved
+            : MapCard;
+        var cards = (Card(state.CurrentCard), Card(state.SavedCard), Card(state.SavedCard2), Card(state.PreviousCard));
         if (inBattle is not null)
         {
             state.Events.Reload();
@@ -291,7 +339,7 @@ public static class OriginalSaves
         var file = new SaveFile { Header = image is null ? new byte[SaveFile.HeaderSize] : (byte[])image.Header.Clone() };
         var h = file.Header;
         // orig: the saved game's writer R037+0x2ACE writes the current location's name (or "Wilderness") every time
-        // C: so a file whose header named another place (DKSAVE0: "Prag" at cur_loc 85, Pressburg) names cur_loc's after a save, as in the original.
+        // C: so a file whose header named another place (DKSAVE0: "Prag" at location-now 85, Pressburg) names location-now's after a save, as in the original.
         PutText(h, PlaceAt, PlaceLength, PlaceName(state));
         PutText(h, CommentAt, CommentLength, comment ?? (image is null ? DefaultComment : Text(h, CommentAt, CommentLength)));
         PutWord(h, SeedAt, state.Party.Seed);
@@ -306,15 +354,19 @@ public static class OriginalSaves
         PutWord(h, LocationAt, state.CurrentLocation);
         PutWord(h, MapXAt, state.MapPosition.X);
         PutWord(h, MapYAt, state.MapPosition.Y);
-        PutWord(h, CardAt, state.CurrentCard);
-        PutWord(h, SavedCardAt, state.SavedCard);
-        PutWord(h, SavedCard2At, state.SavedCard2);
-        PutWord(h, PreviousCardAt, state.PreviousCard);
+        PutWord(h, CardAt, cards.Item1);
+        PutWord(h, SavedCardAt, cards.Item2);
+        PutWord(h, SavedCard2At, cards.Item3);
+        PutWord(h, PreviousCardAt, cards.Item4);
         PutMoney(h, BankNotesAt, state.Party.BankNotes);
         PutWord(h, PhilosophersStoneAt, state.Party.PhilosophersStone);
         // C: DS:A67C, the cached hireling count (GameState.HirelingCount).
         PutWord(h, HirelingsAt, state.HirelingCount);
-        // C: bit 7 of the difficulty is set when saving in a battle (a game taken up in a battle not yet begun again is still one).
+        // C: bit 7 of the difficulty is set when saving in a battle: R037+0x2AEF `if (DS:907A == 1)` (a battle runs) ... R037+0x2B57 sets it.
+        // DIVERGENCE: `|| state.ResumeBattle` has no counterpart in the original (the bit depends on DS:907A only). It changes no save made in
+        // play: every save in a battle passes the battle (inBattle), the save dialog outside one is refused while a battle is fought, and
+        // ResumeBattle is set outside a running battle only between a load and the restarted battle, where no input is taken. It serves the
+        // headless host's state writer (no battle argument) in a battle taken up from a save, where the original's DS:907A is 1.
         h[DifficultyAt] = (byte)((int)state.Difficulty & ~InBattleBit | (inBattle is not null || state.ResumeBattle ? InBattleBit : 0));
         PutWord(h, BattleLocationAt, state.Battlefield.LastLocation);
         PutWord(h, ClearedLevelsAt, state.Battlefield.ClearedLevels);
@@ -350,7 +402,7 @@ public static class OriginalSaves
         file.Palettes = image is null ? new byte[file.Palettes.Length] : (byte[])image.Palettes.Clone();
         for (var slot = 0; slot < SaveFile.PartySlots; slot++)
         {
-            // C: member_shield / member_palette keep a departed member's figure (party_delete clears only the status byte)
+            // C: member-shield-picture / member-colours keep a departed member's figure (party-member-erase clears only the status byte)
             var member = slot < state.Party.Members.Count ? state.Party.Members[slot] : state.Party.SpareRecord(slot);
             if (member is null)
             {
@@ -381,8 +433,8 @@ public static class OriginalSaves
             }
             else if (slot >= 0 && !state.Behaviour.FixSaveWriterSkipsEmptySlots)
             {
-                // BUG: OriginalBehaviour.FixSaveWriterSkipsEmptySlots - the same for a slot past party_size: the writer tests all five ids, and a
-                // slot past party_size has status 0 (party_size is one past the last slot of status != 0), so its record is left out as well.
+                // BUG: OriginalBehaviour.FixSaveWriterSkipsEmptySlots - the same for a slot past party-headcount: the writer tests all five ids, and a
+                // slot past party-headcount has status 0 (party-headcount is one past the last slot of status != 0), so its record is left out as well.
                 continue;
             }
             else
@@ -405,7 +457,8 @@ public static class OriginalSaves
             file.Locations.Add(LocationRecords.Write(l));
         }
         file.Cache = CacheFile.Write(state.ItemStores);
-        // C: a program that has fought no battle and loaded no battle file writes its zero globals (no levels, no work files).
+        // C: a program that has fought no battle and loaded no battle file writes its start globals (BattleFile.ProgramStartVariables: no
+        //   levels) and the work files its folder holds (the game host gives a new game that battle file, DarklandsGame.ProgramBattleFile).
         return (file.ToBytes(), BattleSaveFile.Write(state.BattleFile ?? new Core.Battles.BattleFile()));
     }
 
@@ -414,8 +467,11 @@ public static class OriginalSaves
     /// changed (status, attributes, equipment, potions, the pack) and where it stands and what it does are in it.
     /// </summary>
     // orig: R037+0x2ACE (1462:2ACE) writes the slot's combatant record (0x80 bytes at DS:9C55), saints, formulas and pack for a party member
-    // UNCERTAIN: the record words the model does not keep for a combatant (+0x02, +0x0E the pointer R002+0x1830 sets, +0x1C) are
-    // written as the record was read.
+    // C: the record byte the model does not keep for a combatant (+0x1C, the slot) is written as the record was read; +0x02 is the
+    //   screen Y and +0x0E the pose's info pointer (CombatantRecords.WriteAnimation). Checked against the original's own Alt-S saves in a battle
+    //   (lockstep sessions b3-save-fight, -2, -3: five saves of four members in the walking pose, all 0x80 bytes agree, +0x0E = DS:CAB4 +
+    //   0x90 x slot). A save is refused in real combat (DS:9920 = 2, R014+0x0000), so the fighting and hit poses are not saved; the dying and
+    //   reload pointers are from the asm (R014+0x3C2E..0x3C38).
     private static byte[] PartyRecordInBattle(Character member, Core.Battles.Combatant c)
     {
         var copy = member.Copy();
@@ -437,7 +493,7 @@ public static class OriginalSaves
         return record;
     }
 
-    // C: `if (cur_loc >= 0 && cur_loc < 0x19e) _fstrcpy(placeb, locations[cur_loc] + 0x26); else strcpy(placeb, "Wilderness");`
+    // C: `if (location-now >= 0 && location-now < 0x19e) _fstrcpy(placeb, locations[location-now] + 0x26); else strcpy(placeb, "Wilderness");`
     private static string PlaceName(GameState state) =>
         state.CurrentLocation >= 0 && state.CurrentLocation < SaveFile.LocationCount && state.CurrentLocation < state.Locations.Count
             ? state.Locations[state.CurrentLocation].Name
@@ -463,7 +519,7 @@ public static class OriginalSaves
         };
     }
 
-    // C: `party_size.v = ixn = 0; for (; ixn < 5; ixn++) if (idso[ixn] != -1) party_size.v = ixn + 1;`
+    // C: `party-headcount.v = ixn = 0; for (; ixn < 5; ixn++) if (idso[ixn] != -1) party-headcount.v = ixn + 1;`
     private static int PartySizeOf(int[] ids)
     {
         var size = 0;

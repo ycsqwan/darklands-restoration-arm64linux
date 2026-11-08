@@ -221,7 +221,14 @@ internal sealed partial class MineBuilder
     // orig: R009+0x1AF0 (1432:1AF0) draft (unmatched draft, far off per the draft notes); tests:
     // Oracle:mine.json
     // C: a10/a14/a12 are locals of the whole pass: when the contents table has no entry for the mine and section they keep the values of the
-    // chest before (zero before the first, UNCERTAIN: the original holds stack leftovers).
+    // chest before (zero before the first; the original holds stack leftovers there: live, in lockstep session dungeon-mine-group with
+    // R009+0x1AF0 hooked, [bp-0x10] / [bp-0x12] / [bp-0x14] were 2300/1/0, 5E37/1/0, 0018/2/0, 8BBC/2/0, 57C0/4/0, 0/0/0 and 0012/1/0 at the
+    // seven calls). The grade, left at the stale word by the one-kind arms (0x88 with grade 4 seen), is read only for items outside
+    // 0x84..0x99, which the two-kind arms always give grade 3, so a first chest with a table entry never shows the leftovers.
+    // DORMANT: a chest in a section the table lacks. The sections loaded without an entry are only section 13 of mines 0x0b / 0x82 / 0x87
+    // (0x0d / 0x88 load 1, 2, 3, 5, 7, 8, 11, 12; 0x83 sends 9 and 13 to the special mines; 0x0e..0x10 and 0x84..0x86 load 1..13, all in
+    // the table), and section 13 is always iminspec.000 (MapNumber), whose objects are four of type 6 and no chest (IMAPS.CAT read: the
+    // objects before the generator's own, +0x2186); the exit markers the special arm adds keep type 5 or 7.
     private void MakeChests(int t, int section)
     {
         var level = LevelOf(section);
@@ -452,7 +459,7 @@ internal sealed partial class MineBuilder
     }
 
     /// <summary>Adds the two kinds a group plan names to the level's kinds and sets their kill bytes; returns their kind indexes (−1 none).</summary>
-    // C: monster_type_map, then bf_monsters[level * 12 + kind].x0c = flag, for the first kind and then for the second.
+    // C: monster-type-lookup, then battlefield-monster-table[level * 12 + kind].x0c = flag, for the first kind and then for the second.
     private (int First, int Second) AddPlannedKinds(int level, MineGroupPlan plan)
     {
         var first = Forces.AddKind(level, plan.Type1, plan.Quality1);
@@ -483,7 +490,7 @@ internal sealed partial class MineBuilder
     /// </summary>
     // orig: R009+0x23D6 (1432:23D6) draft (unmatched draft, far off per the draft notes); tests:
     // Oracle:mine.json
-    // DIVERGENCE: the original writes the group into slot group_count of level lvno even past 10 (into the next level's slots); the list grows here.
+    // DIVERGENCE: the original writes the group into slot group-total of level lvno even past 10 (into the next level's slots); the list grows here.
     private void PlaceGroup(int t, int type1, int count1, int reinforcement1, int type2, int count2, int reinforcement2, int section, bool posted,
         int spot, int pointY, int facing)
     {

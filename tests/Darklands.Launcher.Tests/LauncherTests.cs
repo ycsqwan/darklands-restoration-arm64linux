@@ -27,6 +27,8 @@ internal sealed class ScriptedSurface(int width, int height, params LauncherInpu
     public string? Clipboard() => ClipboardText;
 
     public Func<string, string?>? PickFolder { get; set; }
+
+    public Func<string, string?>? PickFile { get; set; }
 }
 
 /// <summary>A sound test that notes what it was asked to play, and plays until stopped.</summary>
@@ -107,7 +109,7 @@ public sealed class LauncherTests
             Down, Enter,        // fullscreen on
             Down, Down,
             Right, Right,       // sound: AdLib, then Sound Blaster
-            Down, Down, Enter,  // past the ROMs: the start-up screen off
+            Down, Down, Down, Down, Enter,  // past the ROMs, the audio pack and the SoundFont: the start-up screen off
             Escape]);
         Assert.Equal(LauncherChoice.Quit, result.Choice);
         Assert.Equal("1080x600", (string)result.Changes["display.resolution"]!);
@@ -170,8 +172,8 @@ public sealed class LauncherTests
     {
         var links = new List<string>();
         var tests = new List<string?>();
-        // Play, Discord (open it), then back up past Play, Save, every start, Opening animation, start-up screen to the sound test
-        Run(Context(links: links, tests: tests), Tab, Enter, Up, Up, Up, Up, Up, Up, Enter, Enter, Enter);
+        // Play, Discord (open it), then back up past Play, Save, every start, Opening animation, start-up screen, SoundFont, audio pack to the sound test
+        Run(Context(links: links, tests: tests), Tab, Enter, Up, Up, Up, Up, Up, Up, Up, Up, Enter, Enter, Enter);
         Assert.Equal([LauncherScreen.DiscordLink], links);
         Assert.Equal(["config", "stop", "config"], tests);
     }
@@ -227,6 +229,275 @@ public sealed class LauncherTests
         Assert.Equal(["Crash when the world map opens", "The Quickstart party is no longer drawn black.", "A linked fix"], items);
     }
 
+    /// <summary>Two pack folders in a packs folder: one of sounds, one of pictures.</summary>
+    private sealed class Packs : IDisposable
+    {
+        public Packs()
+        {
+            Directory.CreateDirectory(Sounds);
+            File.WriteAllBytes(Path.Combine(Sounds, "inn-1.ogg"), [0]);
+            Directory.CreateDirectory(Pictures);
+            File.WriteAllBytes(Path.Combine(Pictures, "COMMONSP.IMG#12.png"), [0]);
+        }
+
+        public string Root { get; } = Directory.CreateTempSubdirectory("dkpacks").FullName;
+
+        public string Sounds => Path.Combine(Root, "packs", "a-sounds");
+
+        public string Pictures => Path.Combine(Root, "packs", "b-pictures");
+
+        public IReadOnlyList<string> Find(string? gameFolder) => [Sounds, Pictures];
+
+        public void Dispose() => Directory.Delete(Root, recursive: true);
+    }
+
+    // from Play: Discord, the game folder, Change, window, fullscreen, HD pack, sound card, ROMs, then the audio pack (no sound test)
+    private static readonly LauncherInput[] ToAudioPack = [Tab, Tab, Tab, Tab, Tab, Tab, Tab, Tab, Tab];
+
+    [Fact]
+    public void ThePackRowsGoThroughNoneAndThePacksFoundAndTheSettingsKeepThem()
+    {
+        using var packs = new Packs();
+        var context = Context() with { FindPacks = packs.Find };
+        var sound = Run(context, [.. ToAudioPack, Right]);
+        Assert.Equal(packs.Sounds.Replace('\\', '/'), (string)sound.Changes["sound.audioPack"]!);
+        Assert.Equal(packs.Sounds, sound.Settings.AudioPack);
+        Assert.False(sound.Changes.ContainsKey("display.hdPack"));
+
+        // the picture pack row offers only the folder with pictures
+        var picture = Run(context, Tab, Tab, Tab, Tab, Tab, Tab, Right);
+        Assert.Equal(packs.Pictures.Replace('\\', '/'), (string)picture.Changes["display.hdPack"]!);
+
+        // the settings' pack comes back unchanged; None turns it off
+        var kept = Context(new GameSettings { GameFolder = Game, AudioPack = packs.Sounds }) with { FindPacks = packs.Find };
+        var unchanged = Run(kept);
+        Assert.Empty(unchanged.Changes);
+        Assert.Equal(packs.Sounds, unchanged.Settings.AudioPack);
+        var off = Run(kept, [.. ToAudioPack, new KeyPressed(LauncherKey.Left)]);
+        Assert.Equal("", (string)off.Changes["sound.audioPack"]!);
+        Assert.Null(off.Settings.AudioPack);
+    }
+
+    [Fact]
+    public void APackIsPickedOrDroppedByWhatItHolds()
+    {
+        using var packs = new Packs();
+        var picked = new ScriptedSurface(1440, 800, [.. ToAudioPack, Enter]) { PickFolder = _ => packs.Sounds };
+        Assert.Equal(packs.Sounds, new Launcher().Run(Context(), picked).Settings.AudioPack);
+        var wrong = new ScriptedSurface(1440, 800, [.. ToAudioPack, Enter]) { PickFolder = _ => packs.Pictures };
+        Assert.Empty(new Launcher().Run(Context(), wrong).Changes);
+
+        var dropped = Run(Context(), new PathDropped(packs.Pictures), new PathDropped(packs.Sounds));
+        Assert.Equal(packs.Pictures, dropped.Settings.HdPack);
+        Assert.Equal(packs.Sounds, dropped.Settings.AudioPack);
+
+        // a pack fixed by the command line is not changed
+        var fixedKeys = new Dictionary<string, string> { ["sound.audioPack"] = "--audio-pack" };
+        Assert.Empty(Run(Context(fixedKeys: fixedKeys), new PathDropped(packs.Sounds)).Changes);
+    }
+
+    [Fact]
+    public void TheSoundFontRowPicksOrDropsAnSf2FileAndLeftGoesBackToTheDefault()
+    {
+        var folder = Directory.CreateTempSubdirectory("dksf").FullName;
+        try
+        {
+            var font = Path.Combine(folder, "mine.sf2");
+            File.WriteAllText(font, "x");
+            var text = Path.Combine(folder, "notes.txt");
+            File.WriteAllText(text, "x");
+            LauncherInput[] toSoundFont = [.. ToAudioPack, Tab];
+            var picked = new ScriptedSurface(1440, 800, [.. toSoundFont, Enter]) { PickFile = _ => font };
+            var result = new Launcher().Run(Context(), picked);
+            Assert.Equal(font, result.Settings.SoundFont);
+            Assert.Equal(font.Replace('\\', '/'), (string)result.Changes["sound.soundFont"]!);
+
+            // a file that is not a SoundFont is refused; a dropped .sf2 is taken
+            Assert.Empty(new Launcher().Run(Context(), new ScriptedSurface(1440, 800, [.. toSoundFont, Enter]) { PickFile = _ => text }).Changes);
+            Assert.Equal(font, Run(Context(), new PathDropped(font)).Settings.SoundFont);
+
+            // left: the default again; the settings' file comes back unchanged
+            var kept = Context(new GameSettings { GameFolder = Game, SoundFont = font });
+            Assert.Empty(Run(kept).Changes);
+            var off = Run(kept, [.. toSoundFont, new KeyPressed(LauncherKey.Left)]);
+            Assert.Equal("", (string)off.Changes["sound.soundFont"]!);
+            Assert.Null(off.Settings.SoundFont);
+
+            // fixed by --soundfont: not changed
+            var fixedKeys = new Dictionary<string, string> { ["sound.soundFont"] = "--soundfont" };
+            Assert.Empty(Run(Context(fixedKeys: fixedKeys), new PathDropped(font)).Changes);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TheGuideLinkOpensTheGuide()
+    {
+        var links = new List<string>();
+        // Play, Discord, then the guide
+        Run(Context(links: links) with { PackGuide = "https://example.org/PACKS.md" }, Tab, Tab, Enter);
+        Assert.Equal(["https://example.org/PACKS.md"], links);
+    }
+
+    // ---- the game folder given at the start, typing, pasting and the folder dialog (found on Linux, 2026-10-29) ----
+
+    private const string Given = "/home/player/Games/Darklands";
+
+    private static readonly Dictionary<string, string> ByCommandLine = new() { ["gameFolder"] = "the command line" };
+
+    [Fact]
+    public void AFolderGivenOnTheCommandLineIsShownAndPlayStartsTheGame()
+    {
+        // the file names none (a first run): the folder given is shown, Play (the first focus) starts, and the file gets it
+        var surface = new ScriptedSurface(1440, 800, Enter);
+        var context = Context(new GameSettings(), LauncherReason.FirstRun, ByCommandLine) with { GivenGameFolder = Given };
+        var model = new LauncherModel(context, null);
+        Assert.Equal(Given, model.GameFolder);
+        Assert.True(model.CanPlay);
+        var result = new Launcher().Run(context, surface);
+        Assert.Equal(LauncherChoice.Play, result.Choice);
+        Assert.Equal(Given, result.Settings.GameFolder);
+        Assert.Equal(Given, (string)result.Changes["gameFolder"]!);
+
+        // closed without Play: nothing is saved (so the host can show the launcher again at the next start)
+        Assert.Empty(new Launcher().Run(context, new ScriptedSurface(1440, 800, Escape)).Changes);
+        var found = Context(new GameSettings(), LauncherReason.FirstRun);
+        Assert.Empty(new Launcher().Run(found, new ScriptedSurface(1440, 800, Escape)).Changes);
+
+        // the file names another folder: the given one is played, the file's is not replaced
+        var other = Run(Context(fixedKeys: ByCommandLine) with { GivenGameFolder = Given }, Enter);
+        Assert.Equal(LauncherChoice.Play, other.Choice);
+        Assert.Equal(Given, other.Settings.GameFolder);
+        Assert.False(other.Changes.ContainsKey("gameFolder"));
+    }
+
+    [Fact]
+    public void AFolderGivenWithoutTheGameCanBeReplacedOnTheLauncher()
+    {
+        // the host does not fix a given folder that holds no game: the player types another, then plays
+        var context = Context(new GameSettings(), LauncherReason.GameNotFound) with { GivenGameFolder = "/home/player/nothing" } with
+        {
+            FoundGameFolders = () => [],
+        };
+        var result = Run(context, new TextTyped(Given), Enter, Enter);
+        Assert.Equal(LauncherChoice.Play, result.Choice);
+        Assert.Equal(Given, result.Settings.GameFolder);
+    }
+
+    [Fact]
+    public void TypingOnTheFocusedFolderEditsItWithoutAClickFirst()
+    {
+        // nothing found: the focus is on the game folder; the keys typed replace it
+        var context = Context(new GameSettings(), LauncherReason.GameNotFound) with { FoundGameFolders = () => [] };
+        var surface = new ScriptedSurface(1440, 800, new TextTyped("/home/player/"), new TextTyped("Games/Darklands"), Enter, Enter);
+        var result = new Launcher().Run(context, surface);
+        Assert.Equal(LauncherChoice.Play, result.Choice);
+        Assert.Equal(Given, result.Settings.GameFolder);
+        Assert.False(surface.TextInputOn);
+    }
+
+    [Fact]
+    public void APastedFolderIsCleanedOfQuotesLinesAndLinks()
+    {
+        Assert.Equal(Given, LauncherScreen.CleanPath("'" + Given + "'\n"));
+        Assert.Equal(Given, LauncherScreen.CleanPath("\n  \"" + Given + "\"  \r\nsecond line"));
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games/DARKLAND"),
+            LauncherScreen.CleanPath("~/Games/DARKLAND"));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal("/home/player/My Games/Darklands", LauncherScreen.CleanPath("file:///home/player/My%20Games/Darklands"));
+        }
+        else
+        {
+            Assert.Equal(@"C:\My Games\Darklands", LauncherScreen.CleanPath("file:///C:/My%20Games/Darklands"));
+        }
+
+        // Ctrl+V on the folder (not editing yet): the clipboard's folder, then Enter
+        var context = Context(new GameSettings(), LauncherReason.GameNotFound) with { FoundGameFolders = () => [] };
+        var surface = new ScriptedSurface(1440, 800, new KeyPressed(LauncherKey.Paste, Control: true), Enter, Enter) { ClipboardText = "\"" + Given + "\"\n" };
+        Assert.Equal(Given, new Launcher().Run(context, surface).Settings.GameFolder);
+    }
+
+    [Fact]
+    public void WithoutAFolderDialogChangeGoesToTyping()
+    {
+        // no dialog at all (null), or one that could not be shown (it throws): Change… starts typing in the field
+        foreach (var pick in new Func<string, string?>?[] { null, _ => throw new NotSupportedException("No folder dialog on this system.") })
+        {
+            var context = Context(new GameSettings(), LauncherReason.GameNotFound) with { FoundGameFolders = () => [] };
+            var surface = new ScriptedSurface(1080, 600) { PickFolder = pick };
+            var screen = new LauncherScreen(new LauncherModel(context, null), context, surface);
+            screen.Render(new Drawing.Canvas(1080, 600));
+            var change = screen.Area(LauncherScreen.Item.Change);
+            screen.Handle(new PointerPressed(change.X + change.Width / 2, change.Y + change.Height / 2));
+            Assert.True(screen.Editing);
+            Assert.True(surface.TextInputOn);
+            Assert.Equal(LauncherScreen.Item.GameFolder, screen.Focus);
+            screen.Handle(new TextTyped(Given));
+            Assert.Null(screen.Handle(Enter));
+            Assert.False(screen.Editing);
+            Assert.Equal(LauncherChoice.Play, screen.Handle(Enter));
+        }
+
+        // a dialog: its folder is taken, a cancel changes nothing
+        var picked = new ScriptedSurface(1440, 800, Tab, Tab, Tab, Enter) { PickFolder = _ => Given };
+        Assert.Equal(Given, (string)new Launcher().Run(Context(), picked).Changes["gameFolder"]!);
+        var cancelled = new ScriptedSurface(1440, 800, Tab, Tab, Tab, Enter) { PickFolder = _ => null };
+        Assert.Empty(new Launcher().Run(Context(), cancelled).Changes);
+    }
+
+    [Fact]
+    public void AFixedFolderSaysWhereItIsSet()
+    {
+        var context = Context(fixedKeys: ByCommandLine) with { GivenGameFolder = Given };
+        var surface = new ScriptedSurface(1080, 600) { PickFolder = _ => throw new InvalidOperationException("not to be called") };
+        var screen = new LauncherScreen(new LauncherModel(context, null), context, surface);
+        screen.Render(new Drawing.Canvas(1080, 600));
+        var field = screen.Area(LauncherScreen.Item.GameFolder);
+        screen.Handle(new PointerPressed(field.X + 2, field.Y + 2));
+        Assert.False(screen.Editing);
+        screen.Handle(new TextTyped("x"));
+        Assert.False(screen.Editing);
+        var change = screen.Area(LauncherScreen.Item.Change);
+        screen.Handle(new PointerPressed(change.X + 2, change.Y + 2));
+        Assert.False(screen.Editing);
+    }
+
+    [Fact]
+    public void TheProblemReportLinkAsksTheHostAndShowsItsAnswer()
+    {
+        var asked = 0;
+        var context = Context() with { ReportProblem = () => ++asked == 1 ? "Report saved: X.zip" : "again" };
+        var surface = new ScriptedSurface(1080, 600);
+        var screen = new LauncherScreen(new LauncherModel(context, null), context, surface);
+        screen.Render(new Drawing.Canvas(1080, 600));
+
+        var link = screen.Area(LauncherScreen.Item.Report);
+        screen.Handle(new PointerPressed(link.X + 2, link.Y + 2));
+
+        Assert.Equal(1, asked);
+        // reachable by the keyboard too: the item is in the tab order
+        screen.Handle(Tab);
+        var seen = new HashSet<LauncherScreen.Item>();
+        for (var i = 0; i < 25; i++)
+        {
+            seen.Add(screen.Focus);
+            screen.Handle(Tab);
+        }
+        Assert.Contains(LauncherScreen.Item.Report, seen);
+    }
+
+    [Fact]
+    public void WithoutAReportServiceTheLauncherShowsNoLink()
+    {
+        var screen = new LauncherScreen(new LauncherModel(Context(), null), Context(), new ScriptedSurface(1080, 600));
+        screen.Render(new Drawing.Canvas(1080, 600));
+        Assert.Throws<InvalidOperationException>(() => screen.Area(LauncherScreen.Item.Report));
+    }
+
     /// <summary>DARKLANDS_LAUNCHER_SHOTS=folder: writes the screen at a few sizes and states, to look at.</summary>
     [Fact]
     public void Screenshots()
@@ -243,6 +514,13 @@ public sealed class LauncherTests
             PngCodec.Write(new RgbaImage(width, height, surface.Frames[^1]), Path.Combine(folder, name + ".png"));
         }
         Shot("asked-1440x800", Context(tests: []), 1440, 800, [.. ToWindow, Escape]);
+        Shot("packs-1080x600", Context(tests: [], settings: new GameSettings { GameFolder = Game, AudioPack = Path.GetTempPath(), HdPack = @"C:\Packs\hd" })
+            with { PackGuide = "https://example.org/PACKS.md", DescribePack = _ => new PackStatus(0, 3, null) }, 1080, 600, [.. ToAudioPack, Tab, Tab, Escape]);
+        Shot("soundfont-1080x600", Context(tests: []), 1080, 600, [.. ToAudioPack, Tab, Tab, Escape]);
+        Shot("roms-help-1080x600", Context(tests: []) with { PackGuide = "https://example.org/PACKS.md" }, 1080, 600, [.. ToAudioPack, Escape]);
+        var reportContext = Context(tests: []) with { PackGuide = "https://example.org/PACKS.md", ReportProblem = () => "Report saved." };
+        Shot("report-1080x600", reportContext, 1080, 600, Escape);
+        Shot("report-720x400", reportContext, 720, 400, Escape);
         Shot("notfound-1080x600", Nothing(), 1080, 600, Escape);
         Shot("typing-720x400", Context(), 720, 400, Tab, Tab, Enter, new TextTyped(@"Q:\Games"));
         Shot("wide-1920x1080", Context(), 1920, 1080, Escape);

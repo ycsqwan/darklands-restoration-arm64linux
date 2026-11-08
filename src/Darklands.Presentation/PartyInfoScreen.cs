@@ -8,8 +8,8 @@ using Darklands.Presentation.Graphics;
 
 namespace Darklands.Presentation;
 
-// orig: R034+0x0EE6 (party_info) R034+0x0EE6 (1550:0006) matched the reference; tests: none (visual, headless)
-// DIVERGENCE: party_info_close (R034+0x119C) marks the party icons for redrawing; here GameScreens2 puts the earlier screen back.
+// orig: R034+0x0EE6 (party-info-screen) R034+0x0EE6 (1550:0006) matched the reference; tests: none (visual, headless)
+// DIVERGENCE: party-info-screen-close (R034+0x119C) marks the party icons for redrawing; here GameScreens2 puts the earlier screen back.
 /// <summary>
 /// The party information screen (F6): fame, the time and date, where the party is, its
 /// wealth and a small map. Pointing at the map names the nearest town, its size and the
@@ -40,6 +40,9 @@ public sealed class PartyInfoScreen(GameUi ui, PartyPanel panel)
     // orig: R034+0x0EE6 and R034+0x11BC (background, fonts 1)
     public void Show(GameState state)
     {
+        // orig: R034+0x0F2D: pointer-shape-set(0, 0, DS:9C42) before the screen is drawn (GameUi.PointerHotSpot: F6 on the map leaves the
+        //   map's (5, 0) behind); tests: PointerHotSpotTests
+        (ui.PointerHotSpot, ui.PointerShape) = ((0, 0), null);
         var canvas = ui.Canvas;
         _town = state.InCity ? state.CurrentLocation : LocationRules.NearestCity(state, state.MapPosition.X, state.MapPosition.Y);
         _back = ScreenDrawing.DrawBackground(ui, panel, state.Party, "ptystats");
@@ -68,7 +71,7 @@ public sealed class PartyInfoScreen(GameUi ui, PartyPanel panel)
                 }
             }
             // orig: R034+0x0EE6 matched C: `if (root 047C:073D()) key = root 047C:0744(); if ((key == 0 || key == 0x0F09 || key == 0x0F00) &&
-            // !(mouse_buttons & 1)) { if (key) R034+0x144C(key); continue; } R034+0x119C(); return;` (no menu bar, no hot keys;
+            // !(mouse-button-state & 1)) { if (key) R034+0x144C(key); continue; } R034+0x119C(); return;` (no menu bar, no hot keys;
             // the button is a level test: held, the screen closes, Tab or not); tests: ScreenInputTests
             // C: hosts may not deliver Shift-Tab as 0x0F00 (the BIOS code); then only Tab steps.
             var key = ui.PollKeyOnly();
@@ -89,7 +92,7 @@ public sealed class PartyInfoScreen(GameUi ui, PartyPanel panel)
 
     // orig: R034+0x144C (1550:056C) matched
     // C: case 0x0F00 subtracts 2 and falls through into the Tab case, which shows the town and then advances the counter.
-    // DIVERGENCE: the original also moves the mouse pointer onto the town (mouse_move); the host owns the pointer here.
+    // DIVERGENCE: the original also moves the mouse pointer onto the town (pointer-move); the host owns the pointer here.
     /// <summary>Tab marks the next town, Shift-Tab the one before (the counter runs one ahead, as in the game).</summary>
     private void StepToTown(GameState state, bool back)
     {
@@ -127,7 +130,7 @@ public sealed class PartyInfoScreen(GameUi ui, PartyPanel panel)
     }
 
     // orig: R034+0x166E (1550:078E) matched
-    // C: the town test is cur_loc != -1 && cur_loc < 0x5C here, but cur_loc <= 0x5C when party_info picks the first town for Tab (location 92 counts there).
+    // C: the town test is location-now != -1 && location-now < 0x5C here, but location-now <= 0x5C when party-info-screen picks the first town for Tab (location 92 counts there).
     private void DrawWealthAndPlace(GameState state)
     {
         var text = ui.Text;
@@ -168,7 +171,7 @@ public sealed class PartyInfoScreen(GameUi ui, PartyPanel panel)
     private void DrawTitles(int fame)
     {
         var title = TranslationTable.Name(PartyStanding.FameTitle(fame));
-        // orig: text_width R034+0x1B3C (1550:0C5C) matched: the sum of char_width(c, screen_win_font)
+        // orig: text-width-measure R034+0x1B3C (1550:0C5C) matched: the sum of glyph-width(c, screen-window-font)
         //   over the string, as Measure in the current font; also centres the town lines at TownCenterX (0x102 - width / 2).
         var width = ui.Text.Measure(title);
         (int X, int Y, string Text)[] headings =

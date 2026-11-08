@@ -30,10 +30,18 @@ public sealed partial class TacticalBattle
     /// <param name="clearedLevels">DS:DA34 before this battle (the battlefield memory): this battle's encounters are added.</param>
     /// <param name="lastCastleFlags">DS:160C (GameState.LastCastleFlags).</param>
     // orig: the battle-state save R003+0x00DC (0E76:00DC) draft (the serialisation and the level loop); the level switch
-    // R024+0x059A and R014+0x0694 write the shown level's .flr/.atv when it changed (the levels are kept in memory here, so they are
-    // always current); tests: BattleSaveTests
+    // R024+0x059A, R014+0x0694 and this save write the shown level's .flr/.atv only when it changed (DS:D4E4): the levels written are
+    // those files (BattlefieldStore.FloorFiles / ActivationFiles), not the levels in memory; tests: BattleSaveTests, LevelFilesTests
     // DIVERGENCE: the bytes the level loader leaves in each .enm record from its buffer's earlier content, and the per-combatant
-    // tables' bytes left by earlier battles (path tails, slots not used since), are this program's (zeros) for a battlefield made here.
+    // tables' bytes left by earlier battles or by a load's battle-reload (the paths are kept, Combatant.Path; so are the party's place tables,
+    // ProgramMemory.PartyTables; so are the chests' offsets, LootStore.ChestOffsets; so are the attack facings, the placed base loads and the
+    // saved path, StaleVariables, and the timer word DS:07E6, TimerRate), are this program's (zeros, -1) for a battlefield made
+    // here. Such a table is read again by the next battle where nothing sets it first: the original's member 1 starts a second battle with
+    // door 1 / side 1 from the first (b35, dungeon-door-back). The others are not: a read watch in the original from each fight's entry
+    // (b35, sessions dungeon-door-start, dungeon-door-reload, gate-battle, gen-bhurt-01, gen-bdead-01, dungeon-king-ladder) saw no read
+    // before a write of the attack facings (DS:D3FE), what blocked the steps (DS:D5F6), DS:D62B, the placed base loads (DS:C1C1), DS:C4FD,
+    // the end time (DS:DA45), nor the saved path and its length (2E38:0C64, DS:DA43) but the battle-state save's own: only the battle file
+    // shows the left values.
     // DIVERGENCE: +0x15A3 (DS:A68F, the pointer shape in use) is a segment of a DOS memory block (the commonsp.img buffer R000 allocates)
     // plus an offset, the machine's memory layout: the file's value is kept (the restore reads it back; only a shape test compares it).
     // BUG: DS:9084 (Battle.LeaveAfterVictory, set when an enemy that ends the battle dies) is not among what is written (R003 never
@@ -42,6 +50,14 @@ public sealed partial class TacticalBattle
     // the spell trap 2, the missile trap 4, thunk 09C0:181F 5, thunk 09C0:1815 6, thunk 09C0:1833 7, thunk 09C0:1829 8 (as longs); another value is left as it is.
     public void WriteBattleFile(BattleFile file, bool inBattle, int clearedLevels, int lastCastleFlags)
     {
+        // orig: R003+0x0132..0x01AB: the level in the buffer and its activations go to their files only while DS:D4E4 is set, which is
+        // then cleared; the levels written below are the files (BattlefieldStore.FloorFiles)
+        if (LevelChanged)
+        {
+            SaveLevelFiles();
+            _unsavedLevelBytes.Clear();
+            LevelChanged = false;
+        }
         var v = file.Variables;
         v[BattleVariables.InBattle] = (byte)(inBattle ? 1 : 0);
         for (var i = 0; i < Combatant.Count; i++)
@@ -119,16 +135,12 @@ public sealed partial class TacticalBattle
         v[BattleVariables.PileCount] = (byte)loot.Piles.Count;
         v[BattleVariables.Gathered] = (byte)loot.Gathered;
         v[BattleVariables.ActivationsOn] = Flag(ActivationsEnabled);
+        // orig: R003+0x00DC at 0x02DC..0x0315: DS:D728, DS:D73B, DS:D7FE, DS:D947 and the word DS:D945 as they are
+        CursorKeys.Write(v.AsSpan(BattleVariables.CursorKeys, 6));
         v[BattleVariables.DelayedStart] = Flag(DelayedStart);
         PutWord(v, BattleVariables.BattlefieldType, BattlefieldType);
-        for (var k = 0; k < 5; k++)
-        {
-            if (k < MarchingOrder.Count)
-            {
-                v[BattleVariables.MarchingOrder + k] = (byte)MarchingOrder[k];
-            }
-        }
-        v[BattleVariables.MarchingOrder + 5] = (byte)MarchingOrder.Count;
+        // C: the six bytes DS:C624..DS:C629 as they are (the five order bytes, stale ones past the length included, and the length).
+        StoreMarchingOrder(v.AsSpan(BattleVariables.MarchingOrder, 6));
         v[BattleVariables.GroupMove] = Flag(GroupMoveAllowed);
         v[BattleVariables.Alarm] = (byte)Battle.Alarm;
         for (var level = 0; level < 16; level++)
@@ -150,6 +162,7 @@ public sealed partial class TacticalBattle
         v[BattleVariables.AlarmTrigger + 4] = (byte)alarm.Width;
         v[BattleVariables.AlarmTrigger + 5] = (byte)alarm.Height;
         v[BattleVariables.Stopped] = Flag(_stopped);
+        PutWord(v, BattleVariables.TimerRate, TimerRate);
         v[BattleVariables.LockIsDoor] = Flag(LockIsDoor);
         PutWord(v, BattleVariables.Result, (int)Battle.Result);
         PutWord(v, BattleVariables.ResultCard, Battle.ResultCard);
@@ -177,17 +190,11 @@ public sealed partial class TacticalBattle
         file.Levels.Clear();
         for (var level = 0; level < _levels.Count; level++)
         {
-            var activations = Activations[level];
-            var atv = new byte[1 + activations.Count * 30];
-            atv[0] = (byte)activations.Count;
-            for (var k = 0; k < activations.Count; k++)
-            {
-                activations[k].ToRecord().CopyTo(atv, 1 + 30 * k);
-            }
+            var atv = Store.ActivationFiles is { } atvs && level < atvs.Length ? (byte[])atvs[level].Clone() : ActivationFile(level);
             var enm = Field.EnemyFiles is { } files && level < files.Count && files[level] is { } kept
                 ? (byte[])kept.Clone()
                 : LevelEnemyFile.Write(Field.Forces.Kinds[level] ?? []);
-            file.Levels.Add(new LevelFiles(SavedFloor(_levels[level].Image), atv, enm));
+            file.Levels.Add(new LevelFiles(SavedFloor(Store.FloorFiles is { } floors && level < floors.Length ? floors[level] : _levels[level].Image), atv, enm));
         }
         file.Terrain = (byte[])Field.Terrain.Bytes.Clone();
         file.Loot = loot.FileExists ? loot.ToFile() : null;
@@ -277,6 +284,9 @@ public sealed partial class TacticalBattle
             EnemyFiles = enemies,
         };
         field.Store.Prepared = true;
+        // C: the restore writes each level's files back: they are the battle file's
+        field.Store.FloorFiles = [.. levels.Select(l => (byte[])l.Image.Clone())];
+        field.Store.ActivationFiles = [.. file.Levels.Select(l => (byte[])l.Activations.Clone())];
         for (var level = 0; level < 16; level++)
         {
             field.Store.DoorsOpened[level] = BitConverter.ToUInt32(v, BattleVariables.DoorsOpened + 4 * level);
@@ -368,8 +378,12 @@ public sealed partial class TacticalBattle
         InitialEnemySpot = (new MapPoint((short)Word(InitialSpotRecord, 8), (short)Word(InitialSpotRecord, 10)), InitialSpotRecord[12]);
         Map.IgnorePeople = v[BattleVariables.IgnorePeople] != 0;
         ActivationsEnabled = v[BattleVariables.ActivationsOn] != 0;
+        // orig: R003+0x0CE8 at 0x0EDB..0x0F06: DS:D728, DS:D73B, DS:D7FE, DS:D947, DS:D945 back (the start's member selection that follows
+        // does not leave order mode, DS:A6B2 being 0xFF: D7FE stays as read until the first tick's command-mode-begin)
+        CursorKeys.Read(v.AsSpan(BattleVariables.CursorKeys, 6));
         DelayedStart = v[BattleVariables.DelayedStart] != 0;
         BattlefieldType = Word(v, BattleVariables.BattlefieldType);
+        v.AsSpan(BattleVariables.MarchingOrder, MarchingOrderBytes.Length).CopyTo(MarchingOrderBytes);
         MarchingOrder.Clear();
         for (var k = 0; k < v[BattleVariables.MarchingOrder + 5] && k < 5; k++)
         {
@@ -385,6 +399,7 @@ public sealed partial class TacticalBattle
         AlarmTrigger = (Word(v, BattleVariables.AlarmTrigger), Word(v, BattleVariables.AlarmTrigger + 2),
             v[BattleVariables.AlarmTrigger + 4], v[BattleVariables.AlarmTrigger + 5]);
         _stopped = v[BattleVariables.Stopped] != 0;
+        TimerRate = UWord(v, BattleVariables.TimerRate);
         LockIsDoor = v[BattleVariables.LockIsDoor] != 0;
         Battle.Result = (BattleResult)Word(v, BattleVariables.Result);
         Battle.ResultCard = Word(v, BattleVariables.ResultCard);
@@ -414,6 +429,27 @@ public sealed partial class TacticalBattle
     // level is prepared again; the battle's other start-up runs as for any battle.
     public void Resume()
     {
+        // orig: R014+0x0000 runs fight-state-reset only for a fresh battle (DS:9081 bit 0 clear): the modifiers of DS:A532, which the battle
+        // file does not hold, are the program's (zeros in a fresh program: every timer due at the first tick)
+        for (var i = 0; i < Combatant.Count; i++)
+        {
+            var c = Battle[i];
+            c.Modifiers.CopyFrom(ProgramMemory.Modifiers?[i]);
+            // C: the empty records keep what the program's records hold: the reset R002+0x1830 clears only their status (+0x06) for 5..12
+            //   and sets the kind of 0..4. In a fresh program that is zeros (weapon 0, slot 0), and the first tick's modifier ends ready
+            //   weapon 0 for them, writing its code into slot 0's file name (the original's slot 0: F01wkA2 -> F01wkS2 at the first step).
+            // DIVERGENCE: after an earlier battle of the same program the original's records 5..12 are that battle's enemies; here they
+            //   are empty records (their kinds 5/6 and weapons are not kept).
+            if (ProgramMemory.Modifiers is null && c.Status == CharacterStatus.Empty)
+            {
+                c.DefaultWeapon = c.ReadiedWeapon = 0;
+                c.FullStrength = 0;
+                if (i >= Combatant.PartySlots)
+                {
+                    c.AnimationSlot = 0;
+                }
+            }
+        }
         ResetDragonFight();
         Ticks = 0;
         InitMenus();
@@ -454,8 +490,12 @@ public sealed partial class TacticalBattle
         SelectMember(Battle.Leader);
         PendingOrderMember = Battle.ActiveMember;
         MoveMode = 0;
-        // C: R014+0x02FF / 0x0307 as for any battle: floor_view_draw(−1) around the centre kept (DS:C866 / DS:C886), combat_draw
+        // C: R014+0x02FF / 0x0307 as for any battle: floor-view-paint(−1) around the centre kept (DS:C866 / DS:C886), fight-draw, whose
+        //   R014+0x99F6 (called at R014+0x6926) turns whoever EnemyTurn just gave an action toward its target
         _view.MapChanged();
+        // orig: the set-up's fight-draw R014+0x99F6: the screen places before the first tick (as TacticalBattle.Start)
+        _view.SetUpScreenPlaces();
+        TurnTowardTargets();
         Effects.Drawn(_view);
         RemoveArrivedMissiles();
         RefreshTargetCursor();
@@ -466,6 +506,9 @@ public sealed partial class TacticalBattle
         ActivationsAt = (ushort)(Clock + 120);
         SaveRulesMessage(true);
     }
+
+    /// <summary>The modifiers (DS:A532) stay in the program when the battle is left (its end, or a game loaded from it).</summary>
+    public void KeepModifiers() => ProgramMemory.Modifiers = [.. Battle.Combatants.Select(c => c.Modifiers.Copy())];
 
     /// <summary>
     /// What saving in a battle does to it: the party's running effect modifiers end first (the saved records are without

@@ -23,14 +23,17 @@ namespace Darklands.Presentation;
 // R037+0x0444 draft; pictures R037+0x0390 matched; redraw R037+0x03D4 matched;
 // list R037+0x2760 matched; labels R037+0x2922 matched; figures R037+0x4562
 // matched; exit R037+0x0348 matched; tests: headless chargen session (PNG)
-// DORMANT: the save-game half of this overlay (save_game, R037+0x2ACE) is not part of this menu.
+// DORMANT: the save-game half of this overlay (game-store-entry, R037+0x2ACE) is not part of this menu.
 public sealed class CharacterCreationScreen
 {
     private const byte LabelColor = 8;
     private const byte NameColor = 0x10;
     private const byte NameShadow = 0x11;
     private const byte SelectedName = 0x12;
-    private const int FirstFigureColor = 237;
+    // orig: the figure colours DS:E753..DS:E76A, written into the current palette block (DS:E48C) and set (root 047C:058B), are colours
+    // 235..242 on the screen, not 237..244: the original's DAC after A in the creation menu (R037+0x0B9C..0x0C88) holds the 24 start bytes
+    // there (vis10 session D-b0c9a6).
+    private const int FirstFigureColor = 235;
 
     /// <summary>The commands from top to bottom: label text, key, label y.</summary>
     private static readonly (int Text, char Key, int Y)[] Commands =
@@ -53,7 +56,7 @@ public sealed class CharacterCreationScreen
     /// the inn's roster (PartyRosterScreen) shares.
     /// </summary>
     // orig: DS:E7DA, DS:E7E0, DS:E753..DS:E76A, DS:E890 / DS:E892 / DS:E894 (PartyMenuState)
-    internal static PartyMenuState Shared { get; } = new();
+    internal static PartyMenuState Shared { get; private set; } = new();
 
     /// <summary>The last word of the record buffer DS:8B52 (DS:8BD0), which the character generator's panel reads as DS:8BD2[-1]; 0 at start-up.</summary>
     private static int s_recordBuffer;
@@ -61,9 +64,18 @@ public sealed class CharacterCreationScreen
     /// <summary>The last word of the record buffer as this menu's list left it (the character generator's panel reads it).</summary>
     internal static int RecordBuffer => s_recordBuffer;
 
+    /// <summary>The menus' globals as a new run of the program finds them (DarklandsGame.RestartProgram): the menu state and the record buffer's word.</summary>
+    // orig: DS:E7DA, DS:E7DC, DS:8D06, DS:E7E0, DS:E753..DS:E76A, DS:E890..DS:E894 and DS:8BD0 at their start-up values (PartyMenuState's)
+    public static void ProgramStart()
+    {
+        Shared = new PartyMenuState();
+        s_recordBuffer = 0;
+    }
+
     private readonly GameUi _ui;
     private readonly WorldData _world;
     private readonly Func<uint> _seed;
+    private readonly Func<ushort>? _partyTicks;
     private readonly CreationData _data;
     private readonly PartyPanel _panel;
     private readonly Canvas _back = new(new Screen());
@@ -75,12 +87,14 @@ public sealed class CharacterCreationScreen
     /// <summary>The game's leader variable: the menu never writes it, the sheet's Leader box does.</summary>
     private int _leader;
 
-    /// <param name="seed">The clock the original reads: the party seed and city at the click, names and reseeds after.</param>
-    public CharacterCreationScreen(GameUi ui, WorldData world, Func<uint> seed)
+    /// <param name="seed">The clock the original reads: the city at the click, names and reseeds after.</param>
+    /// <param name="partyTicks">The BIOS tick word read at the click: the party seed (none: the clock's low word).</param>
+    public CharacterCreationScreen(GameUi ui, WorldData world, Func<uint> seed, Func<ushort>? partyTicks = null)
     {
         _ui = ui;
         _world = world;
         _seed = seed;
+        _partyTicks = partyTicks;
         _data = CreationDataDecoder.Decode(ui.Assets.Files.Read("DARKLAND.EXE"));
         _panel = new PartyPanel(ui.Assets);
         _images = FigureImages(ui.Assets.Files);
@@ -88,8 +102,13 @@ public sealed class CharacterCreationScreen
 
     private Canvas Screen => _ui.Canvas;
 
+    /// <summary>Told every name the creation makes up (the cards' first named slot, see CharacterCreation.MadeUpName).</summary>
+    public Action<string>? MadeUpName { get; init; }
+
     /// <summary>The figure codes from PICS\F??STAT.PIC, A??STAT.PIC, C??STAT.PIC (<c>R037+0x4562</c>).</summary>
-    // UNCERTAIN: DOS lists the files in directory order; here each group is in name order (F01, F60, then A00, then C00).
+    // DIVERGENCE: DOS lists the files in directory order (R037+0x4562 appends find-first / find-next results unsorted), which is the order the
+    //   install wrote them on that disk, a fact of the host's file system and not of the EXE; here each group is in name order (F01, F60,
+    //   then A00, then C00), the order of a folder the files were copied into by name.
     internal static IReadOnlyList<string> FigureImages(GameFiles files)
     {
         var codes = new List<string>();
@@ -101,7 +120,7 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>The four ready-made characters: the records of SAVES\DEFAULT as the menu's load reads them.</summary>
-    // orig: R037+0x0000: load_saved_game("default") (R037+0x4184) fills charactr.tmp with the file's four records, byte for byte
+    // orig: R037+0x0000: saved-game-read("default") (R037+0x4184) fills charactr.tmp with the file's four records, byte for byte
     // DIVERGENCE: without the file the Quickstart party stands in (its item types differ from the file's in a few bytes); the figure
     // images and colours come from it either way (the same as the file's, see DefaultParty).
     private (List<Character> Characters, string[] SlotImages) ReadyMade(int partySeed)
@@ -112,7 +131,7 @@ public sealed class CharacterCreationScreen
             return ([.. stand], [.. stand.Select(m => m.Image), ""]);
         }
         var file = SaveFile.Parse(_ui.Assets.Files.Read("SAVES/DEFAULT"));
-        // orig: the load also fills member_shield (DS:A668, 4 bytes a slot, all five) from the file; member_palette it does not touch
+        // orig: the load also fills member-shield-picture (DS:A668, 4 bytes a slot, all five) from the file; member-colours it does not touch
         var images = Enumerable.Range(0, SaveFile.PartySlots)
             .Select(k => new string([.. file.Images.AsSpan(k * SaveFile.ImageSize, SaveFile.ImageSize).ToArray().Select(b => (char)b)])).ToArray();
         var made = new List<Character>();
@@ -127,7 +146,7 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>The exit R037+0x0348 (both ways out): the button waited out, the mouse driver's left-release count cleared.</summary>
-    // C: the end of R037+0x0348: R037+0x0377 `while (mouse_buttons & 1);`, then INT 33h function 6 through the root's mouse call (the left release count read and cleared)
+    // C: the end of R037+0x0348: R037+0x0377 `while (mouse-button-state & 1);`, then INT 33h function 6 through the root's mouse call (the left release count read and cleared)
     private T? Leave<T>(T? result) where T : class
     {
         ScreenDrawing.WaitForRelease(_ui);
@@ -137,11 +156,13 @@ public sealed class CharacterCreationScreen
 
     public GameState? Run()
     {
-        // orig: R037+0x9DB2 case 'C': party_seed = BIOS ticks; the city was drawn at start-up (root 03A1) from the same clock
+        // orig: R037+0x9DB2 case 'C': party-random-seed = BIOS ticks; the city was drawn at start-up (root 03A1) from the same clock
+        // orig: party-random-seed (DS:9C4A) is the BIOS tick word at the click (R037+0x9FD9), not time(0)'s: names are drawn from it (made-up-name) and the saved game holds it
         var seed = _seed();
+        var partySeed = _partyTicks?.Invoke() ?? NewGame.PartySeed(seed);
         var random = new MscRandom(seed);
-        random.Below(NewGame.StartingCities);
-        // orig: R037+0x0000: thunk 09C0:18F1(0x14) (music), R037+0x4562, load_saved_game("default"), party[k][0] = 0
+        var startUpCity = random.Below(NewGame.StartingCities);
+        // orig: R037+0x0000: thunk 09C0:18F1(0x14) (music), R037+0x4562, saved-game-read("default"), party[k][0] = 0
         // DIVERGENCE (host): the original reads SAVES\DEFAULT here too (R037+0x4184, the open not checked; see D-66e575 for
         // Quickstart); without the file it reads through an unset handle, and the 483.07 notes say characters can then not be
         // created. Here the ready-made characters come with the game (DefaultParty), so the file is not needed.
@@ -150,10 +171,10 @@ public sealed class CharacterCreationScreen
         {
             Shared.Image = 0;
         }
-        var (readyMade, slotImages) = ReadyMade(NewGame.PartySeed(seed));
-        _roster = new CreationRoster(readyMade, _data.SlotPalettes, slotImages);
-        var creation = new CharacterCreation(_data.Tables, _world.ItemDefinitions, random, NewGame.PartySeed(seed), _seed);
-        _sheetState = new GameState(random) { Data = _world };
+        var (readyMade, slotImages) = ReadyMade(partySeed);
+        _sheetState = SheetState(_ui, _world, random, startUpCity);
+        _roster = new CreationRoster(readyMade, _data.SlotPalettes, slotImages, _sheetState.Item);
+        var creation = new CharacterCreation(_data.Tables, _world.ItemDefinitions, random, partySeed, _seed) { MadeUpName = MadeUpName };
         DrawAll();
         while (true)
         {
@@ -186,26 +207,53 @@ public sealed class CharacterCreationScreen
                         creation.RecordBufferWord = s_recordBuffer;
                         if (new CharacterGeneratorScreen(_ui, _data, _world, creation).Run() is { } made)
                         {
+                            // orig: R037+0x38AA stores DS:907E (location-now, the start-up city here: the load of "default" leaves it) in the record's first word before writing it
+                            made.RosterLocation = startUpCity;
                             _roster.Add(made);
                         }
                     });
                     DrawAll();
                     break;
                 case 'a' when _roster.Characters.Count > 0:
-                    Press('a', () => _roster.AddToParty(Shared.Selected, _images[0]));
+                {
+                    var slot = -1;
+                    Press('a', () =>
+                    {
+                        // orig: R037+0x0B06: the new slot's shield picture DS:A2D7[slot] is PICS\SHIELDA.PIC, whatever the record's letter, until H
+                        slot = _roster.AddToParty(Shared.Selected, _images[0]);
+                        if (slot >= 0 && _roster.Member(slot) is { } joined)
+                        {
+                            _panel.SetShieldPicture(slot, joined, 'A');
+                        }
+                    });
                     DrawFigure();
-                    DrawPartyRows();
+                    DrawPartyFrame(slot);
+                    DrawPartyRow(slot);
                     DrawList();
                     break;
+                }
                 case 'd' when _roster.Characters.Count > 0:
+                {
+                    var slot = _roster.SlotOf(Shared.Selected, CreationRoster.MenuSlots);
                     Press('d', () => _roster.DropFromParty(Shared.Selected));
-                    DrawPartyRows();
+                    DrawPartyRow(slot);
                     DrawList();
                     break;
+                }
                 case 'h' when _roster.Characters.Count > 0:
-                    Press('h', () => _roster.NextShield(Shared.Selected));
-                    DrawPartyRows();
+                {
+                    var slot = _roster.SlotOf(Shared.Selected);
+                    Press('h', () =>
+                    {
+                        // orig: R037+0x1046: the next letter, then DS:A2D7[slot] freed and loaded again from PICS\SHIELD<letter>.PIC
+                        if (_roster.NextShield(Shared.Selected) && slot >= 0 && _roster.Member(slot) is { } member)
+                        {
+                            _panel.SetShieldPicture(slot, member, member.ShieldLetter);
+                        }
+                    });
+                    DrawPartyRow(slot);
                     break;
+                }
                 case 's' when _roster.Characters.Count > 0:
                     Press('s', NextImage);
                     break;
@@ -213,16 +261,20 @@ public sealed class CharacterCreationScreen
                     Colour(c - '0');
                     break;
                 case 'k' when _roster.Characters.Count > 0:
+                {
+                    var slot = _roster.SlotOf(Shared.Selected);
                     Press('k', () => _roster.Kill(Shared.Selected));
-                    DrawPartyRows();
+                    DrawPartyRow(slot);
                     DrawList();
                     break;
+                }
                 case 'b' when _roster.Characters.Count > 0:
-                    if (_roster.ToParty(NewGame.PartySeed(seed), _leader) is { } party)
+                    if (_roster.ToParty(partySeed, _leader) is { } party)
                     {
                         PressDown('b');
                         var game = NewParty.Create(_world, seed, party, random, _seed);
                         _roster.CopyTo(game.Roster, game.Party);
+                        CarryOverSheetWorld(_sheetState!, game);
                         return Leave(game);
                     }
                     Press('b', () => { });
@@ -258,15 +310,15 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>A click on a party member's figure in the party column: that member's character sheet, then the menu again.</summary>
-    // orig: R037+0x01C0: with the button down, `mouse_x < 0x3C` and the slot's party flag (DS:9C69 + 0x80 x slot, set by A, cleared by D and K) set:
-    // orig: member_sheet (thunk 09C0:1FDB = R031+0x0124) for slot y / 0x28; then root 047C:0568, PICS\CRETSCRN.PIC with its palette, DS:E753..DS:E76A
-    // orig: = the slot's member_palette (24 bytes), set_palette, R037+0x03D4, root 047C:056F and the button waited out (R037+0x02F0)
+    // orig: R037+0x01C0: with the button down, `pointer-column < 0x3C` and the slot's party flag (DS:9C69 + 0x80 x slot, set by A, cleared by D and K) set:
+    // orig: member-sheet-screen (thunk 09C0:1FDB = R031+0x0124) for slot y / 0x28; then root 047C:0568, PICS\CRETSCRN.PIC with its palette, DS:E753..DS:E76A
+    // orig: = the slot's member-colours (24 bytes), palette-load, R037+0x03D4, root 047C:056F and the button waited out (R037+0x02F0)
     // C: the figure (PICS\XXXSMALL.PIC at 0x0C, 0xA4) is not drawn again: R037+0x03D4 copies the back window over it.
-    // C: the sheet's Ctrl-F1..F5 case tests `slot < party_size` (DS:A67E), and party_size is not written before Begin: 0 after start-up,
+    // C: the sheet's Ctrl-F1..F5 case tests `slot < party-headcount` (DS:A67E), and party-headcount is not written before Begin: 0 after start-up,
     // so those leader keys do nothing here (CharacterSheetScreen.PartySize)
-    // C: the sheet opens on the menu's slots as the party (the panel and the sheet read the slots, not party_size).
+    // C: the sheet opens on the menu's slots as the party (the panel and the sheet read the slots, not party-headcount).
     // DIVERGENCE: the sheet's menu bar and hot keys (root 0000:0000) are not passed.
-    // UNCERTAIN: a prayer from the sheet's Saints list reads the date and the place of the game the menu loaded (SAVES\DEFAULT); here those of a new game.
+    // C: a prayer from the sheet's Saints list runs on the program's own state (SheetState), not on SAVES\DEFAULT's header.
     private void MemberSheet(int slot)
     {
         if (slot >= Party.MaxMembers || _roster.Member(slot) is null)
@@ -292,6 +344,41 @@ public sealed class CharacterCreationScreen
         ScreenDrawing.WaitForRelease(_ui);
     }
 
+    /// <summary>
+    /// The game the member sheet (and a prayer from it) works on: the program as it started, the start-up city as the current place
+    /// and the date the data segment starts with; the menu's load of SAVES\DEFAULT changes neither.
+    /// </summary>
+    // orig: saved-game-read R037+0x4184 reads DEFAULT's 0xEF header bytes and each 0x22A record into text-bank-buffer DS:9085 (only to copy the records
+    //   into charactr.tmp), party-headcount and member-shield-picture; the date words DS:00E0..00E7 and location-now DS:907E are not written. Captured in the
+    //   original at the menu (creation-menu.steps, local/batch/evid1o): DS:00E0 = 9, 26, 8, 1400; DS:907E = the start-up city (root 03A1)
+    // C: the event table and the location records are the program's (world-read R043+0x0100 at start-up), the same ones the begun game plays
+    //   on: a prayer's events and standing changes on the sheet stay (lockstep session carry-create-pray: three prayers to St.Finnian, the
+    //   begun game holds their events, 10 against 4, and the boon's attributes)
+    // C: the rules' reports there are the program's own (a skill boost's "changed from" waits in the side window for a key or the left
+    //   button, R043+0x29D0, DS:26BC set as at start-up): SideWindowMessages (carry-create-pray3)
+    public static GameState SheetState(GameUi ui, WorldData world, IRandomSource random, int startUpCity)
+    {
+        var state = new GameState(random) { Data = world, CurrentLocation = startUpCity, Date = NewGame.StartUpDate, Messages = new SideWindowMessages(ui) };
+        state.Locations.AddRange(world.CreateLocations());
+        state.City = world.LoadCity(startUpCity);
+        return state;
+    }
+
+    /// <summary>The begun game takes the events and location records the member sheet (a prayer from it) left.</summary>
+    // C: "Begin the Adventure" (R037+0x0000 returns 1) leaves the event table and the location records as they are; the main loop then shows card 0x29
+    public static void CarryOverSheetWorld(GameState sheet, GameState game)
+    {
+        foreach (var (slot, e) in sheet.Events.All())
+        {
+            game.Events.Put(slot, e);
+        }
+        if (sheet.Locations.Count == game.Locations.Count)
+        {
+            game.Locations.Clear();
+            game.Locations.AddRange(sheet.Locations);
+        }
+    }
+
     /// <summary>The selection moves; the figure of the selected member (if in the first four slots) shows with its colours.</summary>
     // orig: R037+0x0444 cases 0x4800/0x4B00/0x4D00 (previous) and 0x5000 (next); a click on the list only moves the highlight
     private void Select(int row, bool wrap)
@@ -307,7 +394,7 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>The command's button shows pressed while it runs, then the menu comes back.</summary>
-    // orig: gfx_draw_pic(buttnCR2 at 0x43, y - 4) + the label at 0x4A, then gfx_copy_rect(back, 0x43, y - 4, 0x82, 0x0E)
+    // orig: gfx-picture-draw(buttnCR2 at 0x43, y - 4) + the label at 0x4A, then gfx-rect-copy(back, 0x43, y - 4, 0x82, 0x0E)
     private void Press(char key, Action action)
     {
         var y = PressDown(key);
@@ -342,7 +429,7 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>1, 2, 3: the next colours of one part of the selected member's figure.</summary>
-    // orig: R037+0x0444 cases 0x231/0x4F31, 0x332/0x5032, 0x433/0x5133 (PortraitColours), then set_palette
+    // orig: R037+0x0444 cases 0x231/0x4F31, 0x332/0x5032, 0x433/0x5133 (PortraitColours), then palette-load
     private void Colour(int key)
     {
         var slot = _roster.SlotOf(Shared.Selected);
@@ -374,6 +461,7 @@ public sealed class CharacterCreationScreen
         {
             if (_roster.Member(i) is not null)
             {
+                DrawPartyFrame(i);
                 _panel.DrawRow(Screen, PanelParty(), i);
             }
         }
@@ -417,20 +505,39 @@ public sealed class CharacterCreationScreen
         Screen.Recolor(0xC6, Shared.Selected * 8 + 0x16, 0x71, 8, NameColor, SelectedName);
     }
 
-    /// <summary>The party column rows (party_panel_frames / party_panel_rows).</summary>
-    // DIVERGENCE: a new member's row shows the shield of its record, where the menu loads PICS\SHIELDA.PIC until H is pressed.
-    private void DrawPartyRows()
+    /// <summary>The party column row of the one slot a command changed (none when <paramref name="slot"/> is -1).</summary>
+    // orig: only the slot found is drawn: A (R037+0x0D6F / 0x0D7A) root 0000:1588 + root 0000:1716 for the slot filled; D (R037+0x0EF1, the
+    // first four slots), H (R037+0x1102) and K (R037+0x126B, the five slots) root 0000:1716 for the character's slot, which draws the row's
+    // background there even when the slot was just emptied; the other rows keep what is on the screen, so an empty slot no command touched
+    // shows the menu's picture (CRETSCRN.PIC), as after R037+0x03D4 (rows only for slots whose status DS:9C69 + 0x80 x slot is not 0).
+    // C: a new member's row shows PICS\SHIELDA.PIC until H is pressed (the slot's shield picture, PartyPanel.SetShieldPicture), whatever the
+    //   letter of its record; checked against the original's screen (vis10 session D-b0c9a6 with a member whose letter is not A, local/batch/c5uncertain)
+    private void DrawPartyRow(int slot)
     {
-        var party = PanelParty();
-        for (var i = 0; i < CreationRoster.MenuSlots; i++)
+        if (slot >= 0)
         {
-            _panel.DrawRow(Screen, party, i);
+            _panel.DrawRow(Screen, PanelParty(), slot);
         }
     }
 
+    /// <summary>The frame around the party column row of a filled slot (A, and the whole menu's drawing).</summary>
+    // orig: root 0000:1588 with the slot (its bit of the table DS:01E4) from A (R037+0x0D6F) and R037+0x0420; DS:9064 + slot picks the pieces
+    // (unlit unless a battle left the slot selected, GameUi.PanelSelection): the frame shows in the original's picture after A (vis10
+    // session D-b0c9a6), not on the menu's picture
+    private void DrawPartyFrame(int slot)
+    {
+        if (slot >= 0)
+        {
+            PartyPanel.DrawFrame(Screen, _ui.Assets.CommonSprites, slot, lit: _ui.PanelSelection[slot]);
+        }
+    }
+
+    // orig: root 0000:1716 writes the name and values of the slot equal to the leader byte DS:907B in colour 0x0E; the menu starts with
+    // DS:907B = 0 (the original's picture after A shows the first slot's name and values in 0x0E, vis10 session D-b0c9a6), and the
+    // member sheet's leader change (MemberSheet) keeps it.
     private Party PanelParty()
     {
-        var party = new Party { LeaderIndex = -1 };
+        var party = new Party { LeaderIndex = _leader };
         for (var i = 0; i < Party.MaxMembers; i++)
         {
             party.Members.Add(_roster.Member(i) ?? new Character { Status = CharacterStatus.Empty });
@@ -439,7 +546,7 @@ public sealed class CharacterCreationScreen
     }
 
     /// <summary>The selected member's figure (PICS\XXXSMALL.PIC at 12,164), when it is in one of the first four slots.</summary>
-    // orig: R037+0x0444 arrows: copy back (0x0A, 0xA5, 0x23, 0x23); if the character is in slot il &lt; 4: DS:E753.. = member_palette[il], set_palette, draw
+    // orig: R037+0x0444 arrows: copy back (0x0A, 0xA5, 0x23, 0x23); if the character is in slot il &lt; 4: DS:E753.. = member-colours[il], palette-load, draw
     private void DrawFigure()
     {
         CopyBack(0x0A, 0xA5, 0x24, 0x24);
@@ -457,7 +564,7 @@ public sealed class CharacterCreationScreen
         }
     }
 
-    /// <summary>The shared figure palette into colours 237..244 (6-bit VGA values).</summary>
+    /// <summary>The shared figure palette into colours 235..242 (6-bit VGA values).</summary>
     private void ApplyFigureColours()
     {
         for (var i = 0; i < 8; i++)

@@ -3,7 +3,7 @@ using Darklands.Core.Characters;
 namespace Darklands.Core.Battles.Tactics;
 
 /// <summary>
-/// An effect cloud (effect_clouds, DS:A2EB, 10-byte records): a thrown potion's or a spell's
+/// An effect cloud (effect-cloud-table, DS:A2EB, 10-byte records): a thrown potion's or a spell's
 /// cloud of kind 0..5 (Noxious Aroma, Eyeburn, Black Cloud, Fleadust, Eater Water, Breath of
 /// Death; traps may give kinds above 9).
 /// </summary>
@@ -28,7 +28,7 @@ public struct EffectCloud
     public ushort Until;
 }
 
-/// <summary>A slowing area (effect_areas, DS:A342): Stone-tar, type 9.</summary>
+/// <summary>A slowing area (effect-area-table, DS:A342): Stone-tar, type 9.</summary>
 // orig: struct efb matched
 public struct EffectArea
 {
@@ -49,7 +49,7 @@ public struct EffectArea
     public ushort Until;
 }
 
-/// <summary>A flash or blast marker (effect_markers, DS:A396): types 6..8 (Sunburst, Thunderbolt, Arabian Fire).</summary>
+/// <summary>A flash or blast marker (effect-marker-table, DS:A396): types 6..8 (Sunburst, Thunderbolt, Arabian Fire).</summary>
 // orig: struct efc matched
 public struct EffectMarker
 {
@@ -95,7 +95,7 @@ public interface IBattleViewport
 /// line of fire, and their ageing.
 /// </summary>
 // orig: R019 (all 17 functions matched); the cloud tests of R014 0E76:469E and 1EC9:0142;
-// the effect parts of the renderer combat_draw R014+0x6818 (draft)
+// the effect parts of the renderer fight-draw R014+0x6818 (draft)
 public sealed class EffectField : IEffectClouds
 {
     private readonly Action<int> _sound;
@@ -106,9 +106,9 @@ public sealed class EffectField : IEffectClouds
     /// <param name="battle">The combatants.</param>
     /// <param name="map">The walls (the shown level) for the lines of sight.</param>
     /// <param name="sound">R014+0x465E: a sound effect.</param>
-    /// <param name="readyWeapon">weapon_ready(i, weapon, missile flag) with its animation code.</param>
-    /// <param name="attackCode">anim_file[slot]: the weapon code of an animation slot ("PT" while casting).</param>
-    /// <param name="paused">ai_paused (DS:A695) is not 0: every use here is a test == 0 of the original (R014+0x2C4C, R014+0x6A83, R014+0x7866).</param>
+    /// <param name="readyWeapon">weapon-armed(i, weapon, missile flag) with its animation code.</param>
+    /// <param name="attackCode">animation-file-name[slot]: the weapon code of an animation slot ("PT" while casting).</param>
+    /// <param name="paused">enemy-ai-paused-flag (DS:A695) is not 0: every use here is a test == 0 of the original (R014+0x2C4C, R014+0x6A83, R014+0x7866).</param>
     public EffectField(Battle battle, BattleMap map, Action<int> sound, Action<int, int, int> readyWeapon, Func<int, string> attackCode, Func<bool> paused)
     {
         Battle = battle;
@@ -125,6 +125,17 @@ public sealed class EffectField : IEffectClouds
 
     /// <summary>DS:D842 = 0: an effect landing ends the enemies' delayed start.</summary>
     public event Action? Landed;
+
+    /// <summary>damage-resolve drew the party panel rows anew (party-panel-row-set(0x100), R014+0xAEC4).</summary>
+    public event Action? PanelRedrawn;
+
+    private void ApplyDamage(int i)
+    {
+        if (Attacks.ApplyDamage(Battle, i))
+        {
+            PanelRedrawn?.Invoke();
+        }
+    }
 
     private ushort Clock => Battle.Clock;
 
@@ -178,15 +189,31 @@ public sealed class EffectField : IEffectClouds
     /// <summary>R136+0x4DB8 / 4E38 and 4C62 / 4CE2: the screen points of each cloud column's south edge and each row's east edge (X −999 none).</summary>
     private readonly (int X, int Y)[,] _cloudSouthEdge = new (int, int)[8, 4], _cloudEastEdge = new (int, int)[8, 4];
 
+    /// <summary>R136+0x706A / 70EA and 6F6A / 6FEA: the map points of each cloud column's south edge and each row's east edge (their depth in the draw list).</summary>
+    private readonly (int X, int Y)[,] _cloudSouthEdgeAt = new (int, int)[8, 4], _cloudEastEdgeAt = new (int, int)[8, 4];
+
     /// <summary>The edge sprites 07EC picked for each cloud (DS:CA41[r], DS:CA71[r]; 0 when it ended).</summary>
     private readonly (int South, int East)[] _cloudEdgeSprites = new (int, int)[8];
+
+    /// <summary>DS:C897 / DS:C8BA / DS:C8F7 / DS:C915: each cloud's puff box of the last frame (screen, X −9999 none); they move with the records.</summary>
+    private readonly int[] _lastBoxX = [.. Enumerable.Repeat(-9999, 8)], _lastBoxY = [.. Enumerable.Repeat(-9999, 8)], _lastBoxW = new int[8], _lastBoxH = new int[8];
+
+    // DIVERGENCE: the original never resets DS:8574 / DS:859E / DS:855A / DS:8540 at a battle's start (they are written only by R014+0x8CB4, 0x8D47..0x8E69, and read by it and by R014+0x6FFC; the
+    //   start R014+0x0285..0x02A2 fills DS:CA30 and DS:C897 only; no range fill or file load of them was found, not searched exhaustively): a cloud slot that 0x8CB4 skips (the shown level differs, or it has no puff) keeps
+    //   the growth its slot had last, possibly from an earlier battle, and its edge boxes (queued whatever the level) use it. Here every field starts at 0. Visual only, rare.
+    /// <summary>DS:8574 / DS:859E / DS:855A / DS:8540: how far each cloud's box this frame reaches past its puffs to take in the last frame's
+    /// box (x, y, width, height); a cloud the frame skips keeps the old values.</summary>
+    private readonly (int X, int Y, int W, int H)[] _cloudBoxGrowth = new (int, int, int, int)[8];
+
+    /// <summary>The draw entries of the clouds' puffs (DS:E167, DS:E169 of them): each box clipped to the view.</summary>
+    private readonly (int X, int Y, int W, int H)[] _puffBoxes = new (int, int, int, int)[8];
 
     /// <summary>The sprite the renderer drew for each cloud's puffs, each area's puffs and each combatant's flash this tick (−1 none).</summary>
     private readonly int[] _cloudSprite = new int[8], _flashSprite = [.. Enumerable.Repeat(-1, Combatant.Count)];
     private readonly int[,] _areaSprite = new int[8, 16];
     private (int X, int Y) _lastCamera = (int.MinValue, 0);
 
-    /// <summary>effect_cloud_count (DS:A33D), DS:A395, DS:A531.</summary>
+    /// <summary>effect-cloud-total (DS:A33D), DS:A395, DS:A531.</summary>
     public int CloudCount { get; private set; }
 
     public int AreaCount { get; private set; }
@@ -224,8 +251,25 @@ public sealed class EffectField : IEffectClouds
 
     public (int X, int Y) CloudEastEdge(int k, int c) => _cloudEastEdge[k, c];
 
+    /// <summary>The map points of the south edge of column c and the east edge of row c of cloud k (meaningful while the screen point is not −999).</summary>
+    public (int X, int Y) CloudSouthEdgeAt(int k, int c) => _cloudSouthEdgeAt[k, c];
+
+    public (int X, int Y) CloudEastEdgeAt(int k, int c) => _cloudEastEdgeAt[k, c];
+
     /// <summary>The edge sprites of cloud k this tick (105/106 and 107/108; 0 none).</summary>
     public (int South, int East) CloudEdgeSprites(int k) => _cloudEdgeSprites[k];
+
+    /// <summary>How far cloud k's edge boxes grow this frame (DS:8574, DS:859E, DS:855A, DS:8540): x, y, width, height.</summary>
+    public (int X, int Y, int W, int H) CloudBoxGrowth(int k) => _cloudBoxGrowth[k];
+
+    /// <summary>The puff draw entries of this frame: one per cloud on the level shown with a puff (DS:E169).</summary>
+    public int PuffBoxCount { get; private set; }
+
+    /// <summary>The screen box (relative to the view, clipped to it) that entry e's puffs are drawn in; entry e draws cloud e's puffs.</summary>
+    public (int X, int Y, int W, int H) PuffBox(int e) => _puffBoxes[e];
+
+    /// <summary>floor-view-paint's end (R017+0x0B82..0x0B8A): DS:C897[0..7] = −9999, the clouds' last boxes forgotten.</summary>
+    public void ForgetCloudBoxes() => Array.Fill(_lastBoxX, -9999);
 
     /// <summary>The sprite chosen for cloud k's body this tick (DS:CA2C[r], 103 or 104), −1 when it ended.</summary>
     public int CloudSprite(int k) => _cloudSprite[k];
@@ -335,14 +379,14 @@ public sealed class EffectField : IEffectClouds
     }
 
     /// <summary>
-    /// effect_spell: an effect of <paramref name="type"/> lands at (x, y) — a slowing area (9), a
+    /// effect-cast: an effect of <paramref name="type"/> lands at (x, y) — a slowing area (9), a
     /// flash or blast marker (6..8), or a cloud (any other type) — and acts at once on whoever
     /// is in it on <paramref name="floor"/>.
     /// </summary>
     /// <param name="thrower">The thrower (p3; for the flash: whose opponents are blinded).</param>
     /// <param name="quality">The potion's quality (clamped to 20..49: three grades).</param>
     /// <param name="target">The combatant aimed at (−1 a spot): it gets the stronger effect.</param>
-    // orig: effect_spell R019+0x0000 (1EF8:0000) matched; tests: Oracle:effects.json
+    // orig: effect-cast R019+0x0000 (1EF8:0000) matched; tests: Oracle:effects.json
     public void Lands(int x, int y, int thrower, int type, int quality, int target, int floor)
     {
         // C: root 0410:001A clamps signed.
@@ -496,7 +540,7 @@ public sealed class EffectField : IEffectClouds
                                 d = -c.ArmourQuality[0];
                             }
                             Attacks.QueueDamage(Battle, d, i, 1, 0);
-                            Attacks.ApplyDamage(Battle, i);
+                            ApplyDamage(i);
                         }
                         DropWornOut(i);
                         break;
@@ -505,7 +549,7 @@ public sealed class EffectField : IEffectClouds
                     {
                         var d = (lvl + 2) * 2 + Battle.RollOneTo(8);
                         Attacks.QueueDamage(Battle, ((lvl + 2) * 10 - c.MaximumEndurance) / 10 + d, i, c.ArmourValue[0] + 1, c.ArmourValue[0]);
-                        Attacks.ApplyDamage(Battle, i);
+                        ApplyDamage(i);
                         break;
                     }
             }
@@ -535,7 +579,7 @@ public sealed class EffectField : IEffectClouds
                     var r = adx != 0 ? ady * 4 / adx : 0x14;
                     var s = r == 0 ? 0 : r is >= 1 and < 4 ? 1 : 2;
                     var q = dx >= 0 && dy < 0 ? 0 : dx >= 0 ? 1 : dy >= 0 ? 2 : 3;
-                    // C: dir_add (root 0410:005A) subtracts and dir_sub adds (the names are swapped; checked against the asm):
+                    // C: heading-add (root 0410:005A) subtracts and heading-subtract adds (the names are swapped; checked against the asm):
                     // d = (toward − 1) − (facing − 1), all mod 8, as a signed byte above 4.
                     var toward = (Unsigned(0x222E + q * 3 + s) - 1) & 7;
                     var facing = (c.SpriteFacing - 1) & 7;
@@ -575,7 +619,7 @@ public sealed class EffectField : IEffectClouds
                         int sk = c.ArmourValue[0];
                         var r = sk < th ? dmg : sk == th ? dmg / 3 : dmg / 8;
                         Attacks.QueueDamage(Battle, ((lvl + 2) * 10 - c.ArmourQuality[0]) / 10 + r, i, th, sk);
-                        Attacks.ApplyDamage(Battle, i);
+                        ApplyDamage(i);
                         break;
                     }
                 case 8:
@@ -585,7 +629,7 @@ public sealed class EffectField : IEffectClouds
                         dmg >>= 2;
                     }
                     Attacks.QueueDamage(Battle, (c.ArmourQuality[0] + c.PiercingResistance) / -10 + dmg, i, c.ArmourValue[0] + 1, c.ArmourValue[0]);
-                    Attacks.ApplyDamage(Battle, i);
+                    ApplyDamage(i);
                     break;
                 default:
                     continue;
@@ -602,7 +646,7 @@ public sealed class EffectField : IEffectClouds
         }
     }
 
-    /// <summary>distance3 with its third word (always 0 here).</summary>
+    /// <summary>three-way-distance with its third word (always 0 here).</summary>
     private static int Distance(int a, int b, int c)
     {
         _ = c;
@@ -611,7 +655,7 @@ public sealed class EffectField : IEffectClouds
 
     /// <summary>Removes cloud n (the later ones move down; the last slot keeps its old contents).</summary>
     // orig: R019+0x01E2 (1EF8:01E2) matched
-    // C: the renderer's erase boxes DS:C8F7/DS:C915/DS:C897/DS:C8BA move with the records; the screen keeps its own.
+    // C: the renderer's last boxes DS:C8F7/DS:C915/DS:C897/DS:C8BA move with the records (the growths DS:8574.. stay by slot).
     private void RemoveCloud(int n)
     {
         if (CloudCount == 0)
@@ -621,6 +665,10 @@ public sealed class EffectField : IEffectClouds
         for (var i = n; i < CloudCount - 1; i++)
         {
             _clouds[i] = _clouds[i + 1];
+            _lastBoxW[i] = _lastBoxW[i + 1];
+            _lastBoxH[i] = _lastBoxH[i + 1];
+            _lastBoxX[i] = _lastBoxX[i + 1];
+            _lastBoxY[i] = _lastBoxY[i + 1];
         }
         CloudCount--;
     }
@@ -875,24 +923,28 @@ public sealed class EffectField : IEffectClouds
     public bool InArea(MapPoint centre, int type, int k) => Inside(centre.X, centre.Y, Unsigned(0x21DC + type), k);
 
     /// <summary>
-    /// The four words the stack holds where cloud_blocks_line keeps its saved line (bp−6, −8, −0x0A, −0x0C) before it writes
-    /// them: in the game the frame of rand() left them, from to_hit_roll's rand_1_n(100) just before (the long multiply's
+    /// The four words the stack holds where cloud-on-line-test keeps its saved line (bp−6, −8, −0x0A, −0x0C) before it writes
+    /// them: in the game the frame of rand() left them, from hit-roll's roll-one-to-n(100) just before (the long multiply's
     /// operands: 3, 0x43FD — the multiplier 214013 — and the generator's state before that draw, high and low word).
     /// </summary>
-    // orig: rand (root 06A1:29B6, MSC run-time) as found by running to_hit_roll R014+0xA738 from the original bytes
+    // orig: rand (root 06A1:29B6, MSC run-time) as found by running hit-roll R014+0xA738 from the original bytes
     // (tools/oracle run_unit with a frame trace at 1EC9:0242)
-    // UNCERTAIN: a timer interrupt between the draw and the call writes its own frame there (rare: a few hundred instructions).
+    // C: the four words are below the caller's SP from rand()'s return to cloud-on-line-test's own writes; the only other writer in that
+    //   stretch (a few hundred instructions) is the timer interrupt (root 047C:01EA), whose FLAGS / CS / IP and handler frame land there
+    //   when a tick falls inside it.
+    // DIVERGENCE: a tick in that stretch is the phase of the PC's timer against the code, not a state the game keeps; the rewrite always
+    //   takes the words rand() left.
     public (int X0, int Y0, int X1, int Y1) StackResidue()
     {
         var before = Battle.Random is Randomness.MscRandom m ? m.PreviousState() : 0u;
         return (3, 0x43FD, (short)(before >> 16), (short)before);
     }
 
-    /// <summary>cloud_blocks_line: the line from a to t passes through one of the clouds (its box, then a puff seen from its centre).</summary>
+    /// <summary>cloud-on-line-test: the line from a to t passes through one of the clouds (its box, then a puff seen from its centre).</summary>
     public bool LineCrossesCloud(int attacker, int target) => LineCrossesCloud(attacker, target, StackResidue());
 
-    /// <summary>cloud_blocks_line with the stack words its saved line starts as.</summary>
-    // orig: cloud_blocks_line R014+0x10672 (1EC9:0142) draft, checked against asm
+    /// <summary>cloud-on-line-test with the stack words its saved line starts as.</summary>
+    // orig: cloud-on-line-test R014+0x10672 (1EC9:0142) draft, checked against asm
     // (the draft's restore after a missed box is only a remark; the asm reloads the line from the saved words there);
     // tests: Oracle:effects.json
     // BUG: the loop runs to the count inclusive, so the slot after the last cloud (an old cloud's copy, or zeros) is tested too
@@ -909,16 +961,18 @@ public sealed class EffectField : IEffectClouds
         }
         var a = Battle[attacker].Position;
         var t = Battle[target].Position;
-        // los_x0, los_y0, los_x1, los_y1 (DS:E0A5, DS:E0A3, DS:E0A9, DS:E0A7) and the saved line (bp-6, -8, -0x0A, -0x0C).
+        // sight-line-x0, sight-line-y0, sight-line-x1, sight-line-y1 (DS:E0A5, DS:E0A3, DS:E0A9, DS:E0A7) and the saved line (bp-6, -8, -0x0A, -0x0C).
         int x0 = a.X, y0 = a.Y, x1 = t.X, y1 = t.Y;
         var (sx0, sy0, sx1, sy1) = residue;
+        // orig: its own clip tests (R014+0xF284 from this frame) and those of the line tests it calls (one frame deeper) keep two runs (BattleMap.ClipResidue)
+        BattleMap.ClipResidue boxes = new(), lines = new();
         var last = Battle.Behaviour.FixCloudLineOneTooMany ? CloudCount - 1 : CloudCount;
         for (var i = 0; i <= last; i++)
         {
             var cl = _clouds[i];
             var n = cl.Size >> 4;
             int w = n < EffectHalfWidth.Length ? EffectHalfWidth[n] : 0, h = n < EffectHalfHeight.Length ? EffectHalfHeight[n] : 0;
-            if (Map.SegmentHitsBox(x0, y0, x1, y1, cl.X - w, cl.Y - h, w + cl.X, h + cl.Y))
+            if (Map.SegmentHitsBox(x0, y0, x1, y1, cl.X - w, cl.Y - h, w + cl.X, h + cl.Y, boxes))
             {
                 (sx0, sy0, sx1, sy1) = (x0, y0, x1, y1);
                 x0 = cl.X;
@@ -928,14 +982,14 @@ public sealed class EffectField : IEffectClouds
                     var (ox, oy) = PuffOffset(n, k);
                     x1 = ox + cl.X;
                     y1 = oy + cl.Y;
-                    if (Map.LineBlocked(new MapPoint(x0, y0), new MapPoint(x1, y1)) != 0)
+                    if (Map.LineBlocked(new MapPoint(x0, y0), new MapPoint(x1, y1), residue: lines) != 0)
                     {
                         continue;
                     }
                     var (px, py) = (x0, y0);
                     var box = (x1 - 8, y1 - 4, x1 + 8, y1 + 4);
                     (x0, y0, x1, y1) = (sx0, sy0, sx1, sy1);
-                    if (Map.SegmentHitsBox(x0, y0, x1, y1, box.Item1, box.Item2, box.Item3, box.Item4))
+                    if (Map.SegmentHitsBox(x0, y0, x1, y1, box.Item1, box.Item2, box.Item3, box.Item4, boxes))
                     {
                         return true;
                     }
@@ -962,7 +1016,7 @@ public sealed class EffectField : IEffectClouds
     }
 
     /// <summary>The strongest slowing area the walker stands in (0 none or it resists type 9).</summary>
-    // orig: cbt_step R014+0x1624 (0E76:1624) draft (the DS:A395 test, spec D §2.2)
+    // orig: fighter-step R014+0x1624 (0E76:1624) draft (the DS:A395 test, spec D §2.2)
     public int SlowingStrength(int i)
     {
         var best = 0;
@@ -978,7 +1032,7 @@ public sealed class EffectField : IEffectClouds
     }
 
     /// <summary>The modifiers whose time is up end (every tick the battle is not paused, for every combatant).</summary>
-    // orig: melee_exchanges R014+0x2A4A (0E76:2A4A) draft (the mods: tail)
+    // orig: close-combat-rounds R014+0x2A4A (0E76:2A4A) draft (the mods: tail)
     public void EndModifiersDue(int i)
     {
         if (Paused)
@@ -1027,29 +1081,33 @@ public sealed class EffectField : IEffectClouds
     }
 
     /// <summary>
-    /// What the renderer does with the effects each time it draws a frame (combat_draw, once per
+    /// What the renderer does with the effects each time it draws a frame (fight-draw, once per
     /// combat tick): it lays out every cloud's puffs anew with a random jitter, picks random
     /// sprites for the clouds, the areas and the hit flashes, runs the flash countdown (which
     /// makes the hit show), and — when not paused — ages the markers, areas and clouds. The
     /// random numbers come from the game's generator, so they are drawn here in the original's
     /// order whatever the screen shows.
     /// </summary>
-    // orig: combat_draw R014+0x6818 (14F7:0008) draft, its effect parts: 3682, 3A46,
+    // orig: fight-draw R014+0x6818 (14F7:0008) draft, its effect parts: 3682, 3A46,
     // R014+0x6FFC (with 24A4, 296E, R014+0x9542), R014+0x719E (the flash), R014+0x76AE (ageing)
     // C: while paused the ticks still come every 8 timer callbacks (TacticalBattle.Tick), so these draws go on.
     // orig: the draw list DS:E162 (R014+0x6919 starts it at 1), its limit 157 at each add (R014+0x7BD0 for 13AE, 0x82AA for 1A6A, 0x72F7 for
-    // the flash, checked against the asm): the last frame's logged sprites, the animated pieces (1A6A: random_n(2) after the limit test,
-    // R014+0x8383/0x843A/0x84B6), the cloud edges, then per combatant its body (able ones), its flash (random_n(3) only below the limit,
+    // the flash, checked against the asm): the last frame's logged sprites, the animated pieces (1A6A: roll-n(2) after the limit test,
+    // R014+0x8383/0x843A/0x84B6), the cloud edges, then per combatant its body (able ones), its flash (roll-n(3) only below the limit,
     // R014+0x7327) and its damage number; the floor pieces go to list B (limit 0x8A); tests: DrawListTests
-    // UNCERTAIN: an entry whose box the view clips to nothing gives its place back in the original; here every piece, edge and number of
-    // a combatant in view counts (the boxes are not clipped), and the cloud edges count for the clouds of the shown level with a puff in view.
+    // C: an entry whose box the view clips to nothing gives its place back in the original (R014+0x7BBE: after the clip R014+0x8680 a zero
+    //   width or height decrements DS:E162 or DS:E166, R014+0x7CF5 / 0x7CFC); here every piece, edge and number of a combatant in view
+    //   counts (the boxes are not clipped). The count only matters against the limits, which no frame reaches: at most 1 + 18 logged
+    //   sprites of the last frame (the ground cursor and 0x11 missiles) + 15 + 15 animated wall pieces + 2 x 8 cloud edges + 3 x 13
+    //   combatant entries + 18 of this frame = 122 < 157 (list B: 15 floor pieces + 13 fallen bodies < 0x8A), so the places given back
+    //   change no draw and no random number.
     public void Drawn(IBattleViewport viewport)
     {
         var now = Paused ? (ushort)0 : Clock;
         var camera = (viewport.CameraX, viewport.CameraY);
         if (camera != _lastCamera)
         {
-            // floor_view_draw sets DS:E0AB: a full redraw lays the areas out again.
+            // floor-view-paint sets DS:E0AB: a full redraw lays the areas out again.
             for (var k = 0; k < AreaCount; k++)
             {
                 _areas[k].Size |= 8;
@@ -1058,6 +1116,11 @@ public sealed class EffectField : IEffectClouds
         }
         for (var k = 0; k < CloudCount; k++)
         {
+            // R014+0x6890..0x68BA: a cloud still growing forgets its last box (DS:C897[k] = −9999)
+            if (_clouds[k].Size >> 4 != (_clouds[k].Size & 0x0F))
+            {
+                _lastBoxX[k] = -9999;
+            }
             LayOutCloud(k);
         }
         for (var k = 0; k < AreaCount; k++)
@@ -1068,7 +1131,7 @@ public sealed class EffectField : IEffectClouds
             }
         }
         // the draw list: the sprites the last frame logged, then the animated pieces (1A6A): the floor's in list B (DS:E166 starts at 0,
-        // limit 0x89), the north and west walls' in the draw list; each draws its frame (random_n(2)) once it has its place
+        // limit 0x89), the north and west walls' in the draw list; each draws its frame (roll-n(2)) once it has its place
         var count = 1 + viewport.LoggedSprites;
         var listB = 0;
         _pieceFrames.Clear();
@@ -1094,9 +1157,11 @@ public sealed class EffectField : IEffectClouds
                 _pieceFrames[(layer, x, y)] = Scaled(2);
             }
         }
-        // 07EC: the cloud edges (two random sprites each), then the areas' puffs (R014+0x917E, 14F7:296E).
+        // 07EC: the clouds' puff boxes (24A4), the cloud edges (two random sprites each), then the areas' puffs (R014+0x917E, 14F7:296E).
+        PuffBoxCount = 0;
         if (CloudCount > 0)
         {
+            LayOutPuffBoxes();
             for (var k = 0; k < CloudCount; k++)
             {
                 // C: s1 is drawn before s2.
@@ -1187,14 +1252,7 @@ public sealed class EffectField : IEffectClouds
         DrawListCount = count;
         // 0E9E: one entry per cloud on this level with a puff in view (24A4); C: entry k draws cloud k's sprite even when an
         // earlier cloud had no entry (the entries are not the clouds' slots): faithful.
-        var entries = 0;
-        for (var k = 0; k < CloudCount && entries <= 0x7F; k++)
-        {
-            if (_clouds[k].Level == Battle.FloorShown && AnyPuff(_cloudPuffX, _cloudPuffY, k, _clouds[k].Size & 7))
-            {
-                entries++;
-            }
-        }
+        var entries = PuffBoxCount;
         Array.Fill(_cloudSprite, -1);
         for (var k = 0; k < entries; k++)
         {
@@ -1257,6 +1315,125 @@ public sealed class EffectField : IEffectClouds
         return false;
     }
 
+    /// <summary>
+    /// The clouds' puff boxes: for each cloud on the level shown with a puff, the box of its puffs (25 wider and 8 higher than their
+    /// points) taken together with the last frame's box, as a draw entry clipped to the view; the growth past the puffs is kept for the
+    /// cloud's edges.
+    /// </summary>
+    // orig: R014+0x8CB4 (14F7:24A4) draft, the box and its growth checked against the asm (R014+0x8D40..0x8F09)
+    // C: a cloud the loop skips (another level, no puff) gets DS:C897 / DS:C8BA = −9999 and keeps its growth DS:8574.. of an earlier frame;
+    // the dirty screen tiles the entry marks (R014+0x8F69..) are not kept here (the whole view is drawn each frame).
+    private void LayOutPuffBoxes()
+    {
+        for (var k = 0; k < CloudCount; k++)
+        {
+            var n = _clouds[k].Size & 7;
+            int minX = 9999, minY = 9999, maxX = -9999, maxY = -9999;
+            if (_clouds[k].Level == Battle.FloorShown)
+            {
+                for (var j = 0; j < n * n && j < 16; j++)
+                {
+                    int x = _cloudPuffX[k, j], y = _cloudPuffY[k, j];
+                    if (x != 0 && y != 0)
+                    {
+                        minX = Math.Min(minX, x);
+                        maxX = Math.Max(maxX, x);
+                        minY = Math.Min(minY, y);
+                        maxY = Math.Max(maxY, y);
+                    }
+                }
+            }
+            if (minX == 9999)
+            {
+                _lastBoxX[k] = _lastBoxY[k] = -9999;
+                continue;
+            }
+            int gx = 0, gy = 0, gw = 0, gh = 0;
+            short w = (short)(maxX - minX + 25), h = (short)(maxY - minY + 8);
+            if (_lastBoxX[k] != -9999)
+            {
+                // the box reaches out to take in the last one: x from the further left, the right end at the further right (y likewise)
+                int ox = _lastBoxX[k], oxe = ox + _lastBoxW[k], oy = _lastBoxY[k], oye = oy + _lastBoxH[k];
+                int nxe = minX + w, nye = minY + h;
+                if (ox > minX)
+                {
+                    if (oxe > nxe)
+                    {
+                        gw = ox + (_lastBoxW[k] - w) - minX;
+                    }
+                }
+                else
+                {
+                    gx = ox - minX;
+                    gw = minX - ox;
+                    if (oxe > nxe)
+                    {
+                        gw = oxe + (minX - ox) - nxe;
+                    }
+                }
+                if (oy > minY)
+                {
+                    if (oye > nye)
+                    {
+                        gh = oy + (_lastBoxH[k] - h) - minY;
+                    }
+                }
+                else
+                {
+                    gy = oy - minY;
+                    gh = minY - oy;
+                    if (oye > nye)
+                    {
+                        gh = oye + (minY - oy) - nye;
+                    }
+                }
+            }
+            _cloudBoxGrowth[k] = (gx, gy, gw, gh);
+            _lastBoxX[k] = minX;
+            _lastBoxY[k] = minY;
+            _lastBoxW[k] = w;
+            _lastBoxH[k] = h;
+            if (PuffBoxCount > 0x7F)
+            {
+                return;
+            }
+            _puffBoxes[PuffBoxCount++] = ClipToView(minX + gx, minY + gy, gw + w, gh + h);
+        }
+    }
+
+    /// <summary>A screen box (relative to the view) clipped to the view's 0x104 × 200 pixels; an empty one has width or height 0.</summary>
+    // orig: R014+0x8680 (14F7:1E70) matched
+    public static (int X, int Y, int W, int H) ClipToView(int x, int y, int w, int h)
+    {
+        if (x < 0)
+        {
+            w = Math.Max(0, w + x);
+            x = 0;
+        }
+        if (x > 0x103)
+        {
+            w = 0;
+        }
+        if (x + w - 1 > 0x103 && (w = 0x104 - x) < 0)
+        {
+            w = 0;
+        }
+        if (y < 0)
+        {
+            h = Math.Max(0, h + y);
+            y = 0;
+        }
+        if (y > 199)
+        {
+            h = 0;
+        }
+        if (y + h - 1 > 199 && (h = 200 - y) < 0)
+        {
+            h = 0;
+        }
+        return (x, y, w, h);
+    }
+
     /// <summary>Lays out the puffs of cloud k: each at its offset with 0..2 pixels of jitter, kept off walls, hidden behind walls from the centre.</summary>
     // orig: R014+0x9E92 (14F7:3682) draft
     private void LayOutCloud(int k)
@@ -1297,6 +1474,7 @@ public sealed class EffectField : IEffectClouds
             _cloudSouthEdge[k, c] = (-999, 0);
             if (ex != 0)
             {
+                _cloudSouthEdgeAt[k, c] = (ex, ey + 4);
                 var sy = ey + 4 - _lastCamera.Y;
                 var sx = ex - _lastCamera.X - sy + 0x7D;
                 if (!(sx > 0x103 || sy + 0x49 > 199))
@@ -1315,6 +1493,7 @@ public sealed class EffectField : IEffectClouds
             _cloudEastEdge[k, c] = (-999, 0);
             if (ex != 0)
             {
+                _cloudEastEdgeAt[k, c] = (ex + 7, ey);
                 var sy = ey - _lastCamera.Y;
                 var sx = ex + 7 - _lastCamera.X - sy + 0x84;
                 if (!(sx > 0x103 || sy + 0x45 > 199))
@@ -1407,7 +1586,7 @@ public sealed class EffectField : IEffectClouds
     }
 
     /// <summary>The clock was rebased: the clouds' and areas' end times move with it.</summary>
-    // orig: combat_main R014+0x0000 (0E76:0000) draft (the rebase loops over effect_clouds and effect_areas)
+    // orig: fight-main-loop R014+0x0000 (0E76:0000) draft (the rebase loops over effect-cloud-table and effect-area-table)
     public void Rebase(Func<ushort, ushort> rebase)
     {
         for (var k = 0; k < CloudCount; k++)
@@ -1424,7 +1603,7 @@ public sealed class EffectField : IEffectClouds
 public sealed partial class TacticalBattle
 {
     /// <summary>Whoever attacks (or casts at a spot) turns toward its target; a fighter the AI engaged keeps that facing for its pushes.</summary>
-    // orig: cbt_screen_pos R014+0x99F6 (14F7:31E6) draft (the turning part; the
+    // orig: fighter-screen-position R014+0x99F6 (14F7:31E6) draft (the turning part; the
     // screen positions are the screen's)
     private void TurnTowardTargets()
     {

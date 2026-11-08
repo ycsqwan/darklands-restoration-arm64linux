@@ -26,6 +26,11 @@ public sealed class DwarfKingsRedCap_MineB03 : Card
 
     public override int Number => 0xE6;
 
+    // BUG: text 0 ("It is $NamedOneName again, king of the dwarfs.") reads the named slot, which this card never fills (no name call, unlike 0xE5,
+    //   0xE3, 0xEA, 0xEB with the quest's dwarf name) and which the saved game does not keep: reached first (sort 0 doors 0xDD..0xE2 and 0x153..0x156
+    //   of the mine's section 8, or a failed force of the stone box), it prints what the slot still holds, as in the original: "It is  again" with
+    //   no name in a program run that has had no naming card and no character creation (a load leaves the slot), else the name the last
+    //   naming card or made-up-name left there (after a new game: the creation screen's last made-up name, "It is Gregori Steutz again")
     public override int Run(CardContext c)
     {
         Show(c, Picture);
@@ -118,7 +123,7 @@ public sealed class DwarfKingsRedCap_MineB03 : Card
     private void Pray(CardContext c, CardMenu menu)
     {
         // C: the action leaves $ChosenOneName alone: the saint pop-up's hint (R101+0x10E0, +0x1103) names the one who prays.
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

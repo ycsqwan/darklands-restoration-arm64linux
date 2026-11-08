@@ -80,16 +80,77 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
+    /// <summary>
+    /// level-exit (R023+0x17D2) adds an encounter record for the group left on the level: the record it adds holds the three kinds of the slots 4..6 whatever the
+    /// slot holds: for a slot with no enemy the original writes a local it never set (the stack's leftovers; the rewrite has -1 for the first, 0 for the others),
+    /// unseen as the count is 0: the original's byte is taken. Used by the direct call and by the stairs action that makes it (R014+0x2170, case 2).
+    /// </summary>
+    private static void AdoptUnsetBytesOfTheNewRecord(Context c, CallJob job, int floor, int before)
+    {
+        // the encounter record it adds holds the three kinds of the slots 4..6 whatever the slot holds: for a slot with no enemy the original writes a local
+        // it never set (the stack's leftovers; the rewrite has -1 for the first, 0 for the others), unseen as the count is 0: the original's byte is taken
+        var list = c.Tactics.Activations[floor];
+        if (list.Count == before + 1)
+        {
+            var group = list[^1];
+            // and the reinforcement part (+0x14..+0x1D) of a record that has none (+0x07 = 0): the original leaves the bytes the slot held, the rewrite's
+            // new group has its defaults; nothing reads them (the reinforcements arrive only for a group that has the record)
+            var recordAt = TacticsOverlay.ActivationsAt + TacticsOverlay.ActivationSize * before;
+            int Byte(int o) => job.Orig.FarChanged.TryGetValue((recordAt + o).ToString(), out var v) ? v : c.Input.Far[recordAt + o];
+            if (group.HasReinforcements == 0)
+            {
+                group.ReinforcementKind = (sbyte)Byte(0x14);
+                group.Byte15 = (sbyte)Byte(0x15);
+                group.ReinforcementX = (short)(Byte(0x16) | Byte(0x17) << 8);
+                group.ReinforcementY = (short)(Byte(0x18) | Byte(0x19) << 8);
+                group.ReinforcementBatch = (sbyte)Byte(0x1A);
+                group.ReinforcementPool = (sbyte)Byte(0x1B);
+                group.ReinforcementFacing = (sbyte)Byte(0x1C);
+                group.Byte1D = (sbyte)Byte(0x1D);
+            }
+            for (var k = 0; k < 3; k++)
+            {
+                var kindAt = TacticsOverlay.ActivationsAt + TacticsOverlay.ActivationSize * before + 8 + k;
+                if (group.Counts[k] == 0)
+                {
+                    group.Kinds[k] = (sbyte)(job.Orig.FarChanged.TryGetValue(kindAt.ToString(), out var kind) ? kind : c.Input.Far[kindAt]);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every writer of the leader DS:907B stores a party slot: the new-leader searches loop over the five slots (R014+0x08FE 0x0AAA, 0x0D0C; R016+0x09BC;
+    /// R029+0x255A; R030+0x0C44; R031+0x10AE, 0x264C) and the battle starts with 0 (R001+0x00A9). A fuzz value past the thirteen records (0xFF in the old rounds)
+    /// makes the original read the record before the first, which the rewrite's array does not have: the jobs that end in that exception are not judged
+    /// (those that agree with such a leader stay judged).
+    /// </summary>
+    private static T UnlessLeaderIsNoCombatant<T>(Context c, Func<T> call)
+    {
+        try
+        {
+            return call();
+        }
+        catch (IndexOutOfRangeException) when (c.Input.Ds[0x907B] >= Combatant.Count)
+        {
+            throw new SkipJob($"leader {c.Input.Ds[0x907B]} is not a combatant: only party slots are ever stored in DS:907B");
+        }
+    }
+
     /// <summary>The calls: original function to what the rewrite does for it, returning the value the original leaves in AX (null: none compared).</summary>
     private static readonly Dictionary<string, Func<Context, CallJob, int?>> Adapters = new()
     {
-        ["R014+0x08FE"] = (c, _) => BattleEnd.IsOver(c.Battle, c.Tactics) ? 1 : 0,
+        ["R014+0x08FE"] = (c, job) =>
+        {
+            var over = UnlessLeaderIsNoCombatant(c, () => BattleEnd.IsOver(c.Battle, c.Tactics));
+            return over ? 1 : 0;
+        },
         ["R014+0x481A"] = (c, job) =>
         {
             var ok = (bool)Call(c.Tactics, "FindPath", job.Args[0])!;
             // the original returns 1 for a path and 0 or 2 for none (its callers test for 1): the rewrite's bool
             var answer = ok ? 1 : job.Orig.Ax is 0 or 2 ? job.Orig.Ax : 0;
-            // the found path: its steps at 20A5:71BA, the length in DS:E118 (path_give copies length + 1 bytes)
+            // the found path: its steps at 20A5:71BA, the length in DS:E118 (route-hand-over copies length + 1 bytes)
             var paths = c.Tactics.Paths;
             if (!ok)
             {
@@ -123,6 +184,80 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
             }
             c.Tactics.LaunchMissile(job.Args[0], (short)job.Args[1], job.Args[2], job.Args[3], job.Args[4]);
             return null;
+        },
+        ["R014+0x10672"] = (c, job) =>
+        {
+            // cloud-on-line-test (shooter, target): a missed cloud box restores the line from four locals the call never set, the words its frame (below the
+            // state's stack pointer: the far return, two arguments, the saved bp) lay over the state's stack
+            if (job.Args[0] is < 0 or >= Combatant.Count || job.Args[1] is < 0 or >= Combatant.Count)
+            {
+                throw new SkipJob("a combatant number past the thirteen");
+            }
+            if (c.Input.Sp0 == 0)
+            {
+                throw new SkipJob("a jobs file without the state's stack pointer");
+            }
+            var bp = (c.Input.Sp0 - 0x40 - 4 - 4 - 2) & 0xFFFF;
+            short Local(int back) => (short)(c.Input.Ds[bp - back] | c.Input.Ds[bp - back + 1] << 8);
+            return c.Tactics.Effects.LineCrossesCloud(job.Args[0], job.Args[1], (Local(6), Local(8), Local(0x0A), Local(0x0C))) ? 1 : 0;
+        },
+        ["R024+0x08F2"] = (c, job) =>
+        {
+            // place-nearby (who, the 14-byte record whose +8/+10 words are the spot and +12 the direction): 1 when a place was found
+            var at = job.Args[1];
+            var ds = c.Input.Ds;
+            if (ds[at + 12] is not (0 or 2 or 4 or 6))
+            {
+                throw new SkipJob("a direction that is no even number below 8: the original reads the offsets of its stack garbage (the stairs records hold 0, 2, 4 or 6)");
+            }
+            var spot = new MapPoint((short)(ds[at + 8] | ds[at + 9] << 8), (short)(ds[at + 10] | ds[at + 11] << 8));
+            return (bool)Call(c.Tactics, "PlaceAround", job.Args[0], spot, (int)ds[at + 12])! ? 1 : 0;
+        },
+        ["R023+0x17D2"] = (c, job) =>
+        {
+            // level-exit (who, the stairs record the caller copied to its frame): the call is made with the record at the DS offset given
+            if (job.Args[0] is < 0 or >= Combatant.PartySlots)
+            {
+                throw new SkipJob("a member of the party leaves");
+            }
+            var at = job.Args[1];
+            var before = c.Tactics.Activations[c.Battle.FloorShown].Count;
+            Call(c.Tactics, "LeaveLevel", job.Args[0], c.Input.Ds.AsSpan(at, 14).ToArray());
+            AdoptUnsetBytesOfTheNewRecord(c, job, c.Battle.FloorShown, before);
+            return null;
+        },
+        ["R022+0x03E4"] = (c, job) =>
+        {
+            // yield-action: the question "Do you really want to surrender?" is answered by the job's first argument (the original's stub); only in real combat
+            if (job.Args[0] == 1 && c.Battle.RealCombat)
+            {
+                c.Tactics.Surrender();
+            }
+            return null;
+        },
+        ["R014+0x33A2"] = (c, job) =>
+        {
+            // mouse-cursor-plain: the pointer's shape from its place (the zones of the view's edges); the original keeps the handle of the shape in use (DS:A68F),
+            // takes the arrow's from DS:D72B + 2 * arrow (up, up-right, right, down-right, down, down-left, left, up-left) when it is another one, and at no
+            // edge makes the normal pointer (R014+0x4780), whose handle is not modelled: AX is the new arrow's handle when the shape changed, not compared otherwise
+            var ds = c.Input.Ds;
+            int x = (short)(ds[ScreenOverlay.MouseX] | ds[ScreenOverlay.MouseX + 1] << 8), y = (short)(ds[ScreenOverlay.MouseY] | ds[ScreenOverlay.MouseY + 1] << 8);
+            var arrow = x >= 60 ? (int)typeof(BattleScreen).GetMethod("EdgeArrow", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.Invoke(null, [x, y])! : -1;
+            var current = ds[0xA68F] | ds[0xA690] << 8;
+            if (arrow < 0)
+            {
+                var became = job.Orig.Changed.TryGetValue("42639", out var lo) ? lo | (job.Orig.Changed.TryGetValue("42640", out var hi) ? hi : ds[0xA690]) << 8 : current;
+                for (var a = 0; a < 8; a++)
+                {
+                    if (became != current && became == (ds[0xD72B + 2 * a] | ds[0xD72C + 2 * a] << 8))
+                    {
+                        return -1;
+                    }
+                }
+                return null;
+            }
+            var handle = ds[0xD72B + 2 * arrow] | ds[0xD72C + 2 * arrow] << 8;
+            return handle == current ? null : handle;
         },
         ["R014+0x0DEE"] = (c, _) =>
         {
@@ -323,10 +458,28 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         },
         ["R016+0x0000"] = (c, job) =>
         {
-            // combat_keys with the key the call was given (args[0], scan << 8 | character): the screen's key handler. The keys that open another screen
+            // fight-keys with the key the call was given (args[0], scan << 8 | character): the screen's key handler. The keys that open another screen
             // (the sheets F1..F5, Enemy Info, Surrender, Throw's menu, the Alt keys of the menu bar) run a loop of their own that the original's call
             // does not get its keys for.
             var key = job.Args[0] & 0xFFFF;
+            // the BIOS shift flags (0040:0017) the call was made with (round B3: the second argument; bits 0 and 1 the Shifts, bit 2 Ctrl)
+            var flags = job.Args.Length > 1 ? job.Args[1] : 0;
+            c.Host.ShiftHeld = (flags & 3) != 0;
+            c.Host.CtrlHeld = (flags & 4) != 0;
+            if (c.Input.Ds[0x907B] >= Combatant.PartySlots)
+            {
+                // every writer of the leader DS:907B stores a party slot (the new-leader search loops over the five party slots; the battle starts with one):
+                // a fuzz value of 5 or more names an enemy record, whose floor and stairs the original's U key then uses (tables of five entries read past)
+                throw new SkipJob($"leader {c.Input.Ds[0x907B]} is not a party slot: only party slots are ever stored in DS:907B");
+            }
+            if (c.Input.Ds[0x07D3] != (c.Input.Ds[0xA695] != 0 ? 1 : 0))
+            {
+                // the clock's hold DS:07D3 is a count: the pause sets DS:A695 and adds 1 together (R016+0x0755/0x075A, R014+0xBC8E/0xBC9E, both only
+                // when A695 is 0), takes both back together (R016+0x1443/0x144D, called only from R016+0x076D when A695 is not 0), a battle starts with
+                // both 0 (R002+0x1912/0x191E); every other holder adds and takes back 1 inside itself (or sets 1 only from 0: the bar root 0000:0000,
+                // the pause box root 0000:1080), and none of them calls this. So at a key 07D3 is 1 exactly when A695 is not 0 (every captured state)
+                throw new SkipJob($"DS:07D3 = {c.Input.Ds[0x07D3]} with DS:A695 = {c.Input.Ds[0xA695]:X2}: the clock is held exactly while the battle is paused");
+            }
             if (key == 0)
             {
                 // no key waits: the direction keys held (DS:0880 / DS:0881) give an arrow
@@ -346,6 +499,10 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
             }
             if (char.ToUpperInvariant((char)(key & 0xFF)) == 'U' && c.Input.Ds[0xA695] == 0)
             {
+                if (c.Input.Ds[0xC623] == c.Input.Ds[0x11CA] && c.Input.Ds[0x96BD] == 1 && c.Input.Ds[0xC77E + c.Input.Ds[0x907B]] == 0xFF)
+                {
+                    throw new SkipJob("Use Stairs is on (DS:96BD = 1) with the leader's stairs record 0xFF: R014+0xDC14 sets the record whenever it turns the flag on");
+                }
                 // U outside the pause takes the leader's stairs record (DS:C8B2 when the party is split, DS:C77E when Use Stairs is on): the
                 // original reads it without a test of the level's count (R023+0x1618); R014+0xDC14 sets these from a stairs record of the level
                 var ds = c.Input.Ds;
@@ -385,7 +542,24 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
                 // the Use Stairs entry (and so this action) is on only on a stairs record of the level, whose index R014+0xDC14 keeps (DS:C77E)
                 throw new SkipJob($"the stairs action with stairs record {c.Input.Ds[0xC77E + job.Args[0]]} past the level's {c.Input.Far[0x2FB6]}: R014+0xDC14 sets it from a stairs record of the level");
             }
+            if (c.Input.Ds[0xA6C4 + job.Args[0]] == (byte)PlaceAction.TakeLoot && (sbyte)c.Input.Ds[0xC81C + job.Args[0]] >= c.Input.Ds[0xC80E])
+            {
+                // the Loot Bodies entry is on only next to a pile outside real combat: R014+0xD7A2 (order mode's entry, peaceful only) stores the member's pile
+                // DS:C81C+m as a pile of the list or 0xFF, R014+0xEA10 as 0, a pile it makes or minus the recovered count; the list's count DS:C80E is reset only
+                // at a battle's start (R002+0x1A7A) and grows (R014+0x2324), so a pile index past it is the last battle's, which the entry overwrites
+                throw new SkipJob($"the loot action with member pile {(sbyte)c.Input.Ds[0xC81C + job.Args[0]]} past the list's {c.Input.Ds[0xC80E]} piles: the member's pile is one of the list or negative");
+            }
+            if (c.Input.Ds[0xA6C4 + job.Args[0]] == (byte)PlaceAction.DissolveLock && c.Input.Ds[ImageOverlay.Combatants + ImageOverlay.Record * job.Args[0] + 0x14] == 0)
+            {
+                // R014+0x2170 has one caller, fight-action-table (R014+0x12B7), whose pass skips a combatant with status 0 (R014+0x11B0..0x11B6). The other actions of an
+                // empty member agree and stay judged; the dissolve one uses up a slot of its pack (the original's count 0 wraps to 0xFF), which the rewrite does not
+                throw new SkipJob("the dissolve action for an empty member: fight-action-table passes over status 0 (R014+0x11B0), the only caller");
+            }
+            var floor = c.Battle.FloorShown;
+            var records = c.Tactics.Activations[floor].Count;
             Call(c.Tactics, "DoPlaceAction", job.Args[0]);
+            // the stairs make level-exit's record (R014+0x2170 case 2 -> R023+0x17D2): its unset bytes are the original's
+            AdoptUnsetBytesOfTheNewRecord(c, job, floor, records);
             return null;
         },
         ["R014+0xBC0C"] = (c, _) =>
@@ -401,6 +575,11 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         },
         ["R014+0xBCA8"] = (c, job) =>
         {
+            var ds = c.Input.Ds;
+            if ((sbyte)ds[OrderOverlay.Selected] == -1 && ds[0xC7CC] == 1 && ds[0xC762] != 1 && ds[0xD845] > 0 && (ds[0xA6B0] & 2) == 2)
+            {
+                throw new SkipJob("D-5c358f: an order given to member -1 reaches the command queue (R014+0x3C86), whose slots are the next-step words DS:D9E0, D9E2 and the next tick DS:D9E4");
+            }
             c.Tactics.LeaveOrderMode();
             OrderOverlay.TakeActiveMemberMinusOne(c, job);
             PanelRedrawTime(c, job);
@@ -422,7 +601,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         },
         ["R014+0xB576"] = (c, job) =>
         {
-            // combat_mouse: args = releases the driver counted, Ctrl held
+            // fight-mouse: args = releases the driver counted, Ctrl held
             if (c.Input.Ds[OrderOverlay.OrderMode] != 0 && (sbyte)c.Input.Ds[OrderOverlay.Selected] < 0)
             {
                 throw new SkipJob("order mode with no member selected: the original reads the record before combatant 0");
@@ -458,6 +637,11 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
             {
                 throw new SkipJob($"set {job.Args[1]} is not like the combatant's animation set {set}: the caller passes that");
             }
+            if (c.Input.Wave is { } wave && wave[0x1A] >= 0x80 && c.Input.Ds[TacticsOverlay.WavesOn] == 1 && job.Args[0] >= Combatant.PartySlots)
+            {
+                // DORMANT in the rewrite (TacticalBattle.Dying): the generators write batches 1..9 (WildBattlefield, CityBattlefield, MineBuilder.Fill)
+                throw new SkipJob($"reinforcement batch 0x{wave[0x1A]:X2}: no battlefield's wave has a batch above 0x7F");
+            }
             ScreenOverlay.Camera(c.Screen, c.Input);
             Call(c.Tactics, "Dying", job.Args[0], job.Args[1]);
             return null;
@@ -465,12 +649,12 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         ["R014+0xEA10"] = (c, _) =>
         {
             LootOverlay.SkipBlocksPastTheFile(c.Input);
-            Call(c.Tactics, "GatherLoot");
+            UnlessLeaderIsNoCombatant(c, () => Call(c.Tactics, "GatherLoot"));
             return null;
         },
         ["R025+0x0000"] = (c, job) =>
         {
-            // enemies_place(mode, far pointer to the encounter's record, who): the record is one of the level's list (20A5:47EE, 30 bytes each)
+            // enemy-placement-entry(mode, far pointer to the encounter's record, who): the record is one of the level's list (20A5:47EE, 30 bytes each)
             var mode = job.Args[0];
             if (mode is not (0 or 1) || job.Args[3] is < 0 or >= Combatant.PartySlots)
             {
@@ -542,7 +726,13 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         }),
         ["R014+0xB18E"] = (c, job) => Member13(c, job, () => Attacks.Carries(c.Battle, job.Args[0], (byte)job.Args[1], (byte)job.Args[2]) ? 1 : 0),
         ["R014+0xB244"] = (c, job) => Member13(c, job, () => Attacks.ConsumeItem(c.Battle, job.Args[0], (byte)job.Args[1], (byte)job.Args[2])),
-        ["R014+0x116E"] = (c, _) => Plain(c, "CombatActions"),
+        ["R014+0x116E"] = (c, _) =>
+        {
+            // a combatant that dies here leaves a pile, moved into one screen tile by the tiles of the last full redraw (R014+0x2802 reads
+            // R136+0x5890): the view's origin as for R014+0x2324
+            ScreenOverlay.Camera(c.Screen, c.Input);
+            return Plain(c, "CombatActions");
+        },
         ["R014+0x1F00"] = (c, job) =>
         {
             Call(c.Tactics, "SpellAction", job.Args[0], CallersSet(c, job));
@@ -619,7 +809,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     /// <summary>
-    /// The second argument of the missile and spell actions: the animation set combat_actions works out for the combatant at the head of its
+    /// The second argument of the missile and spell actions: the animation set fight-action-table works out for the combatant at the head of its
     /// pass (R014+0x11C4) and pushes (R014+0x1288 / 0x12A0). Jobs made with the combatant alone left the original reading a stack word there.
     /// </summary>
     private static int CallersSet(Context c, CallJob job)
@@ -698,9 +888,9 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     /// <summary>
-    /// The emulated time of the party panel's redraw after show_message: the message's delay_ticks loop (root 0410:0302) runs the machine past
+    /// The emulated time of the party panel's redraw after notice-display: the message's wait-ticks loop (root 0410:0302) runs the machine past
     /// the quiet budget the tester gives a call before its time-based timer (orig_side.BATTLE_QUIET), so the timer callbacks of the emulator's
-    /// speed come in the code after it: order_mode_leave's root 0000:1716(0x100) took 6 of them in each of the four "walk split" jobs
+    /// speed come in the code after it: command-mode-end's root 0000:1716(0x100) took 6 of them in each of the four "walk split" jobs
     /// (local/batch/stairs/measure.log: DS:07D1 +150 at the delay's return, the clock +150 when running). The rewrite counts the wait's 150
     /// ticks (BattleScreen.ShowMessage); a few more callbacks of the original after a wait are machine speed, taken over (up to 8).
     /// </summary>
@@ -735,7 +925,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         return null;
     }
 
-    /// <summary>A door record without a side flag leaves the direction of door_set uninitialised in the original (R023+0x04AC): a path search opens every door, so any such record in the level makes the call undefined.</summary>
+    /// <summary>A door record without a side flag leaves the direction of door-assign uninitialised in the original (R023+0x04AC): a path search opens every door, so any such record in the level makes the call undefined.</summary>
     /// <summary>Mutated states the game never has (each found by a difference that went away without the one change; see local/batch/battleleads).</summary>
     private static void CheckReachable(CallJob job, MemoryPair input, byte[] captured)
     {
@@ -748,7 +938,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
         {
             throw new SkipJob($"the clock moved {(short)moved} ticks from the captured state with the per-combatant and effect timers left behind");
         }
-        // a weapon missile (sprite < 6) at a spot (target −1) with its done byte 0: missile_launch leaves done 0 for a weapon missile only when the
+        // a weapon missile (sprite < 6) at a spot (target −1) with its done byte 0: shot-launch leaves done 0 for a weapon missile only when the
         // shooter's exchange (DS:CA57) is a hit (R018+0x0212..0x024D), which the attack roll R014+0xA592 sets against a target; the callers that take
         // a missile user's target away also end its exchange or action. On arrival the original then marks DS:D4F2[−1] (= DS:D4F1) and applies damage to
         // record −1 (R014+0xEDB4).
@@ -759,7 +949,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
                 var at = TacticsOverlay.MissilesAt + TacticsOverlay.MissileSize * m;
                 if (ds[at + 0x10] == 0xFF && (ds[at + 0x14] & 0x7F) < 6 && ds[at + 0x11] == 0)
                 {
-                    throw new SkipJob($"missile {m}: a weapon missile at a spot that counts as a hit (done 0), which missile_launch makes only for a hit rolled against a target");
+                    throw new SkipJob($"missile {m}: a weapon missile at a spot that counts as a hit (done 0), which shot-launch makes only for a hit rolled against a target");
                 }
             }
         }
@@ -810,7 +1000,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
             {
                 throw new SkipJob($"enemy {k} targets enemy {ds[record + 0x4A]}: the enemies choose members only");
             }
-            // the watched facings' count (DS:D5C6) is written by enemies_place only, always 7 (R025+0x0540)
+            // the watched facings' count (DS:D5C6) is written by enemy-placement-entry only, always 7 (R025+0x0540)
             if (k >= Combatant.PartySlots && ds[TacticsOverlay.WatchedCounts + k] is not (0 or 7))
             {
                 throw new SkipJob($"watched facings count {ds[TacticsOverlay.WatchedCounts + k]} of enemy {k}: R025+0x0540 writes 7 only");
@@ -1009,7 +1199,7 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
                 }
                 if (tactics.LevelSwitches != switches)
                 {
-                    // level_switch (R024+0x059A) saves the level it leaves (20A5:0000, its encounter list 20A5:47EE through DS:A895) only when
+                    // level-change (R024+0x059A) saves the level it leaves (20A5:0000, its encounter list 20A5:47EE through DS:A895) only when
                     // DS:D4E4 is set, and loads the level it shows from its files: what the job changed in a level without that flag, or in a
                     // level the original then reloads, is the files' and not the memory's
                     if (input.Ds[0xD4E4] == 0)
@@ -1038,14 +1228,14 @@ public sealed class BattleCallsTests(Xunit.Abstractions.ITestOutputHelper output
                 {
                     // another level is shown now: the original loaded its image from its own copies, the rewrite from its battlefield's (the levels not shown are not carried)
                     Array.Copy(expected.Far, 0, actual.Far, 0, TacticsOverlay.FloorSize);
-                    // and its encounter list (20A5:47EE, DS:D6CC records), which level_switch loads from the level's file through DS:A895
+                    // and its encounter list (20A5:47EE, DS:D6CC records), which level-change loads from the level's file through DS:A895
                     var records = Math.Max(expected.Ds[TacticsOverlay.ActivationCount], actual.Ds[TacticsOverlay.ActivationCount]);
                     Array.Copy(expected.Far, TacticsOverlay.ActivationsAt, actual.Far, TacticsOverlay.ActivationsAt,
                         Math.Min(TacticsOverlay.ActivationSize * records, actual.Far.Length - TacticsOverlay.ActivationsAt));
                     actual.Ds[TacticsOverlay.ActivationCount] = expected.Ds[TacticsOverlay.ActivationCount];
                 }
                 {
-                    // the missile records past the count are leftovers: missile_remove (R018+0x029C..0x02B3) moves all sixteen records after the
+                    // the missile records past the count are leftovers: shot-delete (R018+0x029C..0x02B3) moves all sixteen records after the
                     // one removed down, and every reader stops at the count (DS:C180)
                     var from = TacticsOverlay.MissilesAt + TacticsOverlay.MissileSize * Math.Min((int)expected.Ds[TacticsOverlay.MissileCount], TacticsOverlay.MaxMissiles);
                     var to = TacticsOverlay.MissilesAt + TacticsOverlay.MissileSize * TacticsOverlay.MaxMissiles;

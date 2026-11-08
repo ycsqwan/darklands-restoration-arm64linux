@@ -13,7 +13,7 @@ namespace Darklands.Cards.Scripts;
 /// </summary>
 // orig: R057+0x0000 (1838:0000) asm; tests: CardSmokeTests
 // DORMANT: R057+0x098E (1838:098E), the init, enables all 20 lines with the "screwed up."
-//   handler R057+0x09C6 and clears card_items/card_saints; lines 7..19 have no action (and
+//   handler R057+0x09C6 and clears card-item-lines/card-saint-lines; lines 7..19 have no action (and
 //   no text line).
 public sealed class CityChurchByDay : Card
 {
@@ -68,7 +68,7 @@ public sealed class CityChurchByDay : Card
             // orig: R057+0x08CA (1838:08CA) + R057+0x088E (1838:088E) R057 seg 1838 asm
             new MenuLine(() => { ShowPicture(c, NavePicture); c.Screen.Text(8); c.Next = Sanctuary; }, OptionHint.Saying(SuccessAssured)),
             // orig: R057+0x0910 (1838:0910) + R057+0x0902 (1838:0902) R057 seg 1838 asm
-            // C: is_daylight() is called and its answer thrown away: the main street by day (card 6) even at night.
+            // C: daylight-test() is called and its answer thrown away: the main street by day (card 6) even at night.
             new MenuLine(() => { _ = c.IsDaylight; c.Next = MainStreet; }, OptionHint.Saying(SuccessAssured)),
             // orig: R057+0x0956 (1838:0956) + R057+0x0948 (1838:0948) R057 seg 1838 asm
             new MenuLine(() => { _ = c.IsDaylight; c.Next = SideStreet; }, OptionHint.Saying(SuccessAssured)));
@@ -170,8 +170,9 @@ public sealed class CityChurchByDay : Card
     /// The next Mass's hour by the time of day and the city's size; where the city's politics
     /// have taken a side, a priest takes the party aside instead (card 0x6F).
     /// </summary>
-    // UNCERTAIN: in the small and late hours (band 0 and 1) the original names the hour of an
-    //   uninitialised local (whatever its stack slot held); the C# names hour 0.
+    // C: in the small and late hours (band 0 and 1) the original (R057+0x0500, line 2's action) names the hour of its unset local [bp-2]:
+    //   the card loop calls the line's hint R057+0x0644 just before (R057+0x018A, then R057+0x01D0 with no call between), whose r.a = -1
+    //   lies in that stack word; label-to-slot kind 3 takes time-of-day-band(-1) = 7 (R029+0x5654, signed), as for hour 0 (b32).
     private static void AskForTheNextMass(CardContext c)
     {
         var size = c.HereQuery(2);
@@ -205,7 +206,11 @@ public sealed class CityChurchByDay : Card
     /// value (original bug), then of the able members after him in turn, while the gift
     /// lasts; a large gift (over 600 pfennigs) also teaches Virtue (a thirtieth of Religion).
     /// </summary>
-    // BUG: party_max_skill(8) returns the skill value, which the original then uses as a member number.
+    // orig: R057+0x067C (1838:067C) asm (the index at R057+0x06C2..0x0704, party-ability-top R029+0x14A4 returning the value)
+    // BUG: party-ability-top(8) returns the skill value, which the original then uses as a member number.
+    // DIVERGENCE: a number of 5 or more (nearly every best Religion) indexes past the party table (DS:9EE9), into the last formatted screen text, which the original
+    //   reads as a member (its Divine Favor, the maximum and then, through R029+0x0A72, writes the clamped lack back there); it depends on the text shown before, not on
+    //   the game state, so it cannot be reproduced (card 0x34, Snew-mines36: lack 76, nobody is raised). Here such a slot reads as an empty member: the gift goes on to the able members.
     // C: all values are 16-bit words: the gift is the low word of the tenth, compared signed.
     private static void GiveATenth(CardContext c)
     {

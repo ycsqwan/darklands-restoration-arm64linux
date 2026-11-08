@@ -54,6 +54,9 @@ Darklands.Launcher       the settings screen before the game (references Platfor
                          only the SDL host references it, through ILauncher)
 ```
 
+Screens read the player only through `GameUi`; a script or an interface convenience plays through the same door with player
+commands (a key, a click, a line of the list shown), which the screens carry out as the player's own input (docs/COMMANDS.md).
+
 ## Core domain (Darklands.Core)
 
 | Area | Types | Notes |
@@ -86,6 +89,12 @@ drivers when the ROMs are missing). `SynthAudio` implements `IAudio` and renders
 `IPcmOutput` (the SDL host's `SdlAudioOutput`, the headless host's .wav, `tools/tune`). The emulated
 processor runs at 3000 instructions per ms (DOSBox's default, the reference capture's): a sample starts
 as late into the driver's tick as its work takes.
+
+Sound packs (`Packs`, docs/PACKS.md; new code, not the game's) replace music and battle effects with OGG/WAV files
+named in `AudioCatalogue`. `PackAudio` decorates the host's `IAudio`: every call goes on to `SynthAudio` unchanged and
+its AX answers come back, so the drivers, their timer and the game run exactly as without a pack; `PackMixer` (the
+source the device plays, through `PackOutput`) renders the drivers under it, mutes them while a replacement plays and
+mixes the replacement in. NVorbis (MIT, NuGet) decodes Ogg Vorbis.
 
 ## Timing (one clock)
 
@@ -152,6 +161,8 @@ not followed yet.
   function from the player's `DARKLAND.EXE` (Unicorn, see `tools/oracle`), over generated inputs, and
   the results must agree.
 * `tests/Darklands.Cards.Tests`: every card, the golden card traces, the card oracle's results.
+* `tests/Darklands.Architecture.Tests`: the dependency direction above, on the compiled assemblies, with the places that break it
+  today as known exceptions (docs/ARCHITECTURE-RULES.md).
 * `tests/Darklands.Battles.Tests`, `Darklands.Persistence.Tests`, `Darklands.Audio.Tests`,
   `Darklands.Platform.Tests`, `Darklands.DevConsole.Tests`, `Darklands.Host.Sdl.Tests`,
   `Darklands.Rendering.Tests`: the screens and battles, saved games, the sound drivers, settings, the console,

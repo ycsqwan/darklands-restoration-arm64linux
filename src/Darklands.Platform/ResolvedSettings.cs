@@ -17,11 +17,17 @@ public sealed class CommandLineOptions
 
     public string? HdPack { get; set; }
 
+    public bool CleanDrawing { get; set; }
+
     public string? Sound { get; set; }
 
     public bool NoAudio { get; set; }
 
     public string? Mt32Roms { get; set; }
+
+    public string? AudioPack { get; set; }
+
+    public string? SoundFont { get; set; }
 
     public bool NoBanner { get; set; }
 
@@ -37,6 +43,9 @@ public sealed class CommandLineOptions
     public string? SdlLibrary { get; set; }
 
     public bool NoConsole { get; set; }
+
+    /// <summary>The mods of --mod (each given once per --mod); empty: the settings file's.</summary>
+    public List<string> Mods { get; set; } = [];
 
     /// <summary>
     /// The settings-file keys this command line (or an environment variable) overrides, each with what overrides it
@@ -62,13 +71,18 @@ public sealed class CommandLineOptions
         By("display.resolution", size is not null, size ?? "");
         By("display.fullscreen", Fullscreen, "--fullscreen");
         By("display.hdPack", Given(HdPack), "--hd-pack");
+        By("display.cleanDrawing", CleanDrawing, "--clean-drawing");
         By("sound.card", NoAudio, "--no-audio");
         By("sound.card", Given(Sound), "--sound");
         By("sound.mt32Roms", Given(Mt32Roms), "--mt32-roms");
         By("sound.mt32Roms", Given(environment("DARKLANDS_MT32_ROMS")), "DARKLANDS_MT32_ROMS");
+        By("sound.audioPack", Given(AudioPack), "--audio-pack");
+        By("sound.soundFont", Given(SoundFont), "--soundfont");
+        By("sound.audioPack", Given(environment("DARKLANDS_AUDIO_PACK")), "DARKLANDS_AUDIO_PACK");
         By("startup.banner", NoBanner, "--no-banner");
         By("startup.intro", NoIntro, "--no-intro");
         By("startup.commandLine", GameCommandLine is not null, "--");
+        By("mods", Mods.Count > 0, "--mod");
         return fixedKeys;
     }
 }
@@ -91,6 +105,9 @@ public sealed class ResolvedSettings
     /// <summary>The HD pack's folder; null: none (the original pictures).</summary>
     public string? HdPack { get; private init; }
 
+    /// <summary>The cleaner drawing of 0.9.5 (GameOptions.CleanDrawing); false: drawn as the 1992 game.</summary>
+    public bool CleanDrawing { get; private init; }
+
     /// <summary>adlib, sb, sbpro2, mt32, cm32l or speaker; null: the game's own choice from CONFIG.DRK.</summary>
     public string? SoundChoice { get; private init; }
 
@@ -99,7 +116,19 @@ public sealed class ResolvedSettings
 
     public string? Mt32Roms { get; private init; }
 
+    /// <summary>The audio pack's folder; null: none (the game's own sound).</summary>
+    public string? AudioPack { get; private init; }
+
+    /// <summary>The SoundFont file for the audio pack's .mid files; null: look in the SOUNDFONT folder next to the program.</summary>
+    public string? SoundFont { get; private init; }
+
     public ConfigDrkSettings? ConfigDrk { get; private init; }
+
+    /// <summary>The mods to play with, as given (folders or names in a mods folder); empty: none, the game's own cards (Classic).</summary>
+    public IReadOnlyList<string> Mods { get; private init; } = [];
+
+    /// <summary>True when <see cref="Mods"/> came from the command line (relative folders are then the current folder's), else the settings file's.</summary>
+    public bool ModsFromCommandLine { get; private init; }
 
     public bool ShowBanner { get; private init; }
 
@@ -163,10 +192,15 @@ public sealed class ResolvedSettings
             Window = window,
             Fullscreen = cli.Fullscreen || (file.Fullscreen ?? false),
             HdPack = Pick(cli.HdPack, null, file.HdPack),
+            CleanDrawing = cli.CleanDrawing || (file.CleanDrawing ?? false),
             SoundChoice = sound is null or "config" or "none" ? null : sound,
             NoAudio = cli.NoAudio || (cli.Sound is null && sound == "none") || cli.Sound == "none",
             Mt32Roms = Pick(cli.Mt32Roms, "DARKLANDS_MT32_ROMS", file.Mt32Roms),
+            AudioPack = Pick(cli.AudioPack, "DARKLANDS_AUDIO_PACK", file.AudioPack),
+            SoundFont = Pick(cli.SoundFont, null, file.SoundFont),
             ConfigDrk = file.ConfigDrk,
+            Mods = cli.Mods.Count > 0 ? cli.Mods.ToList() : file.Mods?.Where(m => !string.IsNullOrWhiteSpace(m)).ToList() ?? [],
+            ModsFromCommandLine = cli.Mods.Count > 0,
             ShowBanner = !cli.NoBanner && (file.Banner ?? true),
             PlayIntro = !cli.NoIntro && (file.Intro ?? true),
             AlwaysLaunch = file.Launcher ?? false,

@@ -42,6 +42,16 @@ public enum LauncherReason
 /// <param name="ReleaseNotes">The release notes shipped with the program (Markdown; the first section is shown).</param>
 /// <param name="OpenLink">Opens a web link in the player's browser.</param>
 /// <param name="ReleaseNotesLink">The release notes of this version on the web, or null.</param>
+/// <param name="FindPacks">The game folder chosen (or null) → the pack folders offered (the subfolders of a packs folder next to the
+/// program or the game); null: none offered (a pack is still dropped or browsed for).</param>
+/// <param name="DescribePack">A folder → what it holds as a picture or sound pack (null: the launcher only counts its files).</param>
+/// <param name="PackGuide">The guide for pack makers (a link or a file), opened by "How to make a pack"; null: no link.</param>
+/// <param name="FindSoundFont">The SoundFont file of the settings (null: none chosen) → the file that would play the audio pack's .mid
+/// files (the file if it exists, else the first .sf2 of the default folder), or null when none is found; null: the launcher shows the file as it is.</param>
+/// <param name="ReportProblem">Makes a problem report from the last sessions' logs and saves (a zip, its folder and the issue form opened) and
+/// returns the message to show the player; null: the launcher offers none.</param>
+/// <param name="GivenGameFolder">The game folder the command line or the environment names (it overrides the settings file's), or
+/// null: the launcher shows it instead of the file's.</param>
 public sealed record LauncherContext(
     GameSettings Settings,
     IReadOnlyDictionary<string, string> FixedKeys,
@@ -54,7 +64,35 @@ public sealed record LauncherContext(
     ISoundTest? SoundTest,
     string ReleaseNotes,
     Action<string> OpenLink,
-    string? ReleaseNotesLink = null);
+    string? ReleaseNotesLink = null,
+    Func<string?, IReadOnlyList<string>>? FindPacks = null,
+    Func<string, PackStatus>? DescribePack = null,
+    string? PackGuide = null,
+    string? GivenGameFolder = null,
+    Func<string?, string?>? FindSoundFont = null,
+    Func<string>? ReportProblem = null);
+
+/// <summary>A folder as a pack: how many pictures and sounds it replaces, and what could not be read (a broken manifest ...).</summary>
+public sealed record PackStatus(int Pictures, int Sounds, string? Problem)
+{
+    /// <summary>What a folder holds by its files alone: PNG files (pictures), OGG, WAV and MIDI files (sounds).</summary>
+    public static PackStatus Count(string folder)
+    {
+        try
+        {
+            var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).Select(Path.GetExtension).ToList();
+            return new PackStatus(
+                files.Count(e => string.Equals(e, ".png", StringComparison.OrdinalIgnoreCase)),
+                files.Count(e => string.Equals(e, ".ogg", StringComparison.OrdinalIgnoreCase) || string.Equals(e, ".wav", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(e, ".mid", StringComparison.OrdinalIgnoreCase) || string.Equals(e, ".midi", StringComparison.OrdinalIgnoreCase)),
+                null);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return new PackStatus(0, 0, e.Message);
+        }
+    }
+}
 
 /// <summary>
 /// The sound test: a little of the game's music on the chosen card. It may start in the background; whenever it starts
@@ -119,8 +157,14 @@ public interface ILauncherSurface
     /// <summary>The clipboard's text, or null.</summary>
     string? Clipboard();
 
-    /// <summary>Asks the system for a folder (its own dialog); null when cancelled or not available.</summary>
+    /// <summary>
+    /// Asks the system for a folder (its own dialog); null when not available. The function returns null when the player
+    /// cancelled, and throws <see cref="NotSupportedException"/> (its message says why) when no dialog could be shown.
+    /// </summary>
     Func<string, string?>? PickFolder { get; }
+
+    /// <summary>Asks the system for a SoundFont file (its own dialog); null when not available. Cancelled: null; no dialog: <see cref="NotSupportedException"/>.</summary>
+    Func<string, string?>? PickFile => null;
 }
 
 /// <summary>An input event, in surface pixels.</summary>

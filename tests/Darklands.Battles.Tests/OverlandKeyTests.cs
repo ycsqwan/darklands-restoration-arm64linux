@@ -10,6 +10,8 @@ namespace Darklands.Battles.Tests;
 /// The overland map takes a second waiting key in the same pass (R030+0x0566..0x057B): the two presses a held arrow leaves in
 /// the keyboard buffer make one step, so the party stops within a pass of the key's release.
 /// </summary>
+// the map's trace (OverlandScreen.Trace) is static: the classes that set it run one after the other
+[Collection("OverlandTrace")]
 public sealed class OverlandKeyTests
 {
     /// <summary>A host whose keyboard is the BIOS buffer: each Pump plays the next frame's key events into it.</summary>
@@ -86,6 +88,44 @@ public sealed class OverlandKeyTests
         }
         // the buffer kept two of the ten presses (BiosKeyBuffer); one pass takes both: a single step (two without the second read, ten without the collapse)
         Assert.Equal(["step d=1,0"], steps.Select(s => s[..10]));
+    }
+
+    [Fact]
+    public void AMarkerBelowTheViewsBottomBoundKeepsItsRowUntilItMovesUp()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        // three presses of the up arrow, each on its own pass
+        int[][] frames = [[], [Keys.Up], .. Enumerable.Repeat(Array.Empty<int>(), 10), [Keys.Up], .. Enumerable.Repeat(Array.Empty<int>(), 10), [Keys.Up], .. Enumerable.Repeat(Array.Empty<int>(), 20)];
+        var host = new KeyHost(frames);
+        var ui = new GameUi(host, new GameAssets(files));
+        var state = NewGame.Quickstart(world, 1, () => 1);
+        state.Data = world;
+        // near the map's bottom world-map-start puts the marker at y 180, below the 0xB1 the down case keeps it to
+        state.CurrentLocation = Core.GameState.Wilderness;
+        state.MapPosition = new Core.World.MapPosition(162, 928);
+        var map = new WorldMap(Content.Formats.Maps.WorldMapData.Decode(files.Read("DARKLAND.MAP")), state.Locations);
+        var steps = new List<string>();
+        var trace = OverlandScreen.Trace;
+        OverlandScreen.Trace = steps.Add;
+        try
+        {
+            new OverlandScreen(ui, new PartyPanel(ui.Assets), map).Travel(state);
+        }
+        catch (QuitGameException)
+        {
+        }
+        finally
+        {
+            OverlandScreen.Trace = trace;
+        }
+        // R030+0x0D34: the first up pass does not move and does not clamp (y stays 180); the second takes a pixel (179); the clamp to 0xD is
+        //   one-sided, so nothing pulls the marker to 0xB1
+        var views = steps.Where(s => s.StartsWith("step")).Select(s => s.Split(' ')[3]).Take(3).ToArray();
+        Assert.True(views.SequenceEqual(["130,180", "130,179", "130,179"]), string.Join(" | ", steps));
     }
 
     /// <summary>A host whose frames give keys (a number) and the keyboard interrupt's make / break codes ("d:48" / "u:48").</summary>
@@ -185,12 +225,12 @@ public sealed class OverlandKeyTests
     [Fact]
     public void AHeldDirectionWithNoKeyWaitingWaitsForTheNextKey()
     {
-        // R030+0x0549..0x0566: no key waiting but DS:0880 set: get_key waits (the screen stands), then the held Right replaces the key
+        // R030+0x0549..0x0566: no key waiting but DS:0880 set: read-key waits (the screen stands), then the held Right replaces the key
         var steps = Walk(["d:4D"], [], [], [], [0x2D78], [], ["u:4D"], [0x2D78]);
         if (steps is not null)
         {
             Assert.Equal(["step d=1,0"], steps.Select(s => s[..10]));
-            // and with no key at all, no step: the map waits in get_key for good
+            // and with no key at all, no step: the map waits in read-key for good
             Assert.Empty(Walk(["d:4D"])!);
         }
     }
@@ -230,8 +270,8 @@ public sealed class OverlandKeyTests
             return;
         }
         var world = WorldData.Load(files);
-        // A, then a key with no map function one frame later (inside the first 75 ms delay), then idle frames
-        int[][] frames = [[], [0x1E61], [], [], [0x2C7A], .. Enumerable.Repeat(Array.Empty<int>(), 40)];
+        // A (read by the first pass), then a key with no map function two frames later (inside the first 75 ms delay), then idle frames
+        int[][] frames = [[0x1E61], [], [0x2C7A], .. Enumerable.Repeat(Array.Empty<int>(), 40)];
         var host = new KeyHost(frames);
         var ui = new GameUi(host, new GameAssets(files));
         var state = NewGame.Quickstart(world, 1, () => 1);
@@ -253,5 +293,168 @@ public sealed class OverlandKeyTests
         }
         Assert.Equal(["rest step -> Walked"], steps);
         Assert.Equal(3, state.MapLeaveMode);
+    }
+
+    /// <summary>
+    /// R030+0x0C44's rest waits with wait-ticks(75) (R030+0x3096, the pass's own wait on clock(), which moves only at the BIOS tick): every rest
+    /// step comes just as a BIOS tick begins, not 75 ms of real time after the one before (a rest of one second then ends in the original's hour;
+    /// the step count still differs by the original's own execution time, host timing).
+    /// </summary>
+    [Fact]
+    public void TheRestsWaitsEndAtABiosTick()
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return;
+        }
+        var world = WorldData.Load(files);
+        int[][] frames = [[0x1E61], .. Enumerable.Repeat(Array.Empty<int>(), 60)];
+        var host = new KeyHost(frames);
+        var ui = new GameUi(host, new GameAssets(files));
+        var state = NewGame.Quickstart(world, 1, () => 1);
+        state.Data = world;
+        var map = new WorldMap(Content.Formats.Maps.WorldMapData.Decode(files.Read("DARKLAND.MAP")), state.Locations);
+        var times = new List<long>();
+        var trace = OverlandScreen.Trace;
+        OverlandScreen.Trace = line => times.Add(host.Milliseconds);
+        try
+        {
+            new OverlandScreen(ui, new PartyPanel(ui.Assets), map).Travel(state);
+        }
+        catch (QuitGameException)
+        {
+        }
+        finally
+        {
+            OverlandScreen.Trace = trace;
+        }
+        Assert.True(times.Count >= 2);
+        Assert.All(times, t => Assert.True(DosClock.BiosTicks(t) > DosClock.BiosTicks(t - 1), $"a rest step at {t} ms, inside a BIOS tick"));
+    }
+
+    /// <summary>A host on a virtual clock whose keyboard is the SDL host's (PcKeyboard): Right goes down and up at given times, a frame shown takes a 60 Hz retrace.</summary>
+    private sealed class HoldHost(PcKeyboard keyboard, double downAt, double upAt, double endAt) : IHost, IVideo, IInput, IClock
+    {
+        private double _now;
+        private bool _down;
+        private bool _up;
+
+        public IVideo Video => this;
+        public IInput Input => this;
+        public IAudio Audio { get; } = new SilentAudio();
+        public IClock Clock => this;
+        public bool QuitRequested { get; private set; }
+        public MouseState Mouse => new(5, 5, MouseButtons.None);
+        public bool ShiftHeld => false;
+        public long Milliseconds => (long)_now;
+
+        public void Present(Screen screen) => _now += 1000.0 / 60;
+
+        public void Sleep(int milliseconds) => _now += Math.Max(1, milliseconds);
+
+        public bool TryReadKey(out int key) => keyboard.TryReadKey(out key);
+
+        public bool TryReadKeyTransition(out int scanCode, out bool released) => keyboard.TryReadTransition(out scanCode, out released);
+
+        public void Pump()
+        {
+            if (!_down && _now >= downAt)
+            {
+                _down = true;
+                keyboard.KeyDown(Keys.Right, 0x4D, 0x4D, _now);
+            }
+            if (!_up && _now >= upAt)
+            {
+                _up = true;
+                keyboard.KeyUp(0x4D, 0x4D);
+            }
+            keyboard.Tick(_now);
+            QuitRequested = _now >= endAt;
+        }
+    }
+
+    /// <summary>The map's passes while Right is held from 1 s to 4 s (the host's milliseconds at each pass and whether it stepped).</summary>
+    private static List<(long Ms, bool Step)>? Hold(KeyTypematic typematic)
+    {
+        if (GameFolder.Files is not { } files)
+        {
+            return null;
+        }
+        var world = WorldData.Load(files);
+        var host = new HoldHost(new PcKeyboard(typematic), 1000, 4000, 5000);
+        var ui = new GameUi(host, new GameAssets(files));
+        var state = NewGame.Quickstart(world, 1, () => 1);
+        state.Data = world;
+        var map = new WorldMap(Content.Formats.Maps.WorldMapData.Decode(files.Read("DARKLAND.MAP")), state.Locations);
+        var passes = new List<(long Ms, bool Step)>();
+        var (trace, hook) = (OverlandScreen.Trace, OverlandScreen.PassHook);
+        // the hooks are static: only this thread's map (other test classes may run theirs meanwhile)
+        var thread = Environment.CurrentManagedThreadId;
+        OverlandScreen.Trace = line =>
+        {
+            if (Environment.CurrentManagedThreadId == thread)
+            {
+                passes[^1] = (passes[^1].Ms, line.StartsWith("step d=1,0", StringComparison.Ordinal) || passes[^1].Step);
+            }
+        };
+        OverlandScreen.PassHook = read =>
+        {
+            if (read && Environment.CurrentManagedThreadId == thread)
+            {
+                passes.Add((host.Milliseconds, false));
+            }
+        };
+        try
+        {
+            new OverlandScreen(ui, new PartyPanel(ui.Assets), map).Travel(state);
+        }
+        catch (QuitGameException)
+        {
+        }
+        finally
+        {
+            (OverlandScreen.Trace, OverlandScreen.PassHook) = (trace, hook);
+        }
+        return passes;
+    }
+
+    /// <summary>
+    /// An arrow held at DOSBox's typematic (500 ms, then every 33 ms) leaves a key for every pass of the map (one BIOS tick, 18.2 a second):
+    /// after the first repeat the party steps in every pass and never shows the standing marker (key 0x4C35) until the key is let go,
+    /// and it stops within a pass of the release (R030+0x0540..0x066A, R030+0x0C2F, as the emulated original with the same timeline).
+    /// </summary>
+    [Fact]
+    public void AnArrowHeldAtDosBoxsTypematicStepsInEveryPassUntilItsRelease()
+    {
+        if (Hold(new KeyTypematic()) is not { } passes)
+        {
+            return;
+        }
+        var walking = passes.Where(p => p.Ms >= 1000 + KeyTypematic.DelayMs + 60 && p.Ms < 4000).ToList();
+        Assert.True(walking.Count >= 40, $"{walking.Count} passes");
+        Assert.All(walking, p => Assert.True(p.Step, $"standing at {p.Ms} ms"));
+        // one pass a BIOS tick: 18.2 a second
+        Assert.InRange((walking[^1].Ms - walking[0].Ms) / (double)(walking.Count - 1), 54.0, 56.0);
+        Assert.DoesNotContain(passes.Where(p => p.Ms >= 4000 + 60), p => p.Step);
+        // the make's own step (in the pass after it), then the 500 ms delay standing (the original's too)
+        Assert.Contains(passes.Where(p => p.Ms >= 1000).Take(2), p => p.Step);
+    }
+
+    /// <summary>
+    /// At the PC/AT keyboard's power-on typematic (500 ms, then 10.9 a second) the keys come slower than the passes: the party steps in
+    /// about 11 of the 18.2 passes a second and stands in the others, as the emulated original does at that rate.
+    /// </summary>
+    [Fact]
+    public void AnArrowHeldAtThePcPowerOnTypematicAlternatesStepsAndStanding()
+    {
+        if (Hold(new KeyTypematic(500, 1000 / 10.9)) is not { } passes)
+        {
+            return;
+        }
+        var walking = passes.Where(p => p.Ms >= 1000 + KeyTypematic.DelayMs + 60 && p.Ms < 4000).ToList();
+        var steps = walking.Count(p => p.Step);
+        var seconds = (walking[^1].Ms - walking[0].Ms) / 1000.0;
+        Assert.InRange(steps / seconds, 10.0, 11.5);
+        Assert.InRange(walking.Count - steps, (int)(6 * seconds), (int)(8.5 * seconds));
     }
 }

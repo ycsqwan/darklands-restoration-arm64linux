@@ -16,16 +16,18 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
     private readonly int[] _argb = new int[Screen.Width * Screen.Height];
     private readonly int[] _textArgb = new int[TextModeRaster.Width * TextModeRaster.Height];
     private IntPtr _textTexture;
-    // the BIOS keyboard buffer with the game's keyboard interrupt in front of it (BiosKeyBuffer): SDL's presses and repeats go in
-    // as the keyboard's makes and typematic repeats, bounded and with a held key's repeats collapsed as in the original
-    private readonly BiosKeyBuffer _keys = new();
-    // orig: root 044A:020E (the INT 9 handler: it only sees what the keyboard sends; the original never programs the typematic rate, so the keyboard's power-on 500 ms / 10.9 cps apply)
-    // DIVERGENCE: the held key's repeats come from the PC keyboard's default typematic (KeyTypematic: 500 ms, then 10.9/s) counted
-    //   from its press, not from SDL's operating-system repeat events (about 30/s); the developer console keeps the OS repeats
-    private readonly KeyTypematic _typematic = new();
+    // the keyboard (PcKeyboard): SDL's presses and releases go in as the keyboard's make and break codes, its typematic repeats and
+    // the BIOS keyboard buffer with the game's keyboard interrupt in front of it (bounded, a held key's repeats collapsed as in the original)
+    // orig: root 044A:020E (the INT 9 handler: it only sees what the keyboard sends; the original never programs the typematic rate, so the machine's own applies)
+    // DIVERGENCE: the held key's repeats come from DOSBox's typematic (KeyTypematic: 500 ms, then every 33 ms) counted from its press,
+    //   not from SDL's operating-system repeat events nor the PC/AT keyboard's power-on 10.9/s, at which the original's map stands
+    //   in about 7 of its 18.2 passes a second while an arrow is held (DOSBox gives a key to every pass); the developer console keeps the OS repeats
+    private readonly PcKeyboard _keyboard = new();
     private readonly System.Diagnostics.Stopwatch _keyClock = System.Diagnostics.Stopwatch.StartNew();
     private SdlNative.SdlRect _viewport;
     private SdlNative.SdlRect _textViewport;
+    // how the renderer stretches the picture, which the mouse follows (SDL's software renderer: no graphics card, or SDL_RENDER_DRIVER=software)
+    private readonly PictureSampling _sampling;
     private MouseState _mouse;
     private bool _shift;
     private bool _framePresented;
@@ -52,6 +54,7 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
         {
             _renderer = SdlNative.SDL_CreateRenderer(_window, -1, SdlNative.RendererSoftware);
         }
+        _sampling = IsSoftware(_renderer) ? PictureSampling.SdlSoftware : PictureSampling.Centre;
         _texture = SdlNative.SDL_CreateTexture(_renderer, SdlNative.PixelFormatArgb8888,
             (int)SdlNative.TextureAccessStreaming, Screen.Width, Screen.Height);
         SdlNative.SDL_SetTextureScaleMode(_texture, SdlNative.ScaleModeNearest);
@@ -89,6 +92,9 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
     // Host feature (like F12's screenshots): the original never reads F11 (the BIOS keyboard call it uses does not report it), so the game loses no key.
     public ConsoleOverlay? Console { get; set; }
 
+    /// <summary>What Ctrl-F12 does (null: nothing, the key goes to the game as before): the host makes a problem report.</summary>
+    public Action? ReportRequested { get; set; }
+
     /// <summary>A line drawn small in the window's bottom-right corner when it gives one (the version on the start screen).</summary>
     public CornerText? Corner { get; set; }
 
@@ -102,18 +108,7 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
 
     public bool ShiftHeld => _shift;
 
-    private readonly Queue<(int ScanCode, bool Released)> _transitions = new();
-
-    public bool TryReadKeyTransition(out int scanCode, out bool released)
-    {
-        if (_transitions.TryDequeue(out var t))
-        {
-            (scanCode, released) = t;
-            return true;
-        }
-        (scanCode, released) = (0, false);
-        return false;
-    }
+    public bool TryReadKeyTransition(out int scanCode, out bool released) => _keyboard.TryReadTransition(out scanCode, out released);
 
     /// <summary>The PC scan code (set 1) of the keys the game's keyboard interrupt looks at, 0 for the others.</summary>
     private static int PcScanCode(int sdlScancode) => sdlScancode switch
@@ -135,6 +130,12 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
     };
 
     public bool CtrlHeld => (SdlNative.SDL_GetModState() & (SdlNative.KeyModLeftCtrl | SdlNative.KeyModRightCtrl)) != 0;
+
+    public bool TakeCtrlBreak() => _keyboard.TakeCtrlBreak();
+
+    /// <summary>Ctrl+Pause (SDL's Pause scancode 72 with a Ctrl key), or SDL's Cancel (155, what some systems report for Break).</summary>
+    // C: plain Pause (the BIOS's pause loop, which holds the program until the next key) is not modelled: the key goes nowhere
+    internal static bool IsCtrlBreak(int scancode, int mod) => scancode == 72 && (mod & SdlNative.KeyModCtrl) != 0 || scancode == 155;
 
     /// <summary>The pointer to a screen pixel: the window point at the middle of that pixel of the picture.</summary>
     public void MovePointer(int x, int y)
@@ -284,6 +285,9 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
         }
     }
 
+    /// <summary>How the renderer in use stretches the picture (tests).</summary>
+    internal PictureSampling Sampling => _sampling;
+
     /// <summary>The window's size in the coordinates its mouse events use (tests).</summary>
     internal (int Width, int Height) WindowSize
     {
@@ -348,6 +352,16 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
                 }
                 continue;
             }
+            // Ctrl-F12: a problem report (docs/REPORTING.md). A host key like F11 and F12: the original never reads F11 or F12, so the game loses no key.
+            if (e.Type == SdlNative.EventKeyDown && e.Keyboard.Keysym.Scancode == SdlNative.ScancodeF12
+                && (e.Keyboard.Keysym.Mod & SdlNative.KeyModCtrl) != 0 && ReportRequested is not null)
+            {
+                if (e.Keyboard.Repeat == 0)
+                {
+                    ReportRequested();
+                }
+                continue;
+            }
             if (Console is { Console.IsOpen: true } && ConsoleEvent(e, toggledThisPump))
             {
                 continue;
@@ -359,26 +373,23 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
                     break;
                 case SdlNative.EventKeyDown:
                     _shift = (e.Keyboard.Keysym.Mod & (SdlNative.KeyModLeftShift | SdlNative.KeyModRightShift)) != 0;
-                    if (e.Keyboard.Repeat == 0 && PcScanCode(e.Keyboard.Keysym.Scancode) is var make and not 0)
-                    {
-                        _transitions.Enqueue((make, false));
-                    }
                     if (e.Keyboard.Repeat != 0)
                     {
-                        break;   // the operating system's own repeat: the keyboard's typematic below stands in for it
+                        break;   // the operating system's own repeat: the keyboard's typematic (PcKeyboard.Tick below) stands in for it
                     }
-                    var key = SdlKeyMap.ToGameKey(e.Keyboard.Keysym.Scancode, e.Keyboard.Keysym.Sym, e.Keyboard.Keysym.Mod);
-                    _typematic.Press(key, _keyClock.Elapsed.TotalMilliseconds, (int)e.Keyboard.Keysym.Scancode);
-                    PressKey(key);
+                    if (IsCtrlBreak(e.Keyboard.Keysym.Scancode, e.Keyboard.Keysym.Mod))
+                    {
+                        // Ctrl+Pause (the PC keyboard's Break, E0 46 with Ctrl) or a key the system calls Break: to the game as the BIOS
+                        // delivers it (PcKeyboard.CtrlBreak; GameUi.QuitCheck ends the program at the card engine's next check)
+                        _keyboard.CtrlBreak();
+                        break;
+                    }
+                    _keyboard.KeyDown(SdlKeyMap.ToGameKey(e.Keyboard.Keysym.Scancode, e.Keyboard.Keysym.Sym, e.Keyboard.Keysym.Mod),
+                        PcScanCode(e.Keyboard.Keysym.Scancode), (int)e.Keyboard.Keysym.Scancode, _keyClock.Elapsed.TotalMilliseconds);
                     break;
                 case SdlNative.EventKeyUp:
-                    _typematic.Release((int)e.Keyboard.Keysym.Scancode);
-                    _keys.ScanCode();
                     _shift = (e.Keyboard.Keysym.Mod & (SdlNative.KeyModLeftShift | SdlNative.KeyModRightShift)) != 0;
-                    if (PcScanCode(e.Keyboard.Keysym.Scancode) is var brk and not 0)
-                    {
-                        _transitions.Enqueue((brk, true));
-                    }
+                    _keyboard.KeyUp(PcScanCode(e.Keyboard.Keysym.Scancode), (int)e.Keyboard.Keysym.Scancode);
                     break;
                 case SdlNative.EventMouseMotion:
                     _mouse = _mouse with { X = ToScreenX(e.Motion.X), Y = ToScreenY(e.Motion.Y) };
@@ -406,11 +417,7 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
             }
         }
         // the typematic repeats of the key held last that came due since the previous pump
-        var due = _typematic.Due(_keyClock.Elapsed.TotalMilliseconds, out var held);
-        for (var i = 0; i < due; i++)
-        {
-            PressKey(held);
-        }
+        _keyboard.Tick(_keyClock.Elapsed.TotalMilliseconds);
         // the game may pump without presenting while it waits: the console is drawn on (and taken away when it closes)
         if (Console is not null && (toggledThisPump || (Console.Console.IsOpen && !_framePresented)))
         {
@@ -419,25 +426,12 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
         _framePresented = false;
     }
 
-    /// <summary>A make code or typematic repeat of a key reaches the keyboard interrupt: a game key is stored, any other only runs the handler.</summary>
-    private void PressKey(int key)
-    {
-        if (key != Keys.None)
-        {
-            _keys.Press(key);
-        }
-        else
-        {
-            _keys.ScanCode();
-        }
-    }
-
     private MouseButtons _releaseNextPump;
 
     private void SetConsoleOpen(bool open)
     {
         Console!.Console.IsOpen = open;
-        _typematic.Stop();   // the console takes the keyboard; what it types repeats with the operating system's rate
+        _keyboard.StopRepeating();   // the console takes the keyboard; what it types repeats with the operating system's rate
         if (open)
         {
             SdlNative.SDL_StartTextInput();
@@ -488,7 +482,7 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
         }
     }
 
-    public bool TryReadKey(out int key) => _keys.TryRead(out key);
+    public bool TryReadKey(out int key) => _keyboard.TryReadKey(out key);
 
     /// <summary>The SDL window and renderer, for another user of the window before the game (the launcher).</summary>
     internal IntPtr Window => _window;
@@ -573,15 +567,20 @@ internal sealed class SdlHost : IHost, IVideo, IInput, IDisposable
         SdlNative.SDL_GetWindowSize(_window, out var ww, out _);
         SdlNative.SDL_GetRendererOutputSize(_renderer, out var rw, out _);
         var x = windowX * rw / Math.Max(1, ww);
-        return DisplayLayout.ToScreen(Graphics, x, 0).X;
+        return DisplayLayout.ToScreen(Graphics, x, 0, _sampling).X;
     }
+
+    private static bool IsSoftware(IntPtr renderer) =>
+        SdlNative.SDL_GetRendererInfo(renderer, out var info) == 0
+        && ((info.Flags & SdlNative.RendererSoftware) != 0
+            || string.Equals(System.Runtime.InteropServices.Marshal.PtrToStringUTF8(info.Name), "software", StringComparison.Ordinal));
 
     private int ToScreenY(int windowY)
     {
         SdlNative.SDL_GetWindowSize(_window, out _, out var wh);
         SdlNative.SDL_GetRendererOutputSize(_renderer, out _, out var rh);
         var y = windowY * rh / Math.Max(1, wh);
-        return DisplayLayout.ToScreen(Graphics, 0, y).Y;
+        return DisplayLayout.ToScreen(Graphics, 0, y, _sampling).Y;
     }
 
     private DisplayRectangle Graphics => new(_viewport.X, _viewport.Y, _viewport.Width, _viewport.Height);

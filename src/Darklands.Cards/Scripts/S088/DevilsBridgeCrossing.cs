@@ -111,7 +111,7 @@ public sealed class DevilsBridgeCrossing : Card
             c.Screen.Text(4);
         }
 
-        // C: arguments are evaluated right to left: rand_mod(5) + 4 (the second group) is drawn before rand_mod(3).
+        // C: arguments are evaluated right to left: roll-below(5) + 4 (the second group) is drawn before roll-below(3).
         var second = c.Random(5) + 4;
         var first = c.Random(3) + c.PartyLoreLevel() / 4 + 1;
         switch (c.RunBattle(0x37, c.Here, 0x35, first, second, -1, 0, 0, -1, 0, 0))
@@ -133,7 +133,7 @@ public sealed class DevilsBridgeCrossing : Card
                 // C: Chosen[1] is the member seized in the failed argument; after a won argument it is stale.
                 if (argumentWins)
                 {
-                    c.SetStatus(c.Variables.Chosen[1], CharacterStatus.Able);
+                    c.SetStatusAbleStale(c.Variables.Chosen[1]);
                 }
                 c.Screen.Text(7);
                 c.State.CurrentLocation = -1;
@@ -143,7 +143,7 @@ public sealed class DevilsBridgeCrossing : Card
                 c.DropAway();
                 if (argumentWins)
                 {
-                    c.SetStatus(c.Variables.Chosen[1], CharacterStatus.Able);
+                    c.SetStatusAbleStale(c.Variables.Chosen[1]);
                 }
                 c.Screen.Text(8);
                 c.State.CurrentLocation = -1;
@@ -177,7 +177,7 @@ public sealed class DevilsBridgeCrossing : Card
 
     private static void CallASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

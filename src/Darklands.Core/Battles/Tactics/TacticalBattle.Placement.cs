@@ -15,7 +15,7 @@ public sealed partial class TacticalBattle
 
     /// <summary>A debugging aid (DARKLANDS_BATTLE_STALE_DEST, "5:-256,511;7:..."): the destination a record keeps when its enemy is first placed,
     /// by record. The original copies the enemy file's record whole (R025+0x0267) and its destination bytes (+0x08..+0x0B) are whatever the
-    /// stack held; until the enemy first moves they steer what reads them (the facing of a spell at a spot, R014+0x306A). The oracle reads
+    /// work buffer DS:A895 held when R020+0x0000 converted the level (CombatantSetup.FromEnemy); until the enemy first moves they steer what reads them (the facing of a spell at a spot, R014+0x306A). The oracle reads
     /// them off the original's run; the C# leaves them 0.</summary>
     public static Dictionary<int, MapPoint>? StaleDestinations { get; set; } = ParseStaleDestinations(Environment.GetEnvironmentVariable("DARKLANDS_BATTLE_STALE_DEST"));
 
@@ -30,16 +30,16 @@ public sealed partial class TacticalBattle
     /// <summary>The view origin cell the screen should centre (DS:C866 / DS:C886) after a placement; null when the view follows the leader.</summary>
     public (int Column, int Row)? ViewOrigin { get; set; }
 
-    /// <summary>DS:11B1: the view follows the active member (combat_tick's test); set by choosing a member, cleared by a placement and
+    /// <summary>DS:11B1: the view follows the active member (fight-tick's test); set by choosing a member, cleared by a placement and
     /// by scrolling the view.</summary>
-    // orig: set by R016+0x09BC and 0x0A2C; cleared by effect_start R014+0x4188 and R016+0x0B92
+    // orig: set by R016+0x09BC and 0x0A2C; cleared by effect-begin R014+0x4188 and R016+0x0B92
     public bool FollowsActive { get; set; }
 
     /// <summary>
     /// The party arrives at (x, y) facing <paramref name="dir"/>: the marching order in a
     /// five-slot formation, those that do not fit at random free spots in sight.
     /// </summary>
-    // orig: effect_start R014+0x4188 (0E76:4188) draft (spec D §8.2, asm-verified)
+    // orig: effect-begin R014+0x4188 (0E76:4188) draft (spec D §8.2, asm-verified)
     public void PlaceParty(int x, int y, int dir)
     {
         if (x == -1 && y == -1)
@@ -146,7 +146,7 @@ public sealed partial class TacticalBattle
     /// Places combatant <paramref name="who"/> around a spot facing away from the spot's direction:
     /// enemies try the 12 offsets from the far end; members the first 12, then random spots in sight.
     /// </summary>
-    // orig: place_around R024+0x08F2 (1EF8:08F2) draft (asm-verified per spec D §8.3; the draft
+    // orig: place-nearby R024+0x08F2 (1EF8:08F2) draft (asm-verified per spec D §8.3; the draft
     // tries 13 offsets for members, the asm 12)
     private bool PlaceAround(int who, MapPoint spot, int dir)
     {
@@ -255,7 +255,13 @@ public sealed partial class TacticalBattle
     /// Hidden encounters on the party's level: one whose spot a member sees, or comes near
     /// enough to (stealth + streetwise), is placed and removed from the list.
     /// </summary>
-    // orig: activations_check R014+0x4442 (0E76:4442) draft (spec D §1.10, asm-verified)
+    // orig: trigger-check R014+0x4442 (0E76:4442) draft (spec D §1.10, asm-verified)
+    // DIVERGENCE: host timing: trigger-check reads the timer's clock DS:07D4 for the next check after its searches, so a timer callback
+    //   that comes during them makes it one later (gen-carry-12: the first check after the in-battle save, at 40756, set DS:DA4F = 40877
+    //   with the clock 40757 at its end, and every later check kept the step; a read-only hook in the original at R014+0x05BD / 0x05C1).
+    //   Where that callback falls is the original's CPU time against the timer; here the clock moves between passes only.
+    //   The tester gives the C# where it landed (tools/oracle/timer_marks.py, lockstep.py --timer-marks: the clock rise -8 at the read):
+    //   with it gen-carry-12, -14, -29 and -32 agree in every tick, state and file.
     private bool CheckActivations()
     {
         var result = false;
@@ -297,6 +303,9 @@ public sealed partial class TacticalBattle
                 list.RemoveAt(k);
             }
         }
+        // orig: R014+0x459E: DS:DA4F = DS:07D4 + 0x78, the clock read anew at the check's end (the tester's rise -8: the callbacks a long
+        //   check had, timer_marks.py; none in play: ClockPhase is null there)
+        ClockPhase?.Invoke(-8);
         ActivationsAt = (ushort)(Clock + 120);
         return result;
     }
@@ -306,7 +315,7 @@ public sealed partial class TacticalBattle
     /// reinforcement wave (mode 1) into the free records 5..12: each kind into one of the two enemy
     /// animation slots, at the corner of its box first, then at random spots in sight of the spot.
     /// </summary>
-    // orig: enemies_place R025+0x0000 (1EF8:0000) draft (decoded fully per the draft notes;
+    // orig: enemy-placement-entry R025+0x0000 (1EF8:0000) draft (decoded fully per the draft notes;
     // the placement part asm-verified per spec D §8.4: the flags word is masked with 0xFE00, the draft clears only 5 bits)
     // DIVERGENCE: the palettes (ENEMYPAL.DAT ranges) are the screen's; in mode 1 the original adds money from an
     // uninitialised encounter pointer — no money is added here.
@@ -533,8 +542,8 @@ public sealed partial class TacticalBattle
         return new Money((short)fl, (short)gr, (short)pf);
     }
 
-    /// <summary>combat_recover's search: a woken member is put on a free spot right of / below where it lay, in sight.</summary>
-    // orig: combat_recover R014+0x0DEE (0E76:0DEE) draft (spec D §1.7, asm-verified)
+    /// <summary>fight-recovery's search: a woken member is put on a free spot right of / below where it lay, in sight.</summary>
+    // orig: fight-recovery R014+0x0DEE (0E76:0DEE) draft (spec D §1.7, asm-verified)
     private void PlaceWoken(int i)
     {
         var c = Battle[i];

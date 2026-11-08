@@ -15,7 +15,7 @@ public sealed partial class TacticalBattle
     /// time begins its action now (to-hit and damage rolled at once); walkers queue their next
     /// path step.
     /// </summary>
-    // orig: melee_exchanges R014+0x2A4A (0E76:2A4A) draft (spec D §3.1, asm-verified)
+    // orig: close-combat-rounds R014+0x2A4A (0E76:2A4A) draft (spec D §3.1, asm-verified)
     private void MeleeExchanges()
     {
         ClockPhase?.Invoke(-2);
@@ -88,16 +88,16 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>
-    /// cbt_attack at the start of a swing: the to-hit and damage (queued), the attacker's reaction
+    /// fighter-attack at the start of a swing: the to-hit and damage (queued), the attacker's reaction
     /// state and the frames of the swing: one of four feints, the parry row, or the attack row.
     /// </summary>
-    // orig: cbt_attack R014+0xA592 (18BF:0102) draft, checked against asm (spec D §3.2)
+    // orig: fighter-attack R014+0xA592 (18BF:0102) draft, checked against asm (spec D §3.2)
     // C: the rows are those of the animation set the attacker has NOW (its walking set if it is not in its fighting pose
-    // yet); melee_frame's first cbt_set_anim then replaces them with the attack row when the pose changes.
+    // yet); melee_frame's first fighter-start-animation then replaces them with the attack row when the pose changes.
     private void Swing(int i, int t)
     {
-        // C: a spell cast at a spot (target −1) calls cbt_attack with t = −1: the to-hit roll (and a miss's row) is drawn, then
-        // to_hit_roll and hit_damage return on the spell bit before combatants[−1] is read.
+        // C: a spell cast at a spot (target −1) calls fighter-attack with t = −1: the to-hit roll (and a miss's row) is drawn, then
+        // hit-roll and hit-points-lost return on the spell bit before combatants[−1] is read.
         var c = Battle[i];
         var set = Slots[AnimationSet(i)];
         var kind = Slots[c.AnimationSlot];
@@ -150,8 +150,8 @@ public sealed partial class TacticalBattle
         }
     }
 
-    /// <summary>Both on one floor and one can reach the other (cbt_hostile_pair).</summary>
-    // orig: cbt_hostile_pair R014+0x47AE (0E76:47AE) draft (asm-verified per spec D §1.11)
+    /// <summary>Both on one floor and one can reach the other (fighter-hostile-pair-test).</summary>
+    // orig: fighter-hostile-pair-test R014+0x47AE (0E76:47AE) draft (asm-verified per spec D §1.11)
     private bool HostilePair(int i, int j)
     {
         if (i == 5 && Battle.DragonFight != 0)
@@ -172,7 +172,7 @@ public sealed partial class TacticalBattle
     }
 
     /// <summary>The direction the target is pushed: the attacker's facing, turned by one 20% of the time each way.</summary>
-    // orig: push_direction R014+0x2A04 (0E76:2A04) draft (byte-matched per the draft notes)
+    // orig: shove-heading R014+0x2A04 (0E76:2A04) draft (byte-matched per the draft notes)
     private int PushDirection(int i)
     {
         var f = Battle[i].AttackFacing;
@@ -225,6 +225,12 @@ public sealed partial class TacticalBattle
         {
             c.Destination = Battle[c.Target].Position;
         }
+        // BUG: the step queued above from the old route (DS:CA30) is kept through the re-path: fighter-step takes it first, from the new
+        //   route's index 0, so a walker that re-plans makes one step of its old route and then goes on from the new route's second byte
+        //   (when that step succeeds); and a walker blocked by somebody re-plans only when RepathAt comes (30..120 ticks after its last good
+        //   step). Seen in the original (battle oracle fights city24, street, wild40, castle7c with route-hand-over R014+0x5D64 and
+        //   fighter-step hooked: 8 of 27 re-paths took the old byte at index 0, 5 of them a byte other than the new route's first), the
+        //   fights agree tick for tick with this code. Kept (not data-damaging).
         if (FindPath(i))
         {
             GivePath(i);
@@ -343,16 +349,16 @@ public sealed partial class TacticalBattle
         return table[quad, s];
     }
 
-    /// <summary>path_find for combatant i (the AI's path hook runs once the trackers found a path, before the shortcuts).</summary>
-    // orig: path_find R014+0x481A (12F7:000A) draft
+    /// <summary>route-search for combatant i (the AI's path hook runs once the trackers found a path, before the shortcuts).</summary>
+    // orig: route-search R014+0x481A (12F7:000A) draft
     private bool FindPath(int i)
     {
         var set = Slots[AnimationSet(i)];
         return Paths.Find(Battle, i, set.StepX, set.StepY, OpenDoorsForSearch, () => AiPathHook(i));
     }
 
-    /// <summary>path_give: the last path found becomes combatant i's (packed with facings).</summary>
-    // orig: path_give R014+0x5D64 (12F7:1554) draft
+    /// <summary>route-hand-over: the last path found becomes combatant i's (packed with facings).</summary>
+    // orig: route-hand-over R014+0x5D64 (12F7:1554) draft
     private void GivePath(int i) => PathFinder.GiveTo(Battle[i].Path, Paths.Path, Paths.PathLength);
 
     /// <summary>2E38:0C64 / DS:DA43: the saved path (250 bytes, unpacked) and its length; the battle file keeps both.</summary>
@@ -360,8 +366,8 @@ public sealed partial class TacticalBattle
 
     public int SavedPathLength { get; set; }
 
-    /// <summary>path_save / path_give_saved: keep the last path for an order confirmed later.</summary>
-    // orig: path_save R014+0x5DAC (12F7:159C) draft
+    /// <summary>route-keep / route-hand-over-restore: keep the last path for an order confirmed later.</summary>
+    // orig: route-keep R014+0x5DAC (12F7:159C) draft
     // C: both copy length + 1 bytes (the path and its end byte); the bytes after them keep what an earlier path left.
     private void SavePath()
     {
@@ -369,6 +375,6 @@ public sealed partial class TacticalBattle
         Array.Copy(Paths.Path, SavedPath, Math.Min(SavedPathLength + 1, PathFinder.MaxSteps));
     }
 
-    // orig: path_give_saved R014+0x5DE0 (12F7:15D0) draft (the saved path copied into combatant i's, then packed)
+    // orig: route-hand-over-restore R014+0x5DE0 (12F7:15D0) draft (the saved path copied into combatant i's, then packed)
     private void GiveSavedPath(int i) => PathFinder.GiveTo(Battle[i].Path, SavedPath, SavedPathLength);
 }

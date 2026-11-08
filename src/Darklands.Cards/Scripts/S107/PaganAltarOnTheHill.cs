@@ -27,7 +27,7 @@ public sealed class PaganAltarOnTheHill : Card
         menu.Set(OptionState.Enabled, 0, 1, 2, 5);
         if (c.Events.QuestAt(10, c.Here))
         {
-            // C: event_find does not set last_event; event_f2e_of(last_event) reads the stale global.
+            // C: event-search does not set latest-event; event-detail-word-of(latest-event) reads the stale global.
             _ = c.Events.Find(8, -1, c.Here, -1, 10, -1);
             c.NameToSlot(0, c.EventDetail(c.LastEvent), 0);
             c.Variables.Texts[0] = "touch the " + c.Variables.Named[0];
@@ -38,7 +38,7 @@ public sealed class PaganAltarOnTheHill : Card
             c.Variables.Texts[0] = "turn the stone";
             c.Variables.Named[0] = "heart";
         }
-        // C: card_saints[2] = card_items[1] = 0x6F assigns right to left: the item slot first.
+        // C: card-saint-lines[2] = card-item-lines[1] = 0x6F assigns right to left: the item slot first.
         c.SetCardItems(0x66, 0x6F, 0x73, 0x6E);
         c.SetCardSaints(0x0F, 0x2B, 0x6F);
         menu[2] = c.ItemsUsable();
@@ -81,7 +81,7 @@ public sealed class PaganAltarOnTheHill : Card
         var chance = 0;
         if (c.MenuSlot == 3)
         {
-            chance = c.ItemQuality(c.MenuMember, c.CardItems[c.MenuSlot]) * 2;
+            chance = c.ItemQuality(c.MenuMember, c.CardItems[c.MenuEntrySlot]) * 2;
             if (menu.Block == 13)
             {
                 chance = 0;
@@ -91,10 +91,10 @@ public sealed class PaganAltarOnTheHill : Card
     }
 
     /// <summary>The guardians of this circle (0 wolves, 1 beasts, 2 the Wild Hunter, 3 tree-giants).</summary>
-    // C: (party_seed + cur_loc) & 3 on 16-bit ints: two's complement keeps it 0..3 for negative sums too.
+    // C: (party-random-seed + location-now) & 3 on 16-bit ints: two's complement keeps it 0..3 for negative sums too.
     private static int Guardians(CardContext c) => (c.State.Party.Seed + c.Here) & 3;
 
-    // DIVERGENCE: the original writes locations[cur_loc] unguarded; in the wilderness (-1) nothing is written here.
+    // DIVERGENCE: the original writes locations[location-now] unguarded; in the wilderness (-1) nothing is written here.
     private static void CloseThePlace(CardContext c)
     {
         if (c.State.Here is { } place)
@@ -150,7 +150,7 @@ public sealed class PaganAltarOnTheHill : Card
     private static void PrayAgainstThePaganPowers(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -232,7 +232,7 @@ public sealed class PaganAltarOnTheHill : Card
     private static void PrayAgainstTheBeasts(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -289,7 +289,7 @@ public sealed class PaganAltarOnTheHill : Card
 
     /// <summary>Returns true when the party fled and must fight again.</summary>
     // orig: R107+0x1C40 (19CE:02E0) matched; tests: CardSmokeTests
-    // C: right-to-left arguments: the pack size is drawn before run_battle draws its random seed (-1).
+    // C: right-to-left arguments: the pack size is drawn before battle-driver draws its random seed (-1).
     private static bool FightTheWolves(CardContext c)
     {
         var wolves = c.Random(5) + 3;

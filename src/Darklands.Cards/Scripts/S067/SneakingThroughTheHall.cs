@@ -4,7 +4,7 @@ namespace Darklands.Cards.Scripts;
 
 /// <summary>
 /// "$Sneak00": the party creeps through a guild hall or a faction's house it has slipped
-/// into (the guild is handed on in party_x). Search on and perhaps overhear the leader's
+/// into (the guild is handed on in party-map-column). Search on and perhaps overhear the leader's
 /// secret, or slip out; a blunder brings the guards (a fight, or out of a window with a rope).
 /// </summary>
 // orig: R067+0x1ECE (1A24:000E) matched; tests: CardSmokeTests
@@ -18,11 +18,15 @@ public sealed class SneakingThroughTheHall : Card
 
     public override int Run(CardContext c)
     {
-        // DIVERGENCE: the original never calls card_load here: it only fills the name and picture
-        // buffers, so the screen keeps the previous card's picture, and its texts until the engine
-        // redraws the card (R043 13f2 reloads the MSG named by card_name, now "$Sneak00", and draws
-        // pic_buf). The card is shown here at once with its own texts and the "common" picture.
-        Show(c, 0);
+        // BUG: the card (R067+0x1ECE) never calls card-run: it only fills card-title and image-buffer ("common"), so the
+        // screen keeps the previous card's picture and its blocks 6 and 0x0D, and those of every later
+        // text, are read from the previous card's message file (the guild's: $Black00, $Sword00 ...),
+        // until a member's sheet, the party information or a battle has the card loaded again
+        // (R043+0x1E82 and battle-driver's card-run load card-title's texts, "$Sneak00"); see NameTheCard.
+        // DIVERGENCE: after the rebels' cards ($Revol00 has 13 blocks, $Revol01 10) the blocks 0x0D, 0x0E and up are not in the loaded
+        //   file: card-text-block and card-option-lines print from text-bank-file + text-bank-index.ofs[n], a stale entry text-bank-read did not set (R043+0x020E: what an
+        //   earlier, longer message file left; 0d 0a 0a under the oracle), undefined memory; the C# prints an empty text, with the same lines.
+        c.Screen.NameTheCard(Name, PictureNames.Of(0));
         c.Next = Number;
         var menu = Menu(c, 0x0D);
         menu.Enable(0, 1, 3, 9);
@@ -33,12 +37,12 @@ public sealed class SneakingThroughTheHall : Card
             // C: line 1 is offered but its action is empty: the menu simply comes back.
             // orig: R067+0x2470 (hint 05b2)
             new MenuLine(_ => { }, OptionHint.Saying(SuccessAssured)),
-            // DORMANT: line 2 (opt_flag_2 = 0): a fight with the guards. orig: R067+0x24AA (hint 05f0)
+            // DORMANT: line 2 (card-option-flag-2 = 0): a fight with the guards. orig: R067+0x24AA (hint 05f0)
             new MenuLine(_ => Fight(c), OptionHint.Saying(CardTexts.Unknown)),
             // C: line 3 leads to card 0x62, the main loop's end-of-game code.
             // orig: R067+0x24E8 (hint 0646)
             new MenuLine(_ => { c.Screen.Text(0); c.PassHours(0); c.Next = 0x62; }, OptionHint.Saying(SuccessAssured)),
-            // DORMANT: lines 4..8 (opt_flag = 0) have empty actions (067e, 06b8, 06f2, 072a, 0764).
+            // DORMANT: lines 4..8 (option-flag = 0) have empty actions (067e, 06b8, 06f2, 072a, 0764).
             // C: line 6's hint (R067+0x25B4) leaves its chance unset (r.b = leader is overwritten by -2; r.a is a stack leftover); here −1.
             new MenuLine(_ => { }, OptionHint.Saying(SuccessAssured)),
             new MenuLine(_ => { }, OptionHint.Saying(SuccessAssured)),
@@ -50,9 +54,9 @@ public sealed class SneakingThroughTheHall : Card
 
     private static int Sneaking(CardContext c)
     {
-        // C: is_daylight() != 1: the dark adds 45.
+        // C: daylight-test() != 1: the dark adds 45.
         var dark = c.IsDaylight ? 0 : 0x2D;
-        // C: the queries in the original's order (the last one leaves best_member and best_value).
+        // C: the queries in the original's order (the last one leaves top-scoring-member and top-value-so-far).
         var agility = c.PartyMaxEffectiveAgility();
         var average = c.PartyAverageSkill((int)Skill.Stealth);
         return (c.PartyMaxSkill((int)Skill.Stealth) + (agility + average) + dark) / 3;
@@ -80,7 +84,7 @@ public sealed class SneakingThroughTheHall : Card
         if (roll <= chance)
         {
             c.PassHours(1);
-            // C: party_x (the guild bit) and the fact value are and-ed as words.
+            // C: party-map-column (the guild bit) and the fact value are and-ed as words.
             if ((c.GuildCode & c.Events.FactValue(PoliticsQuest, 8, c.Here)) != 0)
             {
                 OverhearTheSecret(c);
@@ -146,7 +150,7 @@ public sealed class SneakingThroughTheHall : Card
                 c.Screen.Text(5, TextFrame.BlankPage);
                 break;
             case 1:
-                // C: card_text(7, v_si) with v_si = 1: the frame is the secret number.
+                // C: card-text-block(7, local-in-si) with local-in-si = 1: the frame is the secret number.
                 c.Screen.Text(7, TextFrame.BlankPage);
                 break;
             case >= 2 and <= 6:
@@ -186,7 +190,7 @@ public sealed class SneakingThroughTheHall : Card
     private static void Fight(CardContext c)
     {
         // C: arguments right to left: the sergeant's quality (lore level % 3) is read first, then
-        // the guards' number (rand_mod(4)), then their quality (rand_mod(2)).
+        // the guards' number (roll-below(4)), then their quality (roll-below(2)).
         var sergeantQuality = c.PartyLoreLevel() % 3 + 1;
         var guards = c.Random(4) + c.PartyLoreLevel() / 3 + 1;
         var guardQuality = c.Random(2) + c.PartyLoreLevel() / 4 + 1;
@@ -209,7 +213,7 @@ public sealed class SneakingThroughTheHall : Card
             case 4:
                 c.Screen.Text(0x13);
                 c.AdjustReputation(c.Here, 0, -(c.Random(11) + 9));
-                // C: cur_rep (the script's global copy of the reputation) is lowered by a second draw
+                // C: reputation-now (the script's global copy of the reputation) is lowered by a second draw
                 // and not written back; the draw is kept, the copy is not modelled.
                 _ = c.Random(11) + 9;
                 c.PassHours(3);

@@ -8,17 +8,18 @@ namespace Darklands.Core;
 /// <remarks>
 /// Reproduced without a fix flag:
 /// <list type="bullet">
-/// <item><c>loc_query</c> 2..11, 15..35, 40, 41 read the current city record whatever location is asked about; codes 39–41 read the current location.</item>
-/// <item><c>loc_query</c> codes without a case return the code itself (42 and up, and negative codes: what the original leaves in AX) or 0 for 19, 21, 22, 25, 30 and 36 (there the original returns the caller's BX).</item>
-/// <item>Card-visible side effects kept: the overnight healing test leaves the best healer in <c>best_member</c>/<c>best_value</c>; the attribute queries' own member (DS:9A44); <c>thunk 09C0:2175</c>'s return is the last event's slot.</item>
-/// <item><c>event_value</c> and the quest/fact queries ignore the DS:00F0 suppression flag; the presence queries honour it.</item>
-/// <item>Event scans leave the last visited slot in <c>last_event</c>; <c>event_here_extend</c> leaves −1 or 300 there when it creates an event.</item>
-/// <item><c>event_renew</c> gives a new event its hours literally (9999 is not "forever" there).</item>
-/// <item><c>event_remove</c>, <c>loc_facts_clear</c> and <c>event_48_max</c> return the AX left over when slot 299 holds the kind; a brew records its place and risk in <c>events[last_event]</c>.</item>
+/// <item><c>place-query</c> 2..11, 15..35, 40, 41 read the current city record whatever location is asked about; codes 39–41 read the current location.</item>
+/// <item><c>place-query</c> codes without a case return the code itself (42 and up, and negative codes: what the original leaves in AX) or 0 for 19, 21, 22, 25, 30 and 36 (there the original returns the caller's BX).</item>
+/// <item>Card-visible side effects kept: the overnight healing test leaves the best healer in <c>top-scoring-member</c>/<c>top-value-so-far</c>; the attribute queries' own member (DS:9A44); <c>thunk 09C0:2175</c>'s return is the last event's slot.</item>
+/// <item><c>event-datum</c> and the quest/fact queries ignore the DS:00F0 suppression flag; the presence queries honour it.</item>
+/// <item>Event scans leave the last visited slot in <c>latest-event</c>; <c>event-here-lengthen</c> leaves −1 or 300 there when it creates an event.</item>
+/// <item><c>event-refresh</c> gives a new event its hours literally (9999 is not "forever" there).</item>
+/// <item><c>event-delete</c>, <c>place-flags-reset</c> and <c>attribute-overshoot-limit</c> return the AX left over when slot 299 holds the kind; a brew records its place and risk in <c>events[latest-event]</c>.</item>
 /// <item>Potion weapon bonuses (kind 0x4A) are never undone at expiry.</item>
 /// <item>The daily city politics change sides and measure strengths at the <em>current</em> location, not the event's city.</item>
-/// <item><c>has_item</c>'s formula test reads the formula table at member × 22 + code − 0x5F (other members' formulas for low codes).</item>
-/// <item><c>practice_skill</c> for one member rolls even when the member is absent.</item>
+/// <item><c>carries-item</c>'s formula test reads the formula table at member × 22 + code − 0x5F (other members' formulas for low codes).</item>
+/// <item><c>exercise-skill</c> for one member rolls even when the member is absent.</item>
+/// <item>The jewelers' guild at night passes the party's lowest Stealth value as the member: record 20's skill byte is the last battle's place action of combatant 11 (<see cref="Rules.RecordOverrun"/>).</item>
 /// <item>A member who is the leader but not able is replaced by the first able member only when time passes.</item>
 /// <item>Potions above quality 45 take the last arm of their switch and are the weakest; weapon potions add to the bonus byte without limit; Strongedge and Great Power record the pack index.</item>
 /// <item>A camp guard's weapon test leaves out Impact Weapons; day jobs needing a second set of buildings are never open.</item>
@@ -31,15 +32,15 @@ namespace Darklands.Core;
 /// <item>Character generator: Esc from the childhood attributes returns to the background list at age 15, where a row then serves the adult occupation of that number.</item>
 /// <item>Character generator: saints are set with bit <c>1 &lt;&lt; (n % 8)</c> but read with <c>0x80 &gt;&gt; (n % 8)</c> (the saint learned is mirrored in its byte); a second formula of a potion increments its byte (grade 1 becomes grade 2).</item>
 /// <item>"Create a new party" fills only four of the five party slots; a slot keeps its figure colours whoever joins it; heraldry changed in the party is lost when the member leaves it.</item>
-/// <item>Packs are 64 entries with a signed count: deleting leaves stale entries, <c>keep_items_pct</c> on an empty pack makes the count −1 and the next item added goes to the entry before the pack (the previous member's last entry).</item>
-/// <item>The member data of segment 2E38 is addressed as the original lays it out: <c>has_item</c>'s formula byte and <c>set_member_bit</c>(−1) reach the packs, formula and saint tables around (<c>Party.MemoryByte</c>).</item>
+/// <item>Packs are 64 entries with a signed count: deleting leaves stale entries, <c>item-keep-percent</c> on an empty pack makes the count −1 and the next item added goes to the entry before the pack (the previous member's last entry).</item>
+/// <item>The member data of segment 2E38 is addressed as the original lays it out: <c>carries-item</c>'s formula byte and <c>member-flag-set</c>(−1) reach the packs, formula and saint tables around (<c>Party.MemoryByte</c>).</item>
 /// <item>Rows past the end of the barter, item store and loot screens' pack lists, and of the item store list, act on the stale entries there (the store's working table keeps what earlier stores left in this run).</item>
-/// <item><c>loc_reputation_adj</c>(−1) (the open country) reads a null record: one chance drawn, nothing changed.</item>
+/// <item><c>place-standing-adjust</c>(−1) (the open country) reads a null record: one chance drawn, nothing changed.</item>
 /// </list>
 /// Not reproduced (the original reads undefined memory): a loot pile row past the last entry (the
 /// pile's buffer is a fresh DOS block whose tail is freed battle memory), empty event slots in scans,
 /// the quest getters without a quest, handler 3's write through an undefined slot, and member −2's skill in
-/// <c>lower_skill_temp</c> (taken as 0 here).
+/// <c>skill-temporary-drop</c> (taken as 0 here).
 /// </remarks>
 public sealed class OriginalBehaviour
 {
@@ -48,17 +49,23 @@ public sealed class OriginalBehaviour
 
     /// <summary>
     /// The faithful game with the data-safety fixes on: the original's bugs that damage the player's data (saved games, the item
-    /// stores in CACHE.TMP) are fixed, every other quirk stays. The fixed files are still read by the original. The player's game
+    /// stores in CACHE.TMP) or end the program in play (the game since the last save lost, as a load crash loses it) are fixed, every
+    /// other quirk stays. The fixed files are still read by the original. The player's game
     /// uses this; future data-safety fixes go here (and only these).
     /// </summary>
-    public static OriginalBehaviour DataSafe => new() { FixInnCacheRewrite = true, FixCacheStoreLimit = true, FixSaveWriterSkipsEmptySlots = true };
+    public static OriginalBehaviour DataSafe => new()
+    {
+        FixInnCacheRewrite = true, FixCacheStoreLimit = true, FixSaveWriterSkipsEmptySlots = true, FixLeavingMemberRecordTail = true,
+        FixStaleDissolveSlot = true, FixDissolveKeyMember = true, FixGhostPartySlot = true, FixDamagedSavedGame = true,
+        FixRosterMissingFigure = true, FixLoadTwoSlotsOneRecord = true, FixMapQuitFreedBuffers = true,
+    };
 
     /// <summary>
     /// Leaving an item store that already has a stored list rewrites CACHE.TMP with a 101-byte header over the 198-byte header's
     /// offsets, copying the other stores from the wrong place (heap bytes, store data lost or garbled); fixed: the file is laid out
     /// as a game's file is, every store kept (the compact layout of <see cref="FixCacheStoreLimit"/>).
     /// </summary>
-    // orig: cache_save R035+0x1468 (1462:1468), data safety, data-damaging; the clean layout is load_saved_game R037+0x4184 (0x63, 0, 0x62 zero words) with cache_save(-1) appending after it
+    // orig: stash-store R035+0x1468 (1462:1468), data safety, data-damaging; the clean layout is saved-game-read R037+0x4184 (0x63, 0, 0x62 zero words) with stash-store(-1) appending after it
     public bool FixInnCacheRewrite { get; set; }
 
     /// <summary>
@@ -67,7 +74,7 @@ public sealed class OriginalBehaviour
     /// (a 126-byte table, at most 62 stores, at most 127 entries a store, stores no place refers to dropped and the rest renumbered)
     /// and Put at a place that would need more is refused, the item staying in the pack.
     /// </summary>
-    // orig: cache_save R035+0x1468 (1462:1468), the append at R035+0x1532 and the rewrite at R035+0x15A2 (cbw R035+0x1615), data safety, data-damaging
+    // orig: stash-store R035+0x1468 (1462:1468), the append at R035+0x1532 and the rewrite at R035+0x15A2 (cbw R035+0x1615), data safety, data-damaging
     public bool FixCacheStoreLimit { get; set; }
 
     /// <summary>The item stores are laid out compactly and Put is limited (either of <see cref="FixInnCacheRewrite"/>, <see cref="FixCacheStoreLimit"/>).</summary>
@@ -80,28 +87,77 @@ public sealed class OriginalBehaviour
     // orig: save writer R037+0x2ACE (1462:2ACE), data safety, data-damaging
     public bool FixSaveWriterSkipsEmptySlots { get; set; }
 
-    /// <summary><c>event_update</c> with "add" on a new event leaves 2 × value; fixed: the value.</summary>
+    /// <summary>
+    /// A member who leaves the party through <c>party-leave</c> (gone away, sent off by a card) has only the 0x80-byte member record
+    /// written back to CHARACTR.TMP: the saints, formulas and pack entries there stay as the file last had them (the member joined, the
+    /// game was loaded) while the item count is the member's own, so on rejoining the member has the old saints, formulas and items
+    /// (what was learned or gained since is lost; a count above the old list's brings stale or empty entries); fixed: the whole record
+    /// is written.
+    /// </summary>
+    // orig: party-leave R037+0x3B58 (1462:3B58), data safety, data-damaging
+    public bool FixLeavingMemberRecordTail { get; set; }
+
+    /// <summary>
+    /// A saved game cut short (a file that ends inside the header and party block, a record or the location table its own counts say it
+    /// holds: copied badly, a full disk) is loaded all the same: the original reads what the file still holds and goes on from what the
+    /// missing bytes leave in its buffers, so the game that results is garbage (a party without members, the places zeroed) or the
+    /// program ends back in DOS ("pics\shield.pic: No such file or directory" from a header cut at 0 or 96 bytes). Fixed: the load is refused before anything changes and a notice says so (the load screen or
+    /// the start screen stays); a file that holds all its records, whatever its cache or its battle file, loads as before.
+    /// </summary>
+    // orig: saved-game load R037+0x8ED4 (1C7D:0D24): each _dos_read of the header, party block, records and location block ignores a short count (checked in the emulated original: header cut at 0 or 96 bytes ends in DOS, cut at 512 or 9374 plays on)
+    public bool FixDamagedSavedGame { get; set; }
+
+    /// <summary>
+    /// The inn's roster ("reform your party"): an arrow key onto a row past the figure list (row 4 or later with the game's four figure
+    /// pictures) whose character is in the party loads "pics\small.pic", which does not exist, and the program ends (exit 99, the C
+    /// library's "No such file or directory"): the game since the last save is lost. Fixed: nothing is drawn and the roster goes on.
+    /// </summary>
+    // orig: R038+0x02F8 (the arrows, R038+0x045F..0x04CA): "pics\" (DS:4A3D) + the 4-byte entry DS:E7E2 + 4 x DS:E7DA + "small.pic" (DS:4A43),
+    //   root 0617:045C, whose opener root 0617:000E ends the program on a missing file (root 0617:067E: mode 3, perror, exit(99)); data safety, a crash
+    public bool FixRosterMissingFigure { get; set; }
+
+    /// <summary>
+    /// A saved game whose two party slots name one character record: the load reads the record into the first slot only, the second
+    /// keeps a shield letter of 0, and the load screen's shield pictures then ask for "pics\shield.pic", which does not exist: the program
+    /// ends (exit 99). Fixed: the game goes on with that slot empty (its id kept, so the save is written back as it was).
+    /// </summary>
+    // orig: saved-game-read R037+0x8ED4 (R037+0x96BE..0x96D3), the load screen R037+0x84BA (R037+0x86DA..0x8754 "pics\shield<letter>.pic"
+    //   for every slot whose id is not -1), measured live: lockstep session carry-dup-resave (synthetic save dup01), program exit 99 at
+    //   R037+0x84BA+0x29F; data safety, a load crash
+    public bool FixLoadTwoSlotsOneRecord { get; set; }
+
+    /// <summary>
+    /// Alt-Q read by the travel map's own key look frees the map's row and cell buffers before it asks "Quit to DOS?"; after "no" the
+    /// map goes on without them, and the next free of one (a second Alt-Q, the camp, a portrait click, leaving the map) frees a buffer
+    /// already freed: the memory manager ends the program ("M - Buffer dealloc error", "S - ...", "Map - ...", exit 0). Fixed: the map
+    /// keeps its buffers.
+    /// </summary>
+    // orig: R030+0x0FD8..0x101B, then R030+0x0F06 (camp), R030+0x031F (portrait), R030+0x026C (map exit) (root 05BA:00C2 with handle 0: root 044A:0164 fails, root 0000:1354, DOS function 9, exit(0));
+    //   measured: session tk-map-altq-twice (local/batch/mapquit); data safety, a crash
+    public bool FixMapQuitFreedBuffers { get; set; }
+
+    /// <summary><c>event-advance</c> with "add" on a new event leaves 2 × value; fixed: the value.</summary>
     public bool FixNewEventAddDoubles { get; set; }
 
-    /// <summary><c>set_attr_max</c> ignores its 0..99 limit; fixed: the limit applies.</summary>
+    /// <summary><c>stat-cap-assign</c> ignores its 0..99 limit; fixed: the limit applies.</summary>
     public bool FixSetAttributeMaximumLimit { get; set; }
 
-    /// <summary><c>member_best_skill</c> always reports skill 6; fixed: the best skill's number.</summary>
+    /// <summary><c>member-top-skill</c> always reports skill 6; fixed: the best skill's number.</summary>
     public bool FixBestWeaponSkillNumber { get; set; }
 
     /// <summary>The attribute-sum queries record 2 × a; fixed: a + b.</summary>
     public bool FixAttributeSums { get; set; }
 
-    /// <summary><c>loc_hostile</c>'s unrest test has its arguments swapped; fixed: unrest here.</summary>
+    /// <summary><c>place-hostile</c>'s unrest test has its arguments swapped; fixed: unrest here.</summary>
     public bool FixHostileUnrestTest { get; set; }
 
-    /// <summary><c>loc_set</c> 6 and 11 write each other's shop; fixed: the shop <c>loc_query</c> reads.</summary>
+    /// <summary><c>place-assign</c> 6 and 11 write each other's shop; fixed: the shop <c>place-query</c> reads.</summary>
     public bool FixShopSetSwap { get; set; }
 
-    /// <summary><c>loc_set</c> 37 overwrites every occupied slot; fixed: the list shifts.</summary>
+    /// <summary><c>place-assign</c> 37 overwrites every occupied slot; fixed: the list shifts.</summary>
     public bool FixRecordedListShift { get; set; }
 
-    /// <summary><c>add_item_rec</c>(−2) gives each member the items twice; fixed: once.</summary>
+    /// <summary><c>give-item-record-form</c>(−2) gives each member the items twice; fixed: once.</summary>
     public bool FixPartyItemsAddedTwice { get; set; }
 
     /// <summary>
@@ -111,45 +167,45 @@ public sealed class OriginalBehaviour
     public bool FixEverybodyBoostsUndone { get; set; }
 
     /// <summary>
-    /// <c>set_member_bit</c>(−1) does not resolve the leader: the saint is not learned and member
+    /// <c>member-flag-set</c>(−1) does not resolve the leader: the saint is not learned and member
     /// 4's formula bytes get the bit; fixed: the leader learns it.
     /// </summary>
     public bool FixSaintLearnedByLeader { get; set; }
 
     /// <summary>
-    /// St.Cecilia's standing goes to <c>cur_loc</c> even in the open country (−1: a null record,
+    /// St.Cecilia's standing goes to <c>location-now</c> even in the open country (−1: a null record,
     /// nothing changes), where the other saints take the nearest city; fixed: the nearest city.
     /// </summary>
     public bool FixSaintStandingInOpenCountry { get; set; }
 
     /// <summary>
-    /// A saint's weapon-skill boost (<c>equip_bonuses</c>) for a prayer for the party (−1) looks up
+    /// A saint's weapon-skill boost (<c>gear-bonus-sums</c>) for a prayer for the party (−1) looks up
     /// the equipped weapons of the record before the members' (menu-bar words), finds none and
     /// changes nothing; fixed: the leader's weapons.
     /// </summary>
     public bool FixSaintWeaponSkillsForParty { get; set; }
 
-    /// <summary><c>keep_items_pct</c> starts one past the last stack; fixed: at the last stack.</summary>
+    /// <summary><c>item-keep-percent</c> starts one past the last stack; fixed: at the last stack.</summary>
     public bool FixKeepItemsOffByOne { get; set; }
 
-    /// <summary><c>item_quality_flags</c> tests item 0's flags; fixed: each stack's.</summary>
+    /// <summary><c>item-grade-flags</c> tests item 0's flags; fixed: each stack's.</summary>
     public bool FixItemQualityByFlags { get; set; }
 
     /// <summary>
-    /// <c>lower_skill_temp</c>(−2) boosts everybody once per present member; and
-    /// <c>raise_attr_temp</c>(−2) stops at a member above the boost and carries the reduced
+    /// <c>skill-temporary-drop</c>(−2) boosts everybody once per present member; and
+    /// <c>stat-temporary-boost</c>(−2) stops at a member above the boost and carries the reduced
     /// boost on. Fixed: each present member gets the boost once.
     /// </summary>
     public bool FixWholePartyBoosts { get; set; }
 
-    /// <summary><c>run_battle</c> adds the party seed to a location seed twice; fixed: once.</summary>
+    /// <summary><c>battle-driver</c> adds the party seed to a location seed twice; fixed: once.</summary>
     public bool FixBattleSeed { get; set; }
 
     /// <summary>The fame cost sets fame to cost − fame; fixed: fame − cost.</summary>
     public bool FixFameCost { get; set; }
 
     /// <summary>
-    /// <c>groups_fixup</c> drops every enemy group after the first empty one (it shifts the groups
+    /// <c>groups-repair</c> drops every enemy group after the first empty one (it shifts the groups
     /// but keeps testing the stale counter); fixed: only empty groups are dropped.
     /// </summary>
     public bool FixEnemyGroupCompaction { get; set; }
@@ -175,7 +231,7 @@ public sealed class OriginalBehaviour
     public bool FixShopStockSize { get; set; }
 
     /// <summary>
-    /// <c>cloud_blocks_line</c> loops to the cloud count inclusive, so the slot after the last
+    /// <c>cloud-on-line-test</c> loops to the cloud count inclusive, so the slot after the last
     /// effect cloud (an old cloud's copy) still blocks shots; fixed: only the clouds there are.
     /// </summary>
     public bool FixCloudLineOneTooMany { get; set; }
@@ -206,6 +262,36 @@ public sealed class OriginalBehaviour
     public bool FixLootExitTestReadsWords { get; set; }
 
     /// <summary>
+    /// Dissolve Lock uses up the pack entry the Eater-Water was found at (DS:C7CD, a byte) when the order was given or, for the leader,
+    /// at the last tick, whatever the pack holds when the member acts: after an item given or dropped on the character sheet in order
+    /// mode it is another stack, or the stale entry past the last one (the last stack is then lost, an empty pack's count becomes −1),
+    /// and with the Eater-Water gone (slot 0xFF) entry 255 lies in another member's pack or past the packs. Fixed: only an Eater-Water is
+    /// used up, the weakest one the pack still holds (none: nothing).
+    /// </summary>
+    // orig: fighter-goto-action R014+0x2256..0x2263 (use-up-slot 18BF:0FA4 with DS:C7CD[m]), data safety, data-damaging
+    public bool FixStaleDissolveSlot { get; set; }
+
+    /// <summary>
+    /// The Devil's Bridge Crossing (a won argument, then the battle lost or fled) sets the status of party slot DS:EE8E to able, a
+    /// variable the won argument never assigned (the slot of the member the demon took in an earlier crossing, or a start value): the
+    /// slot just emptied by dismissing the away members comes back with status 1 but no character record (id −1, the roster one short):
+    /// a ghost member in a saved game. Fixed: a slot that was emptied stays empty.
+    /// </summary>
+    // orig: R088+0x05C6..0x05CF and R088+0x060E..0x0617 (`mov bx,[EE8E]; shl bx,7; mov byte [bx-6397h],1`), data safety, data-damaging
+    public bool FixGhostPartySlot { get; set; }
+
+    /// <summary>
+    /// The Dissolve key (D) outside order mode, where the leader dissolves the lock, uses up the pack entry at member 0's slot byte
+    /// (DS:C7CD) of the selected member (DS:A6B2): the party member under the pointer, else nobody (−1). With the pointer on another
+    /// member that member's stack at member 0's slot is used up, whatever it is (or the stale entry past his last one: the last stack is
+    /// then lost); with nobody selected the entry 64 before member 0's (before the packs, or with slot 0xFF member 2's entry 63) and the
+    /// count byte 0x80 before member 0's (DS:9C53). The leader's own Eater-Water is used up only when the pointer is on member 0 and he leads.
+    /// Fixed: the leader's Eater-Water is used up (his slot byte, as Dissolve Lock's, with <see cref="FixStaleDissolveSlot"/>).
+    /// </summary>
+    // orig: R016+0x0F9A..0x0FBA (use-up-slot 18BF:0FA4 of DS:A6B2 with the byte DS:C7CD), data safety, data-damaging
+    public bool FixDissolveKeyMember { get; set; }
+
+    /// <summary>
     /// Enter travelling individually with nobody selected (after the button held over a member and let go elsewhere) leaves order
     /// mode giving that member's last order to "member -1": the bytes before the tables, among them the pause byte (bits 0x10 and
     /// 0x02), the last combatant's exchange state, repath and give-up times, and the "USE STAIRS" message with the party split. Fixed:
@@ -215,12 +301,12 @@ public sealed class OriginalBehaviour
     public bool FixLeaveOrderModeWithoutSelection { get; set; }
 
     /// <summary>
-    /// <c>level_switch</c> saves the level it leaves only when DS:D4E4 is set, and <c>take_exit</c> writes the stairs record's
+    /// <c>level-change</c> saves the level it leaves only when DS:D4E4 is set, and <c>use-exit</c> writes the stairs record's
     /// +0x07 byte (0xFF: its wall group is uncovered) before that switch without setting it: after a switch with DS:D4E4 clear
     /// (and at the battle's end) the level comes back without the write, so the wall group opens again on the next use. Fixed: the
     /// write always persists.
     /// </summary>
-    // orig: take_exit R023+0x1618 (the write at R023+0x1657, the switch at R023+0x16C7, DS:D4E4 set at R023+0x1764), level_switch R024+0x05B4, battle save R003+0x0132
+    // orig: use-exit R023+0x1618 (the write at R023+0x1657, the switch at R023+0x16C7, DS:D4E4 set at R023+0x1764), level-change R024+0x05B4, battle save R003+0x0132
     public bool FixStairsWallMarkLost { get; set; }
 
     /// <summary>
@@ -228,7 +314,7 @@ public sealed class OriginalBehaviour
     /// screen opens; leaving that screen with Esc goes on with that emptied game; fixed: Esc goes
     /// back to the game as it was.
     /// </summary>
-    // orig: load_game R037+0x8B76 (1C7D:09C6) matched: `party[i][0] = 0` and the events freed, then R037+0x81B2 and longjmp(DS:A752, -1) whatever it returned
+    // orig: game-load-entry R037+0x8B76 (1C7D:09C6) matched: `party[i][0] = 0` and the events freed, then R037+0x81B2 and longjmp(DS:A752, -1) whatever it returned
     public bool FixLoadScreenEscape { get; set; }
 
     /// <summary>

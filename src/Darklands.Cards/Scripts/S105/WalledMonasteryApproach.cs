@@ -20,7 +20,7 @@ public sealed class WalledMonasteryApproach : Card
     {
         Show(c, MonasteryPicture);
         c.Next = Number;
-        // C: cur_loc % 2 is C's signed remainder; only its non-zero-ness counts.
+        // C: location-now % 2 is C's signed remainder; only its non-zero-ness counts.
         var menu = Menu(c, c.Here % 2 != 0 ? 0 : 1);
         menu.Set(OptionState.Enabled, 0, 1, 2, 7);
         if (c.EventAtHere(0x5A))
@@ -44,7 +44,7 @@ public sealed class WalledMonasteryApproach : Card
                 1, 99), c.Leader)),
             // orig: R105+0x1814 (line 2); hint R105+0x18DC (1954:071C) matched
             new MenuLine(_ => PrayForInsight(c), () => OptionHint.Say("Select a person and a saint.")),
-            // DORMANT: lines 3..6, 8 and 9 are never offered (opt_flag = 0); each lets no time pass (cited per line below).
+            // DORMANT: lines 3..6, 8 and 9 are never offered (option-flag = 0); each lets no time pass (cited per line below).
             // orig: R105+0x1914 (line 3)
             new MenuLine(_ => c.PassHours(0), Assured),
             // orig: R105+0x1958 (line 4)
@@ -53,7 +53,7 @@ public sealed class WalledMonasteryApproach : Card
             new MenuLine(_ => c.PassHours(0), Assured),
             // orig: R105+0x19E0 (line 6)
             new MenuLine(_ => c.PassHours(0), Assured),
-            // orig: R105+0x1A24 (1954:0864) matched (leaves without clearing cur_loc)
+            // orig: R105+0x1A24 (1954:0864) matched (leaves without clearing location-now)
             new MenuLine(_ => c.Next = CardContext.MapCard, Assured),
             // orig: R105+0x1A64 (line 8)
             new MenuLine(_ => c.PassHours(0), Assured),
@@ -67,7 +67,7 @@ public sealed class WalledMonasteryApproach : Card
     internal static int MonasteryKind(CardContext c) => (c.Here % 10) switch { < 5 => 0, < 8 => 1, _ => 2 };
 
     /// <summary>A well-spoken, charming leader of fair standing is always admitted.</summary>
-    // C: the hint also stores loc_reputation(cur_loc) in cur_rep (DS:EE74), which this card never reads.
+    // C: the hint also stores place-standing(location-now) in reputation-now (DS:EE74), which this card never reads.
     private static OptionHint AdmittanceHint(CardContext c)
     {
         var standing = c.HereQuery(0);
@@ -139,7 +139,7 @@ public sealed class WalledMonasteryApproach : Card
 
     /// <summary>The people in the fields talk of a happy or a harsh life; in a corrupt monastery they only sometimes do.</summary>
     // orig: R105+0x16BC (1954:04FC) matched; tests: CardSmokeTests
-    // C: `cur_loc % 10 < 8 || rand_mod(2)`: the coin is drawn only for a corrupt house (short-circuit).
+    // C: `location-now % 10 < 8 || roll-below(2)`: the coin is drawn only for a corrupt house (short-circuit).
     private static void TalkInTheFields(CardContext c, CardMenu menu, int chance)
     {
         var told = false;
@@ -175,7 +175,7 @@ public sealed class WalledMonasteryApproach : Card
     private static void PrayForInsight(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

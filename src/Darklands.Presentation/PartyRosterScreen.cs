@@ -32,7 +32,10 @@ public sealed class PartyRosterScreen
     private const byte NameColor = 0x10;
     private const byte NameShadow = 0x11;
     private const byte Highlight = 0x12;
-    private const int FirstFigureColor = 237;
+    // orig: the figure colours DS:E753..DS:E76A, written into the current palette block (DS:E48C) and set (root 047C:058B), are colours
+    // 235..242 on the screen, not 237..244: the original's DAC after A in the creation menu (R037+0x0B9C..0x0C88) holds the 24 start bytes
+    // there (vis10 session D-b0c9a6) (R038 writes the same DS:E753).
+    private const int FirstFigureColor = 235;
 
     /// <summary>The commands from top to bottom: label text, the key a click on the row gives, the label's y.</summary>
     // orig: R038+0x0000 the click rows (y 0x2D + 15 x row) and their keys; R038+0x25CA the labels at (0x48, 0x30 + 15 x row)
@@ -80,7 +83,8 @@ public sealed class PartyRosterScreen
     // and 0x1372 leave (R038+0x01FE(0)); another key goes to R038+0x02F8, whose 0x11B leaves (R038+0x01FE(1))
     // C: the row of a click is a signed division by 15 (commands) and by 8 (the list), of positive values here.
     // C: the hot keys run inside root 0000:0000 before the key is read: Alt-Q never reaches the handler's own 0x1000 case.
-    // UNCERTAIN: SI is taken to come through the thunk 09C0:1EE1 unchanged (the overlay manager is taken to keep it).
+    // C: SI comes through the thunk 09C0:1EE1 unchanged: the overlay manager's entry (root 09C0:052B) pushes SI at 09C0:0533 and pops it at 09C0:059F before
+    //   it passes control to the function.
     public void Run(GameState state, int callerWord)
     {
         _state = state;
@@ -209,7 +213,10 @@ public sealed class PartyRosterScreen
     }
 
     /// <summary>AX after a graphics driver call (a picture drawn, the palette set, the pointer shown).</summary>
-    // UNCERTAIN: the driver's AX is taken never to be 0x11B (it would end the screen).
+    // C: the handler's driver exits leave AX = 0x08F4 (the box drawn, then pointer-show root 047C:1293 at R038+0x09D0: Add, Heraldry,
+    //   Select Image) or 0xFF36 (the colour keys' palette set) with the game's own MGRAPHIC, every time: the roster sessions roster,
+    //   roster-colours and roster-moves run without their state steps by vis10 with the handler's exits hooked (R038+0x23E8: 85 colour keys,
+    //   11 A, 1 H, 4 S), never 0x11B; C (create) ends at the same pointer-show exit. Only the comparison with 0x11B reads it, so 0 stands for them.
     private const int ResultOfDriver = 0;
 
     /// <summary>The arrows: the highlight moves (wrapping on DS:E7DC), the figure place is cleared and the figure of the slot holding the ROW's number drawn.</summary>
@@ -218,9 +225,14 @@ public sealed class PartyRosterScreen
     // PICS\ + the figure list's entry of the ROW + SMALL.PIC, the slot's colours into the shared ones, the palette set, the figure drawn at
     // (0x0C, 0xA4) for Up / Left / Right and at (0x46, 0xA5) for Down; no slot: AX is DS:E7DA (the search's last load)
     // C: Up, Left and Right draw the figure at (0x0C, 0xA4), over the fifth row of the party column, where the creation menu has it.
-    // DIVERGENCE: a row past the figure list (DS:E7E2, one 4-byte name per figure picture, indexed by the row DS:E7DA) whose number a party slot
-    // holds names "pics\small.pic", which does not exist: the original's picture load (root 0617:045C from R038+0x04CA) ends the program
-    // (exit 99, "pics\small.pic: No such file or directory", root 06A1:01F0); here nothing is drawn and the screen goes on.
+    // BUG: OriginalBehaviour.FixRosterMissingFigure - a row past the figure list (DS:E7E2, one 4-byte name per figure picture, indexed by the
+    //   row DS:E7DA) whose number a party slot holds names "pics\small.pic" (R038+0x045F..0x04C3: "pics\" DS:4A3D + the entry + "small.pic"
+    //   DS:4A43; the entries past the list are zeros: the list filler R037+0x4562 writes only its files' entries and nothing else writes
+    //   DS:E7F2..DS:E809), which does not exist: the picture load root 0617:045C (R038+0x04CA) calls the opener root 0617:000E, which ends
+    //   the program (root 0617:067E: mode 3, perror, exit(99)); reproduced: ProgramExitException. Fixed (data safety, DataSafe): nothing is
+    //   drawn and the screen goes on.
+    // DIVERGENCE: a row of 10 or more reads its name past DS:E809, in other globals (DS:E80A, written by R037+0x3927, and on): taken as
+    //   empty here (the same exit), where the original's name may begin with those bytes (a file named so is still all but surely missing).
     private int Arrow(bool up)
     {
         Screen.Recolor(0xC6, (Menu.Selected << 3) + 0x16, 0x71, 8, Highlight, NameColor);
@@ -242,6 +254,10 @@ public sealed class PartyRosterScreen
         if (Menu.Selected >= 0 && Menu.Selected < _images.Count)
         {
             DrawFigure(_images[Menu.Selected], up ? 0x0C : 0x46, up ? 0xA4 : 0xA5);
+        }
+        else if (Menu.Selected >= _images.Count && !_state.Behaviour.FixRosterMissingFigure)
+        {
+            throw ProgramExitException.FileNotFound("pics\\small.pic");
         }
         return ResultOfDriver;
     }
@@ -276,7 +292,7 @@ public sealed class PartyRosterScreen
                 {
                     DrawFigure(_images[0], 0x46, 0xA5);
                 }
-                PartyPanel.DrawFrame(Screen, _ui.Assets.CommonSprites, slot, lit: false);
+                PartyPanel.DrawFrame(Screen, _ui.Assets.CommonSprites, slot, lit: _ui.PanelSelection[slot]);
                 _panel.DrawRow(Screen, _state.Party, slot);
                 break;
         }
@@ -348,7 +364,7 @@ public sealed class PartyRosterScreen
     /// <summary>1, 2, 3: the next colours of a part of the figure of the slot holding the ROW's number; no button.</summary>
     // orig: R038+0x02F8 keys 0x231/0x4F31, 0x332/0x5032, 0x433/0x5133: with DS:E7DC > 0; InnRoster.CycleColour, the palette set; no slot: AX is
     // DS:E7DA (the search's last load)
-    // C: the shared colours are the current palette's colours 237..244 (DS:E753 is the current palette DS:E48C + 3 x 237): read from the screen here.
+    // C: the shared colours are the current palette's colours 235..242 (DS:E753 is the current palette's colour 235): read from the screen here.
     private int Colour(int key)
     {
         if (Menu.Count <= 0)
@@ -392,7 +408,7 @@ public sealed class PartyRosterScreen
         {
             if (_state.Party.Slot(i).IsPresent)
             {
-                PartyPanel.DrawFrame(Screen, _ui.Assets.CommonSprites, i, lit: false);
+                PartyPanel.DrawFrame(Screen, _ui.Assets.CommonSprites, i, lit: _ui.PanelSelection[i]);
                 _panel.DrawRow(Screen, _state.Party, i);
             }
         }
@@ -440,7 +456,7 @@ public sealed class PartyRosterScreen
         }
     }
 
-    /// <summary>The shared figure colours into colours 237..244 (the palette set).</summary>
+    /// <summary>The shared figure colours into colours 235..242 (the palette set).</summary>
     private void ApplyFigureColours()
     {
         var p = Menu.Colours.Palette;
@@ -450,7 +466,7 @@ public sealed class PartyRosterScreen
         }
     }
 
-    /// <summary>Colours 237..244 of the screen into the shared figure colours (6-bit values).</summary>
+    /// <summary>Colours 235..242 of the screen into the shared figure colours (6-bit values).</summary>
     private void ReadFigureColours()
     {
         var p = Menu.Colours.Palette;

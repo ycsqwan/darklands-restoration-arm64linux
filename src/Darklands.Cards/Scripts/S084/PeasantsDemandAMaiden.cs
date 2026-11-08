@@ -96,7 +96,7 @@ public sealed class PeasantsDemandAMaiden : Card
     // orig: R084+0x0C54 (18DB:0224) matched; tests: CardSmokeTests
     private static void Fight(CardContext c, int ambush)
     {
-        // C: arguments are evaluated right to left: rand_mod(3) + 2 (second group) first.
+        // C: arguments are evaluated right to left: roll-below(3) + 2 (second group) first.
         var second = c.Random(3) + 2;
         var first = c.Random(3) + c.PartyLoreLevel() / 4 + 1;
         switch (c.RunBattle(0x42, -1, 0x35, first, second, -1, 0, 0, -1, ambush, 0))
@@ -237,7 +237,7 @@ public sealed class PeasantsDemandAMaiden : Card
     // orig: R084+0x123A (18DB:080A) matched; R084+0x1334 (18DB:0904) matched; tests: CardSmokeTests
     private static void CallASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

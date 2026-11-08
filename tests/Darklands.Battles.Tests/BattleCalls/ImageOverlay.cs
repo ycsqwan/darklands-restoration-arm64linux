@@ -250,7 +250,7 @@ internal static class ImageOverlay
         var status = Combatants + Record * k + 0x14;
         if (k >= Combatant.PartySlots && input.Ds[status] == 0 && expected.Ds[status] == 0 && ds != status)
         {
-            // an enemy slot empty before and after: enemies_place tries its spots in the free record (R025) and leaves what it wrote there when
+            // an enemy slot empty before and after: enemy-placement-entry tries its spots in the free record (R025) and leaves what it wrote there when
             // no spot is found; an empty record's bytes are read by nothing until a placement fills it
             return true;
         }
@@ -311,6 +311,13 @@ internal static class ImageOverlay
             if (expected.Far2[i] != actual.Far2[i] && TacticsOverlay.DescribeFar2(i) is { } what)
             {
                 lines.Add($"{what} (far2:{i:X4}): original {expected.Far2[i]:X2}, rewrite {actual.Far2[i]:X2}" + (input?.Far2 is null ? "" : $" (input {input.Far2[i]:X2})"));
+            }
+        }
+        for (var i = 0; expected.Wave is not null && actual.Wave is not null && i < expected.Wave.Length && lines.Count < limit; i++)
+        {
+            if (expected.Wave[i] != actual.Wave[i])
+            {
+                lines.Add($"wave record +0x{i:X2} (7D44 segment:{0xBE2 + i:X4}): original {expected.Wave[i]:X2}, rewrite {actual.Wave[i]:X2}" + (input?.Wave is null ? "" : $" (input {input.Wave[i]:X2})"));
             }
         }
         for (var i = 0; expected.Far3 is not null && actual.Far3 is not null && i < expected.Far3.Length && lines.Count < limit; i++)

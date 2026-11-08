@@ -26,7 +26,10 @@ public sealed class PrisonCellsRescue : Card
         menu[2] = c.ItemsUsable();
         menu[3] = c.SaintsUsable();
 
-        menu.Popup = () => c.MemberPopupHint();
+        // C: the standard pop-up handlers name the member picked in the box: the item box's say "Success is assured." beside the
+        // C: member (R115+0x1562..), the saint box's tell the prayer's chance for the party (R115+0x1652..).
+        menu.ItemBox = () => c.MemberPopupHint();
+        menu.SaintBox = c.SaintPopupHint;
 
         return menu.Run(
             // orig: R115+0x1000 (1901:0370) matched; hint R115+0x1058
@@ -58,9 +61,10 @@ public sealed class PrisonCellsRescue : Card
     /// $ChosenTwoName and is named in $Named1; then the party is out in the street.
     /// </summary>
     // orig: R115+0x0F8A (1901:02FA) matched; tests: CardSmokeTests
-    // C: var_chosen2 = party_add(*events[v = event_find(0x4D, ...)]): the event's first word (its type) is the character.
+    // C: text-slot-chosen-two = party-join(*events[v = event-search(0x4D, ...)]): the event's first word (its type) is the character.
     // DIVERGENCE: without such an event the original reads events[-1]; here nobody joins (-1).
-    // UNCERTAIN: when nobody can join (-1), the original copies the name at party[-1] + 0x11; the leader's name is used.
+    // DORMANT: when nobody can join (-1: the 0x4D event is gone), the original copies the name at party[-1] + 0x11; the leader's name is used. Both ways to this
+    //   card (CitySquareAtNight, CouncilHall) offer it only while the event exists.
     private static void FreeTheFriend(CardContext c)
     {
         var note = c.Events.Find(0x4D, -1, c.Here, -1, -1, -1);
@@ -92,7 +96,7 @@ public sealed class PrisonCellsRescue : Card
 
     /// <summary>The potion (used up) blinds the guards by its quality; failing, they attack. The city's goodwill suffers a little either way.</summary>
     // orig: R115+0x10D2 (1901:0442) matched; tests: CardSmokeTests
-    // C: the chance is the potion's quality, read (with var_chosen1 = menu_member) before it is taken.
+    // C: the chance is the potion's quality, read (with text-slot-chosen-one = menu-owner-member) before it is taken.
     private static void ThrowAPotion(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
@@ -117,7 +121,7 @@ public sealed class PrisonCellsRescue : Card
     // C: the rescue writes the friend's name into $Named1, so the saint's name is written again after it.
     private static void CallOnASaint(CardContext c)
     {
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var answer = c.InvokeSaint(c.MenuMember, saint);
         if (answer == -1)
         {
@@ -147,9 +151,9 @@ public sealed class PrisonCellsRescue : Card
     /// remembers the attack (kind 0x11) for five or ten days.
     /// </summary>
     // orig: R115+0x0EEC (1901:025C) matched; tests: CardSmokeTests
-    // C: the seed argument is cur_loc + 0x6F (a fixed seed per city); rand_mod(5) + 3 is the only draw.
+    // C: the seed argument is location-now + 0x6F (a fixed seed per city); roll-below(5) + 3 is the only draw.
     // COVERAGE GAP (reachable: result 5 with a member left Away by an earlier flight; no oracle run ended so): result 5 takes the default arm and skips to the reputation change.
-    // DORMANT: the switch's explicit cases -0x40..-1 skip to the reputation change, and results 6 and above (pit, timed exit) cannot occur on this object-less battlefield; run_battle never gives them.
+    // DORMANT: the switch's explicit cases -0x40..-1 skip to the reputation change, and results 6 and above (pit, timed exit) cannot occur on this object-less battlefield; battle-driver never gives them.
     private static void FightTheGuards(CardContext c)
     {
         var guards = c.Random(5) + 3;

@@ -18,7 +18,7 @@ public sealed class BeforeTheCityWalls : Card
     public override int Run(CardContext c)
     {
         c.PlaySound(6);
-        // C: % keeps the sign; a negative remainder chooses no picture and pic_buf keeps the last one.
+        // C: % keeps the sign; a negative remainder chooses no picture and image-buffer keeps the last one.
         var picture = (c.HereQuery(0x21) % 3) switch
         {
             0 => 4,
@@ -26,24 +26,22 @@ public sealed class BeforeTheCityWalls : Card
             2 => 7,
             _ => -1,
         };
-        // DIVERGENCE: the original only fills the name and picture buffers (no card_load): the screen
-        // keeps the previous card ($CityE00, card 4, when the party comes from the city entry) until
-        // the engine redraws it from these buffers. It is shown here at once.
-        // C: a negative remainder leaves pic_buf as the last card left it, and the engine draws the card's texts with it.
-        if (picture >= 0)
-        {
-            Show(c, picture);
-        }
-        else
-        {
-            c.Screen.ShowWithTheLastPicture(Name);
-        }
+        // BUG: the card (R072+0x1494) never calls card-run: it only fills card-title and image-buffer (a negative remainder
+        // leaves image-buffer as the last card left it), so the screen keeps the previous card's picture and the
+        // option list (block 0) and the result texts are read from the previous card's message file (the
+        // boat landing's $Enter00, the initial test card's $Initi00, the sally port's $CityW03 or $CityW05),
+        // until the dawn wait's card-run-near, a member's sheet, the party information or a battle has
+        // $CityE00 loaded (see NameTheCard).
+        // DIVERGENCE: a block the previous card's file does not have ($Initi00 has 1 block, $CityW05 11, $Enter00 11) is printed from
+        //   text-bank-file + text-bank-index.ofs[n], an entry text-bank-read (R043+0x020E) did not set: undefined memory (what an earlier, longer file left;
+        //   01 0a 0e under the oracle for block 5 after $Initi00); the C# prints an empty text.
+        c.Screen.NameTheCard(Name, picture >= 0 ? PictureNames.Of(picture) : null);
         c.Next = Number;
-        // C: only opt_on[0..4] are copied each round; lines 5..9 keep the previous card's opt_on and
-        // opt_fn (and the switch has no case for them), so they are offered hidden here.
+        // C: only card-option-enabled[0..4] are copied each round; lines 5..9 keep the previous card's card-option-enabled and
+        // card-option-handler (and the switch has no case for them), so they are offered hidden here.
         var menu = Menu(c, 0);
         menu.Enable(0, 1, 2, 3, 4);
-        // C: cur_rep is read (loc_reputation) but not used by this card.
+        // C: reputation-now is read (place-standing) but not used by this card.
         _ = c.Reputation(c.Here);
         if (c.EventAtHere(0x1E))
         {
@@ -93,6 +91,7 @@ public sealed class BeforeTheCityWalls : Card
         if (!c.IsDaylight)
         {
             // DIVERGENCE: $CityE00.msg has no block 9; the original prints what follows the last block (bytes 07 02 0A under the oracle), the C# nothing.
+            // C: with the previous card's file still loaded (see Run) both print that file's block 9 when it has one.
             c.Screen.Text(9, TextFrame.BlankPage);
             c.WaitUntilHour(5);
         }
@@ -128,10 +127,10 @@ public sealed class BeforeTheCityWalls : Card
         c.ExtendEventHere(Core.Events.EventKinds.Unrest, 24);
         c.PracticeSkill(Who.Everybody, (int)Skill.Stealth, 0, 10, 0);
         menu[3] = OptionState.Shown;
-        // C: loc_query(cur_loc, 2) is called and its result dropped.
+        // C: place-query(location-now, 2) is called and its result dropped.
         _ = c.LocationQuery(c.Here, 2);
-        // C: arguments right to left: the officers' quality (rand_mod(3) + 1) is drawn first, then the
-        // guards' number (rand_mod(5)), then their quality (rand_mod(3)).
+        // C: arguments right to left: the officers' quality (roll-below(3) + 1) is drawn first, then the
+        // guards' number (roll-below(5)), then their quality (roll-below(3)).
         var officerQuality = c.Random(3) + 1;
         var guards = c.Random(5) + 4;
         var guardQuality = c.Random(3) + c.PartyLoreLevel() / 4 + 1;
@@ -146,6 +145,10 @@ public sealed class BeforeTheCityWalls : Card
                 c.Next = Number;
                 return;
             case 3:
+                // DIVERGENCE: $CityE00.msg has 7 blocks, so blocks 7 (result 3) and 8 (result 4) do not exist: text-bank-read (R043+0x020E) sets
+                //   text-bank-index.ofs[0..6] only and card-text-block prints text-bank-file + the stale ofs[7] / ofs[8] a message file with more blocks left
+                //   there earlier in the session (0 after start-up: the file's header bytes, 07 02 0A under the oracle); not game state,
+                //   the C# prints nothing.
                 c.Screen.Text(7, TextFrame.BlankPage);
                 Disgrace(c);
                 c.State.CurrentLocation = -1;
@@ -164,7 +167,7 @@ public sealed class BeforeTheCityWalls : Card
     }
 
     /// <summary>The city's opinion falls by 40, unless it is already at −40 or below.</summary>
-    // BUG: at −40 or below the original draws improve_roll(v, −3, −9) and drops the result, so the
+    // BUG: at −40 or below the original draws improvement-roll(v, −3, −9) and drops the result, so the
     // standing stays as it is (the draw is still made).
     private static void Disgrace(CardContext c)
     {

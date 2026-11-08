@@ -34,6 +34,9 @@ import platform
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import local_dir  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 FORMAT = 2
@@ -46,7 +49,7 @@ COMPARE_SIDE = {"lockstep", "battle_oracle", "savdiff", "diff_runs"}
 
 
 def default_folder() -> Path:
-    return Path(os.environ.get("DARKLANDS_ORACLE_RECORDINGS") or REPO / "local" / "oracle-recordings")
+    return Path(os.environ.get("DARKLANDS_ORACLE_RECORDINGS") or Path(local_dir()) / "oracle-recordings")
 
 
 def sha(data: bytes) -> str:
@@ -145,7 +148,42 @@ class Recording:
         tmp = self.path.with_name(self.path.name + ".%d.tmp" % os.getpid())
         with gzip.open(tmp, "wb", compresslevel=3) as f:
             pickle.dump({"format": FORMAT, "key": self.key, "parts": self.parts, "payload": payload}, f, protocol=4)
-        os.replace(tmp, self.path)
+        replace_shared(tmp, self.path, key=self.key)
+
+
+def replace_shared(tmp, target, tries: int = 40, key: str | None = None):
+    """os.replace for a file that several workers store at the same time (workers of one pass that start from the same state): on Windows the
+    replace fails with PermissionError while another worker's replace or a reader holds the target. Retry; if the target exists after the tries:
+    a snapshot (key None: its name is its key, so it holds the same state) is kept and our copy dropped; a recording (its name is the job's, not
+    its key) is kept only when it holds our key, else the store fails (an older recording must not stand in for this run). A line is printed
+    either way. Tester only (2026-10-27: three fights of the live pass, mine / castle / city13, died here and left no report)."""
+    import time
+    for n in range(tries):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if n >= tries - 1:
+                break
+            time.sleep(0.05 * (n + 1))
+    if Path(target).is_file():
+        if key is not None:
+            try:
+                with gzip.open(target, "rb") as f:
+                    held = pickle.load(f).get("key")
+            except Exception as e:      # still being written, or unreadable
+                held = "unreadable (%s)" % type(e).__name__
+            if held != key:
+                print("recording %s: not replaced after %d tries and it holds another key (%s): store failed" % (Path(target).name, tries, held), flush=True)
+                raise PermissionError("%s could not be replaced (it holds another key)" % target)
+        print("%s %s: not replaced after %d tries; the existing file holds the same %s, kept" % (
+            "recording" if key is not None else "snapshot", Path(target).name, tries, "key" if key is not None else "state"), flush=True)
+        try:
+            Path(tmp).unlink()
+        except OSError:
+            pass
+        return
+    os.replace(tmp, target)
 
 
 class Snapshot:
@@ -177,7 +215,7 @@ class Snapshot:
         tmp = self.path.with_name(self.path.name + ".%d.tmp" % os.getpid())
         with gzip.open(tmp, "wb", compresslevel=1) as f:
             pickle.dump({"key": self.key, "parts": self.parts, "state": state}, f, protocol=4)
-        os.replace(tmp, self.path)
+        replace_shared(tmp, self.path)
         print("original %s: snapshot stored" % self.path.name, flush=True)
 
 

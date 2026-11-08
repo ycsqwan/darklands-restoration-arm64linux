@@ -1,4 +1,5 @@
 using Darklands.Audio;
+using Darklands.Audio.Packs;
 using Darklands.Content;
 using Darklands.Platform;
 using Darklands.Presentation;
@@ -15,20 +16,32 @@ using Darklands.Rendering;
 //   key:<c>                      a character; key:enter|space|esc|tab|backspace|up|down|left|right|home|end|pgup|pgdn|f1..f6|f10|alto (Alt-O, the marching order)
 //   click:<x>,<y>                a left click; rclick:<x>,<y> a right click; move:<x>,<y> moves the pointer (and drags a held button)
 //   ldown:<x>,<y> / lup          the left button held and let go; rdown:<x>,<y> / rup the right one (the menu bar)
+//   mapclick:<x>,<y>,<n>         a left click held until n passes of the map's loop have read it (tools/oracle/lockstep.py)
 //   shift:on|off, ctrl:on|off    the modifier keys; kdown:<hex> / kup:<hex> a key's make or break scan code
 //   wait:<frames>                lets frames pass; shot:<name> saves <name>.png; rec:<n> saves the next n frames
 //   seed:<n>                     the game's random seed
 //   clock:<n>,<n>,...            the clock's seeds in turn instead (srand((unsigned)time(0)) at the start and wherever the game
 //                                reseeds: tools/oracle/lockstep.py gives the original's); the last one stays
+//   ticks:<n>,<n>,...            the BIOS tick words the start screen's C and Q keys read as the party seed (0040:006C), in turn, the
+//                                last one staying (tools/oracle/lockstep.py gives the word the original's saved game holds); without
+//                                the step the first clock seed's low word
 //   hdpack:<folder>              replacement graphics (an HD pack, docs/SETTINGS.md display.hdPack; also from --settings): each
-//                                shot also saves <name>.hd.png, the frame with the replacements at hdscale:<n> (default 4) x 320x200
+//                                shot also saves <name>.hd.png, the frame with the replacements at hdscale:<n> (default 4) x 320x200,
+//                                and <name>.assets.txt, the asset names on the screen (the names a pack's PNG files take)
 //
 // Game steps:
 //   saves:<folder>               the saved games' folder (default: SAVES beside the program, never the game folder)
 //   banner, intro                run the program start (the BANNER.DAT banner and its checks) and the opening
+//   datasafe                     plays with the data-safety fixes of the player's game (OriginalBehaviour.DataSafe); without it the game is Faithful, as the oracles play it
 //   arg:<text>                   adds a word to the game's DOS command line (-Q, -O, -A<letter>)
 //   sound:config|adlib|sb|sbpro2|mt32|cm32l   runs the game's sound drivers in step with the script's clock (the game timer is
 //                                then the sound's, as in the SDL host); mt32roms:<folder> (default MT32_ROMS next to the program)
+//   audiopack:<folder>           replacement music and battle effects (an audio pack, docs/PACKS.md; also from --settings
+//                                sound.audioPack or DARKLANDS_AUDIO_PACK): the game's calls reach the drivers unchanged; with sound:
+//                                the wav has the replacements mixed in; soundfont:<file> plays its .mid files (else sound.soundFont, else
+//                                the first .sf2 of SOUNDFONT next to the program); the .mid files are rendered before the run
+//   mod:<folder or name>         plays with that mod (docs/MODS.md; one step per mod, in load order; the settings file's mods
+//                                are not read here): its cards are registered and its saves get a companion file
 //   wav:<file>                   saves what the drivers play; trace:<file> writes the ticks, tunes, MIDI bytes, sample
 //                                transfers and cels shown (tools/intro/opening_timer.py compares the opening with the original's)
 //
@@ -117,6 +130,17 @@ if (clockStep is not null)
     }
     seed = clockSeeds.Peek();
 }
+// ticks:<n>,<n>,... - the BIOS tick words the party seed is taken from (the last stays).
+var ticksStep = steps.FirstOrDefault(s => s.StartsWith("ticks:", StringComparison.Ordinal));
+var partyTicks = new Queue<ushort>();
+if (ticksStep is not null)
+{
+    steps.Remove(ticksStep);
+    foreach (var v in ticksStep[6..].Split(','))
+    {
+        partyTicks.Enqueue(ushort.Parse(v, System.Globalization.CultureInfo.InvariantCulture));
+    }
+}
 uint NextSeed()
 {
     var value = clockSeeds.Count > 1 ? clockSeeds.Dequeue() : clockSeeds.Count == 1 ? clockSeeds.Peek() : seed;
@@ -150,6 +174,22 @@ if (hdPackStep is not null)
     pack.Problems.ToList().ForEach(Console.Error.WriteLine);
     ScriptedHost.HdRenderer = new HdRenderer(pack);
     ScriptedHost.HdScale = hdScaleStep is null ? 4 : int.Parse(hdScaleStep, System.Globalization.CultureInfo.InvariantCulture);
+}
+var audioPackStep = TakeStep("audiopack:") ?? resolved.AudioPack;
+var soundFontStep = TakeStep("soundfont:") ?? resolved.SoundFont;
+if (audioPackStep is null && steps.Any(s => s.StartsWith("mod:", StringComparison.Ordinal)))
+{
+    // a mod may name music for its cards: an empty pack carries it
+    ScriptedHost.ReplacementSound = AudioPack.ForMods(soundFontStep);
+}
+if (audioPackStep is not null)
+{
+    var pack = AudioPack.Load(audioPackStep, soundFontStep);
+    // decoded (and the .mid files rendered) before the run, so that a scripted run always mixes the same samples
+    pack.PreloadAsync(HeadlessSound.Rate, includeMidi: true).GetAwaiter().GetResult();
+    pack.Problems.ToList().ForEach(Console.Error.WriteLine);
+    Console.Error.WriteLine($"audio pack: {pack.Folder}, {pack.Count} replacement(s), {pack.CardMusics.Count()} card(s) with music");
+    ScriptedHost.ReplacementSound = pack;
 }
 var host = new ScriptedHost(steps, output);
 var battleStep = steps.FirstOrDefault(s => s.StartsWith("battle:", StringComparison.Ordinal));
@@ -188,7 +228,7 @@ if (battleStep is not null)
             m.Pack.Add(new Darklands.Core.Characters.ItemStack(g[0], (byte)item.Type, g[1], g[2], (byte)item.Weight));
         }
     }
-    var panel = new PartyPanel(ui.Assets);
+    var panel = new PartyPanel(ui);
     var sheets = new GameScreens2(ui, panel, state, world, new NoGameScreens());
     // the loot screen of a won battle is the game's (Esc or L leaves it)
     var lootScreens = new GameScreens(ui, panel, state, new NoGameScreens());
@@ -317,15 +357,49 @@ if (cardStep is not null)
 }
 List<string> commandLine = [.. resolved.CommandLine, .. TakeArguments(steps)];
 using var sound = soundStep is null ? null : HeadlessSound.Attach(host, OpenGame(), soundStep, romsStep, wavStep, traceStep, commandLine);
+// the map's passes: mapclick's holds, and a click into the map's view stays down until a pass has read it (ScriptedHost.MapPass)
+OverlandScreen.PassHook = host.MapPass;
+// the battle's passes: still:<n> waits for n passes at one combat clock (ScriptedHost.BattlePass)
+Darklands.Presentation.Battles.BattleScreen.PassHook = host.BattlePass;
 var game = new DarklandsGame(host, OpenGame())
 {
     Seed = clockStep is null ? () => seed : NextSeed,
+    PartyTicks = () => partyTicks.Count > 1 ? partyTicks.Dequeue() : partyTicks.Count == 1 ? partyTicks.Peek() : (ushort)seed,
     PlayOpening = steps.Remove("intro") || fileSettings.Intro == true,
     ShowStartUp = steps.Remove("banner") || fileSettings.Banner == true,
     CommandLine = commandLine,
+    Behaviour = steps.Remove("datasafe") ? Darklands.Core.OriginalBehaviour.DataSafe : Darklands.Core.OriginalBehaviour.Faithful,
     QuickstartCard = cardStep is null ? null : Convert.ToInt32(cardStep[5..], 16),
     StartWithSave = loadStep?[5..],
 };
+game.Options.Apply(resolved);
+// the game's own notes (a saved game's mods missing, a companion file it could not use) on the error output
+game.Log = Console.Error.WriteLine;
+// mod:<folder or name> (one step per mod): the mods' cards (docs/MODS.md); without the step the game's own cards only
+var modSteps = steps.Where(s => s.StartsWith("mod:", StringComparison.Ordinal)).ToList();
+if (modSteps.Count > 0)
+{
+    steps.RemoveAll(modSteps.Contains);
+    var modFolders = new List<string>();
+    foreach (var step in modSteps)
+    {
+        if (Darklands.Content.ModFolders.Find(step[4..], game.Ui.Assets.Files.Root, Environment.CurrentDirectory) is { } modFolder)
+        {
+            modFolders.Add(modFolder);
+        }
+        else
+        {
+            Console.Error.WriteLine($"mod {step[4..]}: no folder with a mod.json found (as given, or in a mods folder next to the program or the game)");
+        }
+    }
+    game.Mods = Darklands.Simulation.Mods.ModSet.Load(modFolders.Select(Darklands.Content.ModFolders.Read), Console.Error.WriteLine, game.Ui.Assets.IsGameMessageFile);
+    // the played mods' cards that name music (a pack's own music for the same card wins); rendered before the run, as the pack's files
+    if (ScriptedHost.ReplacementSound is { } soundPack && game.Mods.Music.Any())
+    {
+        soundPack.AddModMusic(game.Mods.Music).ToList().ForEach(Console.Error.WriteLine);
+        soundPack.PreloadAsync(HeadlessSound.Rate, includeMidi: true).GetAwaiter().GetResult();
+    }
+}
 if (savesStep is not null)
 {
     game.SaveDirectory = savesStep[6..];
@@ -343,16 +417,29 @@ if (sound?.Trace is { } traceWriter)
 {
     game.Ui.Trace = traceWriter.WriteLine;
 }
+if (Environment.GetEnvironmentVariable("DARKLANDS_SOUND_LOG") == "1")
+{
+    // a tester's aid (tools/oracle/lockstep.py): every music request and driver command in order, among the "state" lines
+    host.Audio = new LoggingAudio(host.Audio, Console.WriteLine);
+    game.Ui.SoundLog = Console.WriteLine;
+}
 var developerConsole = new Darklands.DevConsole.GameConsole();
 Darklands.DevConsole.GameCommands.Register(developerConsole, () => game.Playing);
 host.State = name =>
 {
     if (game.Playing is { } playing)
     {
-        var (sav, _) = Darklands.Persistence.OriginalSaves.Write(playing, "Darklands", game.Options.Music, game.Options.SoundEffects);
+        var (sav, _) = Darklands.Persistence.OriginalSaves.Write(playing, "Darklands", game.Options.Music, game.Options.SoundEffects, savedCardOf: game.SavedCardOf);
+        if (game.Fighting)
+        {
+            // a state taken while a battle runs: the original's writer (R037+0x2AEF, DS:907A == 1) sets the in-battle bit, whether the battle
+            // was begun or taken up from a save; the state step passes no battle (it must not put the members' items away nor reload the events)
+            Darklands.Persistence.OriginalSaves.MarkWrittenInBattle(sav);
+        }
         File.WriteAllBytes(Path.Combine(output, name + ".sav"), sav);
         var random = playing.Random is Darklands.Core.Randomness.MscRandom msc ? msc.State.ToString("X8", System.Globalization.CultureInfo.InvariantCulture) : "?";
-        Console.WriteLine($"state {name}: card 0x{playing.CurrentCard:X2} random {random}");
+        // " in-battle": a battle runs (tools/oracle/lockstep.py compares no state taken inside a battle on both sides)
+        Console.WriteLine($"state {name}: card 0x{playing.CurrentCard:X2} random {random}{(game.Fighting ? " in-battle" : "")}");
     }
     else
     {
@@ -367,6 +454,11 @@ host.ConsoleCommand = line =>
     }
 };
 game.Run();
+if (game.ProgramExit is { } ended)
+{
+    // the program's own end (the original's exit: lockstep.py's original side logs "program exit <code>")
+    Console.WriteLine($"program exit {ended.Code}: {ended.Printed.TrimEnd()}");
+}
 Console.WriteLine($"{host.ShotsTaken} screenshot(s) in {output}");
 return 0;
 
@@ -409,6 +501,9 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
     /// <summary>The HD shots' size: this many times 320x200.</summary>
     public static int HdScale { get; set; } = 4;
 
+    /// <summary>The audiopack step's replacement sound (null: none): the host's audio goes through its decorator.</summary>
+    public static AudioPack? ReplacementSound { get; set; }
+
     private readonly TextFont _font = TextFont.FromEnvironment(SettingsTextFont ?? LocalPaths.Get("textfont", "DARKLANDS_TEXT_FONT"));
     private Screen? _last;
     private TextScreen? _lastText;
@@ -430,7 +525,9 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
 
     public IVideo Video => this;
     public IInput Input => this;
-    public IAudio Audio { get; set; } = new SilentAudio();
+    public IAudio Audio { get; set; } = ReplacementSound is { } pack
+        ? new PackAudio(new SilentAudio(), null, new PackMixer(pack, HeadlessSound.Rate))
+        : new SilentAudio();
     public IClock Clock => this;
     public IGameTimer Timer { get => _timer ??= new ClockGameTimer(this); set => _timer = value; }
     private IGameTimer? _timer;
@@ -513,6 +610,11 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
                 var (width, height) = (Screen.Width * HdScale, Screen.Height * HdScale);
                 var frame = HdRenderer.Render(_last, new DisplayRectangle(0, 0, width, height));
                 PngCodec.Write(FrameCompositor.Compose(frame, width, height), Path.Combine(output, name + ".hd.png"));
+                // for pack makers: the assets seen, with their size, pixels shown and whether the pack replaces them
+                File.WriteAllLines(Path.Combine(output, name + ".assets.txt"), _last.Owners.Where(id => id != 0).GroupBy(id => id)
+                    .Select(g => (Name: ScreenOwners.NameOf(g.Key) ?? "?", Size: ScreenOwners.SizeOf(g.Key), Pixels: g.Count()))
+                    .OrderBy(a => a.Name, StringComparer.Ordinal)
+                    .Select(a => $"{a.Name}\t{a.Size.Width}x{a.Size.Height}\t{a.Pixels} px{(HdRenderer.Pack.Has(a.Name) ? "\treplaced" : "")}"));
             }
             ShotsTaken++;
         }
@@ -524,29 +626,183 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
         Advanced?.Invoke(_now);
     }
 
-    public bool TryReadKey(out int key) => _keys.TryDequeue(out key);
+    public bool TryReadKey(out int key)
+    {
+        if (!_keys.TryDequeue(out key))
+        {
+            return false;
+        }
+        if (_breakKey != Keys.None && key == _breakKey)
+        {
+            // the kbreak's key, looked at (GameUi.KeyWaiting) or read: the Ctrl-Break comes just before the game's read of it (GameUi.TakeKey)
+            _breakKey = Keys.None;
+            _keys.Clear();
+            _breakArmed = true;
+            Console.WriteLine($"kbreak after the key at {_now} ms");
+        }
+        return true;
+    }
+
+    // kbreak:<n>[:<key>]: Ctrl-Break n ticks of the 60 Hz timer later on the host's clock (tools/oracle/ctrl_break.py), as tkey's keys: the keys
+    // waiting are gone and the game's next look or read finds the word 0000h (IInput.TakeCtrlBreak, GameUi). With a key, the key is pressed
+    // then and the Ctrl-Break comes just before the game's read of it (the read takes 0000h); no step after it is taken before
+    private long _breakAt;
+    private string? _breakStep;
+    private int _breakKey;
+    private bool _breakArmed;
+
+    /// <summary>The next step counts timer ticks from now (tkey, tclick, kbreak).</summary>
+    private bool NextCountsTicks() => _steps.TryPeek(out var next) && (next.StartsWith("tkey:", StringComparison.Ordinal) || next.StartsWith("tclick:", StringComparison.Ordinal) || next.StartsWith("kbreak:", StringComparison.Ordinal));
+
+    public bool TakeCtrlBreak()
+    {
+        if (!_breakArmed)
+        {
+            return false;
+        }
+        _breakArmed = false;
+        return true;
+    }
 
     private int _clickPumps;
+
+    // mapclick:<x>,<y>,<n>: the left button stays down until n passes of the map's loop have read it (OverlandScreen.PassHook), as the
+    // original's click spanned n map passes (tools/oracle/lockstep.py map_holds); let go too when the map is left
+    private int _mapHold;
+
+    // a click into the map's view (where a pass steers toward it) made while the map runs stays down until a pass has read it: a pass
+    // lasts one BIOS tick (GameUi.DelayClock), two to four pumps, so two pumps could fall between two passes' looks at the button (at most
+    // six pumps: a box the map opens meanwhile sees it let go)
+    private bool _onMap;
+    private bool _clickRead;
+
+    /// <summary>OverlandScreen.PassHook: a map pass read the button (true) or the map was left (false).</summary>
+    public void MapPass(bool read)
+    {
+        _onMap = read;
+        _clickRead |= read && Mouse.Left;
+        if (_mapHold > 0 && (!read || --_mapHold == 0))
+        {
+            _mapHold = 0;
+            Mouse = Mouse with { Buttons = MouseButtons.None };
+        }
+    }
+
+    // tkey:<n>:<key>[,<key>...]: the keys are pressed n ticks of the game's 60 Hz timer later on the host's clock (tools/oracle/tick_keys.py: the
+    // original's timer callback n more times, six in seven frames of 70.086 Hz), all at once, whatever the game is doing; no step after it is
+    // taken before. The clock, not IGameTimer.Ticks: the headless host's timer follows its sound and lags its clock
+    private long _tickKeysAt;
+    private int[]? _tickKeys;
+
+    // tclick:<n>:<x>,<y>,<ms>: the left button pressed at (x, y) n ticks of the 60 Hz timer later on the host's clock, as tkey's keys
+    // (tools/oracle/tick_mouse.py), and held <ms> of the clock (the original's hold, from its log: let go CLICK_MS after the game read it);
+    // no step is taken before it is let go. A press inside the map's rest (OverlandScreen.RestLoop's button test)
+    private long _tickClickAt;
+    private (int X, int Y, int Hold)? _tickClick;
+    private long _tickClickUntil = -1;
+
+    // still:<n>: the next step comes at the battle pass that is the n-th at one combat clock value (counted from the head of each pass,
+    // a new battle starting again), as tools/oracle/orig_side.py gives the key of a battle's start pause (its BATTLE_PAUSE_PASSES); the
+    // frames before the battle (a load, the set-up) do not count, which a wait in frames cannot follow. At most 20000 frames.
+    private int _stillTarget, _stillPasses, _stillClock = -1, _stillFrames;
+
+    /// <summary>BattleScreen.PassHook: a pass at combat clock <paramref name="clock"/> (-1: the battle's loop ended).</summary>
+    public void BattlePass(int clock)
+    {
+        _stillPasses = clock >= 0 && clock == _stillClock ? _stillPasses + 1 : clock >= 0 ? 1 : 0;
+        _stillClock = clock;
+    }
 
     public void Pump()
     {
         _now += 16;
         Advanced?.Invoke(_now);
-        if (Mouse.Buttons != MouseButtons.None && !_held)
+        if (_tickClickUntil >= 0)
+        {
+            if (_now < _tickClickUntil)
+            {
+                return;
+            }
+            _tickClickUntil = -1;
+            Mouse = Mouse with { Buttons = MouseButtons.None };
+            Console.WriteLine($"tclick let go at {_now} ms");
+            _idleFrames = 2;
+            return;
+        }
+        if (_tickClick is { } click)
+        {
+            if (_now < _tickClickAt)
+            {
+                return;
+            }
+            Mouse = new MouseState(click.X, click.Y, MouseButtons.Left);
+            _tickClickUntil = _now + Math.Max(1, click.Hold);
+            _tickClick = null;
+            Console.WriteLine($"tclick {click.X},{click.Y} at {_now} ms");
+            return;
+        }
+        if (Mouse.Buttons != MouseButtons.None && !_held && _mapHold == 0)
         {
             // a click stays down over two pumps (a screen may present twice a frame before it polls)
-            if (++_clickPumps < 2)
+            if (++_clickPumps < 2 || _onMap && Mouse.Buttons == MouseButtons.Left && Mouse.X > 60 && Mouse.Y >= 16 && !_clickRead && _clickPumps < 6)
             {
                 return;
             }
             _clickPumps = 0;
+            _clickRead = false;
             Mouse = Mouse with { Buttons = MouseButtons.None };
+            return;
+        }
+        if (_tickKeys is not null)
+        {
+            if (_now < _tickKeysAt)
+            {
+                return;
+            }
+            foreach (var key in _tickKeys)
+            {
+                _keys.Enqueue(key);
+            }
+            Console.WriteLine($"tkey {_tickKeys.Length} key(s) at {_now} ms");
+            _tickKeys = null;
+            // a tkey, tclick or kbreak right after it counts its ticks from these keys (the original's from the read that takes them)
+            _idleFrames = NextCountsTicks() ? 0 : 2;
+            return;
+        }
+        if (_breakStep is not null)
+        {
+            if (_now < _breakAt)
+            {
+                return;
+            }
+            if (_breakStep.Length > 0)
+            {
+                _breakKey = KeyFor(_breakStep);
+                _keys.Enqueue(_breakKey);
+                Console.WriteLine($"kbreak {_breakStep} pressed at {_now} ms");
+            }
+            else
+            {
+                _keys.Clear();
+                _breakArmed = true;
+                Console.WriteLine($"kbreak at {_now} ms");
+            }
+            _breakStep = null;
+            _idleFrames = NextCountsTicks() ? 0 : 2;
             return;
         }
         if (_idleFrames > 0)
         {
             _idleFrames--;
             return;
+        }
+        if (_stillTarget > 0)
+        {
+            if (_stillPasses < _stillTarget && ++_stillFrames < 20000)
+            {
+                return;
+            }
+            _stillTarget = 0;
         }
         if (!_steps.TryDequeue(out var step))
         {
@@ -558,11 +814,21 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
         {
             case "key":
                 _keys.Enqueue(KeyFor(value));
-                _idleFrames = 2;
+                // the battle takes it in this pass: the count of still: starts again (orig_side.py: a key ends the battle's pause)
+                _stillPasses = 0;
+                // a tkey or tclick after it counts its ticks from this key (the original's from the read that takes it): taken at the next pump
+                _idleFrames = NextCountsTicks() ? 0 : 2;
                 break;
             case "click":
                 var (x, y) = Point(value);
                 Mouse = new MouseState(x, y, MouseButtons.Left);
+                _clickRead = false;
+                _idleFrames = 2;
+                break;
+            case "mapclick":
+                var at = value.Split(',');
+                Mouse = new MouseState(int.Parse(at[0], System.Globalization.CultureInfo.InvariantCulture), int.Parse(at[1], System.Globalization.CultureInfo.InvariantCulture), MouseButtons.Left);
+                _mapHold = int.Parse(at[2], System.Globalization.CultureInfo.InvariantCulture);
                 _idleFrames = 2;
                 break;
             case "rclick":
@@ -595,6 +861,22 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
             case "ctrl":
                 CtrlHeld = value == "on";
                 break;
+            case "tkey":
+                var (ticks, names) = (value.Split(':', 2)[0], value.Split(':', 2)[1]);
+                _tickKeysAt = _now + (long)Math.Round(int.Parse(ticks, System.Globalization.CultureInfo.InvariantCulture) * 1000.0 / 60);
+                _tickKeys = names.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(KeyFor).ToArray();
+                break;
+            case "kbreak":
+                var (breakTicks, breakKey) = (value.Split(':', 2)[0], value.Contains(':') ? value.Split(':', 2)[1] : "");
+                _breakAt = _now + (long)Math.Round(int.Parse(breakTicks, System.Globalization.CultureInfo.InvariantCulture) * 1000.0 / 60);
+                _breakStep = breakKey;
+                break;
+            case "tclick":
+                var (clickTicks, clickAt) = (value.Split(':', 2)[0], value.Split(':', 2)[1].Split(','));
+                _tickClickAt = _now + (long)Math.Round(int.Parse(clickTicks, System.Globalization.CultureInfo.InvariantCulture) * 1000.0 / 60);
+                _tickClick = (int.Parse(clickAt[0], System.Globalization.CultureInfo.InvariantCulture), int.Parse(clickAt[1], System.Globalization.CultureInfo.InvariantCulture),
+                    clickAt.Length > 2 ? int.Parse(clickAt[2], System.Globalization.CultureInfo.InvariantCulture) : 300);
+                break;
             case "kdown":
             case "kup":
                 // a key's make or break code (hex, set 1) for the game's keyboard interrupt (kdown:48 holds Up)
@@ -602,6 +884,10 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
                 break;
             case "wait":
                 _idleFrames = int.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
+                break;
+            case "still":
+                _stillTarget = int.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
+                _stillFrames = 0;
                 break;
             case "untilover":
                 // the battle runs on until it ends (the screen returns)
@@ -677,6 +963,7 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
         "end" => Keys.End,
         "pgup" => Keys.PageUp,
         "pgdn" => Keys.PageDown,
+        "center" => Keys.Center,
         "tab" => Keys.Tab,
         "backspace" => Keys.Backspace,
         "f1" => Keys.F1,
@@ -694,7 +981,25 @@ internal sealed class ScriptedHost(List<string> steps, string output) : IHost, I
         "alto" => Keys.AltO,
         "altm" => Keys.AltM,
         "altf" => Keys.AltF,
+        "f7" => Keys.F7,
+        "f8" => Keys.F8,
+        "f9" => Keys.F9,
         "f10" => Keys.F10,
+        // Ctrl-F1..F10 (scan 0x5E..0x67) and the keypad with Num Lock on (scan 0x47..0x53 with its character), as the tester's key names
+        var k when k.StartsWith("ctrlf", StringComparison.Ordinal) && int.TryParse(k[5..], out var n) && n is >= 1 and <= 10 => (0x5D + n) << 8,
+        "kp7" => 0x4737,
+        "kp8" => 0x4838,
+        "kp9" => 0x4939,
+        "kp4" => 0x4B34,
+        "kp5" => Keys.Center,
+        "kp6" => 0x4D36,
+        "kp1" => 0x4F31,
+        "kp2" => 0x5032,
+        "kp3" => 0x5133,
+        "kp0" => 0x5230,
+        "kpminus" => 0x4A2D,
+        "kpplus" => 0x4E2B,
+        "kpdot" => 0x532E,
         _ => Keys.ForCharacter(name[0]),
     };
 }
@@ -753,19 +1058,67 @@ internal sealed class NoGameScreens : Darklands.Cards.IGameScreens
     public int Battle(Darklands.Cards.BattleRequest request) => 0;
 }
 
+/// <summary>
+/// The audio of the host with each driver command written as a line "sound n": the numbers of the original's sound-start(n)
+/// (root 047C:078A), whoever asked (music-start R043+0x09AE, the battle's effects R014+0x465E, a card's own call).
+/// </summary>
+internal sealed class LoggingAudio(IAudio inner, Action<string> write) : IAudio
+{
+    public void PlayMusic(int tune)
+    {
+        write($"sound {tune}");
+        inner.PlayMusic(tune);
+    }
+
+    public void PlayMusicAt(int tune, long tick)
+    {
+        write($"sound {tune}");
+        inner.PlayMusicAt(tune, tick);
+    }
+
+    public void StopMusic()
+    {
+        write("sound 1");
+        inner.StopMusic();
+    }
+
+    public void PlaySound(int effect)
+    {
+        write($"sound {effect}");
+        inner.PlaySound(effect);
+    }
+
+    // orig: music-start(5) keeps the AX the driver leaves (DS:9C3D, played back at the end of the prayer screen, the camp, the shell game ...). The
+    // original's sessions run on NSOUND.DLC, whose play slot is a bare far return: the AX is what the caller had (0 in the runs seen); the silent
+    // host answers -1 (no driver), so the played-back piece would differ (GameSounds.CurrentPiece)
+    public int PlayMusicNow(int tune)
+    {
+        write($"sound {tune}");
+        var ax = inner.PlayMusicNow(tune);
+        return ax < 0 ? 0 : ax;
+    }
+
+    public int RequestCurrentPiece() => PlayMusicNow(5);
+
+    // a read-only notice for a sound pack: not a driver call, so it is not logged
+    public void CardShown(int card) => inner.CardShown(card);
+}
+
 /// <summary>The game's sound drivers rendered in step with the scripted clock, to a .wav file and a trace.</summary>
 internal sealed class HeadlessSound : IDisposable
 {
-    private const int Rate = 44100;
+    public const int Rate = 44100;
     private readonly SynthAudio _audio;
+    private readonly IPcmSource _source;
     private readonly IMidiSynth? _synth;
     private readonly List<short>? _samples;
     private readonly string? _wav;
     private readonly short[] _buffer = new short[2 * Rate];
 
-    private HeadlessSound(SynthAudio audio, IMidiSynth? synth, string? wav, StreamWriter? trace)
+    private HeadlessSound(SynthAudio audio, IPcmSource source, IMidiSynth? synth, string? wav, StreamWriter? trace)
     {
         _audio = audio;
+        _source = source;
         _synth = synth;
         _wav = wav;
         _samples = wav is null ? null : new List<short>();
@@ -795,8 +1148,10 @@ internal sealed class HeadlessSound : IDisposable
             _ => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"sample {e.Tick} {e.Frame} {e.Context} {e.Value} {e.Delay:F6}"),
         });
         var audio = new SynthAudio(files, Rate, setup, synth, traced);
-        var sound = new HeadlessSound(audio, synth, wav, writer);
-        host.Audio = audio;
+        // an audio pack: the drivers render under its mixer (the timer is still theirs), the game's calls reach them unchanged
+        var mixer = ScriptedHost.ReplacementSound is { } pack ? new PackMixer(pack, Rate) { Source = audio, RenderedTicks = () => audio.RenderedTicks } : null;
+        var sound = new HeadlessSound(audio, (IPcmSource?)mixer ?? audio, synth, wav, writer);
+        host.Audio = mixer is null ? audio : new PackAudio(audio, audio, mixer);
         host.Timer = audio;
         host.Advanced = sound.RenderUntil;
         return sound;
@@ -810,7 +1165,7 @@ internal sealed class HeadlessSound : IDisposable
         {
             var n = (int)Math.Min(frames, _buffer.Length / 2);
             var span = _buffer.AsSpan(0, n * 2);
-            _audio.Render(span);
+            _source.Render(span);
             _samples?.AddRange(span.ToArray());
             frames -= n;
         }

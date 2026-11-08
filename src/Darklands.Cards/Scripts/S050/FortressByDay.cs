@@ -9,7 +9,7 @@ namespace Darklands.Cards.Scripts;
 /// </summary>
 // orig: R050+0x1CEE (1A06:000E) matched; tests: CardSmokeTests
 // DORMANT: R050+0x2934 (1A06:0C54), the init, gives lines 10..19 the "screwed up." handler
-//   R050+0x29D6 and installs item pop-up handlers that cannot run (no card_items):
+//   R050+0x29D6 and installs item pop-up handlers that cannot run (no card-item-lines):
 //   R050+0x2A0E, R050+0x2A4A, R050+0x2A86,
 //   R050+0x2AC2 ("Success is assured.", naming the member).
 public sealed class FortressByDay : Card
@@ -149,7 +149,7 @@ public sealed class FortressByDay : Card
                 }
                 else
                 {
-                    // C: imin(rand_mod(3) + 1, hours_until(18)): hours_until is evaluated first; it draws nothing.
+                    // C: smaller-of(roll-below(3) + 1, hours-remaining-until(18)): hours-remaining-until is evaluated first; it draws nothing.
                     var until = TimeOfDay.HoursUntil(c.State.Date.Hour, 18);
                     c.Variables.Numbers[0] = Math.Min(c.Random(3) + 1, until);
                     c.PassHours(c.Variables.Numbers[0] + 1);
@@ -240,7 +240,7 @@ public sealed class FortressByDay : Card
     private static OptionHint SaintChance(CardContext c)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var saint = c.CardSaints[c.MenuSlot];
+        var saint = c.CardSaints[c.MenuEntrySlot];
         var low = c.SaintChanceLow(c.MenuMember, saint);
         return OptionHint.Say(c.ChanceText(low, c.SaintChanceHigh(c.MenuMember, saint)));
     }
@@ -248,7 +248,7 @@ public sealed class FortressByDay : Card
     /// <summary>A saint opens the lord's door (only an answer of exactly 1): a commission follows.</summary>
     private void CallUponASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

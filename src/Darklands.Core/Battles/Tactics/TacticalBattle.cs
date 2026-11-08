@@ -7,15 +7,18 @@ namespace Darklands.Core.Battles.Tactics;
 /// <summary>What the tactical battle tells the screen (and where the screen looks: the renderer's random draws depend on it).</summary>
 public interface ITacticalView : IBattleViewport
 {
-    /// <summary>index_of_word(R136+0x5890, cell, 0x8C): the screen tile (0..0x8B) that shows the cell (column &lt;&lt; 8 | row) in the
+    /// <summary>word-position(R136+0x5890, cell, 0x8C): the screen tile (0..0x8B) that shows the cell (column &lt;&lt; 8 | row) in the
     /// last full redraw, 0x8C when none.</summary>
     int ScreenTileOf(int cell);
 
     /// <summary>Plays sound effect <paramref name="n"/> (R014 0E76:465E decides whether it is heard).</summary>
     void Sound(int n);
 
-    /// <summary><c>show_message</c> (root 0000:24BC): the string at DS:<paramref name="text"/>, the caller waiting <paramref name="ticks"/> timer ticks (the battle stands, the timer runs).</summary>
+    /// <summary><c>notice-display</c> (root 0000:24BC): the string at DS:<paramref name="text"/>, the caller waiting <paramref name="ticks"/> timer ticks (the battle stands, the timer runs).</summary>
     void Message(int text, int ticks);
+
+    /// <summary><c>notice-display</c> of a far string: the one at 286B:<paramref name="text"/>, the caller waiting <paramref name="ticks"/> timer ticks.</summary>
+    void FarMessage(int text, int ticks);
 
     /// <summary>A message about a member: its name, then the string at DS:<paramref name="text"/> (" finds a secret door").</summary>
     void Message(int text, int ticks, int member);
@@ -29,26 +32,47 @@ public interface ITacticalView : IBattleViewport
     /// <summary>The panel row of a member (or everything when −1) needs redrawing.</summary>
     void RowChanged(int member);
 
-    /// <summary>The level on screen changed (doors, furniture, floor switch: floor_view_draw(−1)).</summary>
-    void MapChanged();
-
-    /// <summary>combat_mode_leave: the fight is over for now (the enemies' palette cycle stops).</summary>
-    void CombatModeLeft()
-    {
-    }
-
-    /// <summary>floor_view_draw(<paramref name="who"/>) (R017+0x0000): the view drawn anew around combatant who's cell.</summary>
-    void Recentre(int who)
+    /// <summary>
+    /// An order was chosen in order mode: the selected member's order letter is drawn alone in its panel row (R016+0x15BE), from the
+    /// order, the place action and the flee bit as they are now; it stays until the row is drawn again.
+    /// </summary>
+    void OrderLetterDrawn()
     {
     }
 
     /// <summary>
-    /// combat_tick's follow (DS:11B1 set): when combatant <paramref name="who"/>'s sprite, where the last frame put it (+scrx, +scry), lies
-    /// outside 0x14..0xDC × 0x14..0xA0 of the view, floor_view_draw(who).
+    /// command-mode-end with nobody selected redraws the panel frames for "member -1" (party-panel-frame-set root 0000:1588 with
+    /// DS:A6B2 = 0xFF, R014+0xC01A) before the rows; a presentation concern only.
     /// </summary>
-    void KeepInView(int who)
+    void FramesOfNobodyDrawn()
     {
     }
+
+    /// <summary>The level on screen changed (doors, furniture, floor switch: floor-view-paint(−1)).</summary>
+    void MapChanged();
+
+    /// <summary>fight-mode-exit: the fight is over for now (the enemies' palette cycle stops).</summary>
+    void CombatModeLeft()
+    {
+    }
+
+    /// <summary>floor-view-paint(<paramref name="who"/>) (R017+0x0000): the view drawn anew around combatant who's cell.</summary>
+    void Recentre(int who)
+    {
+    }
+
+    /// <summary>fighter-screen-position R014+0x99F6 in the fight-draw of the set-up (R014+0x0307, before the first tick): each combatant's
+    /// +0x00 / +0x02 (where its sprite lies in the view drawn around the centre kept), which the first tick's follow test reads.</summary>
+    void SetUpScreenPlaces()
+    {
+    }
+
+    /// <summary>
+    /// fight-tick's follow (DS:11B1 set): when combatant <paramref name="who"/>'s sprite, where the last frame put it (+scrx, +scry), lies
+    /// outside 0x14..0xDC × 0x14..0xA0 of the view, floor-view-paint(who).
+    /// </summary>
+    /// <returns>True when the view was drawn again around the combatant.</returns>
+    bool KeepInView(int who) => false;
 
     /// <summary>
     /// The battle's set-up takes time while the combat clock runs (the timer callback counts it whenever DS:07D3 is 0): stage 0 when
@@ -67,7 +91,7 @@ public interface ITacticalView : IBattleViewport
     FurnitureShape? VaryFurniture(int tile, string set, int record);
 
     /// <summary>
-    /// <c>loot_screen</c>: the loot screen over a work list (a pile's block, the gathered loot or a chest's contents) and some
+    /// <c>loot-view</c>: the loot screen over a work list (a pile's block, the gathered loot or a chest's contents) and some
     /// money; what the party leaves stays in the list.
     /// </summary>
     void OpenLoot(int member, List<ItemStack> list, Economy.Money money);
@@ -79,7 +103,7 @@ public interface ITacticalView : IBattleViewport
 /// movement, the AI, the enemies' turn, missiles and placement. The screen feeds the clock and
 /// the player's orders and draws the state; the rules here never look at the screen.
 /// </summary>
-// orig: combat_main R014+0x0000 (0E76:0000) draft (spec D §1.2, asm-verified)
+// orig: fight-main-loop R014+0x0000 (0E76:0000) draft (spec D §1.2, asm-verified)
 public sealed partial class TacticalBattle : IBattleEndActions
 {
     /// <summary>Clock ticks between combat ticks.</summary>
@@ -113,6 +137,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
         Paths.UseHalfSizes(k => battle[k].HalfWidth, k => battle[k].HalfHeight);
         Effects = new EffectField(battle, Map, n => _view.Sound(n), ReadyWeapon, slot => SlotWeapons[slot], () => PauseByte != 0) { Terrain = field.Terrain };
         Effects.Landed += () => DelayedStart = false;
+        Effects.PanelRedrawn += () => _view.RowChanged(-1);
         battle.Clouds = Effects;
         for (var k = 0; k < Slots.Length; k++)
         {
@@ -139,12 +164,12 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>The animation sets: 0..4 the party, 5/6 the two enemy kinds walking, 7/8 fighting, 9/10 dying.</summary>
     public AnimationSlot[] Slots { get; } = new AnimationSlot[11];
 
-    /// <summary>DS:1166[slot]: the picture code of the set ("F60", "E02"); anim_file[slot]: the weapon code ("SW", "PT" when casting).</summary>
+    /// <summary>DS:1166[slot]: the picture code of the set ("F60", "E02"); animation-file-name[slot]: the weapon code ("SW", "PT" when casting).</summary>
     public string[] SlotCodes { get; } = [.. Enumerable.Repeat("", 7)];
 
     public string[] SlotWeapons { get; } = [.. Enumerable.Repeat("", 7)];
 
-    /// <summary>enemy_anim_slot (DS:D67C) / DS:D67E: the enemy identity each enemy slot holds (−1 free).</summary>
+    /// <summary>enemy-sprite-slot (DS:D67C) / DS:D67E: the enemy identity each enemy slot holds (−1 free).</summary>
     public int[] EnemySlotIdentity { get; } = [-1, -1];
 
     /// <summary>The level shown.</summary>
@@ -165,7 +190,11 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>DS:07D1: timer callbacks since the last combat tick (the screen counts them, paused or not).</summary>
     public int TimerCallbacks { get; set; }
 
-    /// <summary>ai_paused (DS:A695): order mode; the AI, melee and actions are frozen.</summary>
+    /// <summary>The cursor keys' state (DS:D728, DS:D73B, DS:D7FE, DS:D947, DS:D945): program globals, so the screen gives each battle the
+    /// program's (the last battle's); a battle on its own has its own.</summary>
+    public CursorKeyState CursorKeys { get; set; } = new();
+
+    /// <summary>enemy-ai-paused-flag (DS:A695): order mode; the AI, melee and actions are frozen.</summary>
     public bool Paused { get => PauseByte == 1; private set => PauseByte = (byte)(value ? 1 : 0); }
 
     /// <summary>The byte of <see cref="Paused"/> itself: 0 running, 1 paused; Esc with nobody selected can make it 0x11 (<see cref="OriginalBehaviour.FixEscapeWithoutSelectionPauseByte"/>).</summary>
@@ -175,11 +204,43 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>DS:A695 == 0 (what most of the per-tick tests of the original require; 0x11 is neither this nor <see cref="Paused"/>).</summary>
     private bool Running => PauseByte == 0;
 
-    /// <summary>move_mode (DS:C102): 0 individually, 1 as a group, 2 single file.</summary>
+    /// <summary>travel-mode (DS:C102): 0 individually, 1 as a group, 2 single file.</summary>
     public int MoveMode { get; private set; }
 
-    /// <summary>marching_order (DS:C624) and its length (DS:C629).</summary>
+    /// <summary>column-order (DS:C624) and its length (DS:C629).</summary>
     public List<int> MarchingOrder { get; } = [];
+
+    /// <summary>
+    /// The five bytes DS:C624..DS:C628 themselves: the entries of <see cref="MarchingOrder"/> and, past its length, whatever was written there
+    /// before (a rebuild writes only the able members, so with nobody able every byte stays). Single file reads the first byte whatever the length.
+    /// </summary>
+    // C: R016+0x0E2E stores each status-1 member at DS:C624[n++] and then the length n: the bytes past n are not cleared.
+    public byte[] MarchingOrderBytes { get; } = new byte[5];
+
+    /// <summary>The order's entries written into <see cref="MarchingOrderBytes"/> (the bytes past them stay).</summary>
+    private void StoreMarchingOrderBytes()
+    {
+        for (var k = 0; k < MarchingOrder.Count && k < MarchingOrderBytes.Length; k++)
+        {
+            MarchingOrderBytes[k] = (byte)MarchingOrder[k];
+        }
+    }
+
+    /// <summary>The order taken from six bytes as the game keeps them (five entries and the length): all five bytes, the entries up to the length.</summary>
+    public void LoadMarchingOrder(ReadOnlySpan<byte> order)
+    {
+        order[..MarchingOrderBytes.Length].CopyTo(MarchingOrderBytes);
+        MarchingOrder.Clear();
+        MarchingOrder.AddRange(Rules.MarchingOrderChoice.Entries(order.ToArray()));
+    }
+
+    /// <summary>The order written back into six bytes as the game keeps them: the five bytes and the length.</summary>
+    public void StoreMarchingOrder(Span<byte> order)
+    {
+        StoreMarchingOrderBytes();
+        MarchingOrderBytes.CopyTo(order);
+        order[MarchingOrderBytes.Length] = (byte)MarchingOrder.Count;
+    }
 
     /// <summary>DS:E092: combat ticks run.</summary>
     public int Ticks { get; private set; }
@@ -196,7 +257,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
 
     public ushort DelayedStartAt { get; set; }
 
-    /// <summary>DS:D842: the enemies wait for <see cref="DelayedStartAt"/> (combat_flags 0x40).</summary>
+    /// <summary>DS:D842: the enemies wait for <see cref="DelayedStartAt"/> (fight-flags 0x40).</summary>
     public bool DelayedStart { get; set; }
 
     /// <summary>DS:D6F0: hidden encounters are checked (after the initial placement).</summary>
@@ -215,17 +276,21 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>DS:E07B: the map needs redrawing after the action pass.</summary>
     private bool _redraw;
 
-    /// <summary>DS:E237: the rotating enemy that may rethink this turn.</summary>
-    private int _turnRotation;
+    /// <summary>DS:E237: the rotating enemy that may rethink this turn: a program global (<see cref="Generation.GenerationProcessMemory.TurnRotation"/>).</summary>
+    private int _turnRotation
+    {
+        get => ProgramMemory.TurnRotation;
+        set => ProgramMemory.TurnRotation = value;
+    }
 
     /// <summary>
     /// DS:D6F1 / DS:D6ED: the member whose order mode the screen opens in the frame it draws after a combat tick, once the member has a
     /// hot spot there (−1 none).
     /// </summary>
-    // orig: combat_tick R014+0x0F58 (0E76:0F58) draft (the DS:D6F1 test opens order mode; spec D §1.3, §7.2)
+    // orig: fight-tick R014+0x0F58 (0E76:0F58) draft (the DS:D6F1 test opens order mode; spec D §1.3, §7.2)
     public int PendingOrderMember { get; set; } = -1;
 
-    /// <summary>A combat tick ran since the screen last drew after one: the screen's next frame is the tick's combat_draw.</summary>
+    /// <summary>A combat tick ran since the screen last drew after one: the screen's next frame is the tick's fight-draw.</summary>
     private bool _tickToDraw;
 
     /// <summary>Whether a combat tick ran since the last call (the screen asks once per frame, after drawing it).</summary>
@@ -245,9 +310,10 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>DS:C3CD as a whole: the 14-byte stairs record the spot was taken from.</summary>
     public byte[] InitialSpotRecord { get; } = new byte[14];
 
-    /// <summary>The animation set index of combatant i (cbt_anim_set, 14F7:343C).</summary>
-    // orig: cbt_anim_set R014+0x9C4C (14F7:343C) draft
-    // UNCERTAIN: read from the slot rules of cbt_set_anim (spec D §3.9): enemies use slot +2 fighting/hit and +4 dying.
+    /// <summary>The animation set index of combatant i (fighter-animation-set, 14F7:343C).</summary>
+    // orig: fighter-animation-set R014+0x9C4C (14F7:343C) draft
+    // C: checked against the asm of R014+0x9C4C: the kind comes back as it is below 5 and for the poses other than 2..4; for an enemy slot (5 and up) poses 2
+    //   and 3 add 2 and pose 4 adds 4.
     public int AnimationSet(int i)
     {
         var c = Battle[i];
@@ -298,17 +364,17 @@ public sealed partial class TacticalBattle : IBattleEndActions
     private int Scaled(int n) => Battle.RollScaled(n);
 
     /// <summary>
-    /// The start of the fight (combat_main's initialisation): the party placed at the level's start
-    /// (effect_start), the timers cleared, weapons readied, the first enemy turn.
+    /// The start of the fight (fight-main-loop's initialisation): the party placed at the level's start
+    /// (effect-begin), the timers cleared, weapons readied, the first enemy turn.
     /// </summary>
-    /// <param name="arrivedThroughDoor">combat_flags 0x20.</param>
-    /// <param name="delayedStart">combat_flags 0x40: the enemies wait 600 ticks.</param>
-    // orig: combat_main R014+0x0000 (0E76:0000) draft (spec D §1.2 steps 1..14, asm-verified)
-    // C: step 2 (R014+0x0017, mode 0's combat_flags 0x10: the levels prepared, the party at the level's start) is PrepareLevels with the
+    /// <param name="arrivedThroughDoor">fight-flags 0x20.</param>
+    /// <param name="delayedStart">fight-flags 0x40: the enemies wait 600 ticks.</param>
+    // orig: fight-main-loop R014+0x0000 (0E76:0000) draft (spec D §1.2 steps 1..14, asm-verified)
+    // C: step 2 (R014+0x0017, mode 0's fight-flags 0x10: the levels prepared, the party at the level's start) is PrepareLevels with the
     // placement below; steps 7 (R014+0x0110: the alarm trigger's furniture or wall removed) and 8 (R014+0x0153: an activation re-enabled)
     // act on the battlefield kept from the earlier visit (its levels stay in memory, GeneratedBattlefield.Store); the "battlefield save
     // rules" message (step 14) is the screen's.
-    /// <param name="combatFlags">combat_flags from the card that ordered the battle: 8 re-enables the first disabled activation, 0x80
+    /// <param name="combatFlags">fight-flags from the card that ordered the battle: 8 re-enables the first disabled activation, 0x80
     /// re-enables it after keeping a disabled copy at the end.</param>
     /// <param name="keptPlaces">Battle mode 1: the party slots' places when the last battle on this battlefield ended (null: mode 0, 2 or 3).</param>
     public void Start(bool arrivedThroughDoor = false, bool delayedStart = false, int combatFlags = 0,
@@ -323,10 +389,33 @@ public sealed partial class TacticalBattle : IBattleEndActions
         for (var i = 0; i < Combatant.Count; i++)
         {
             Battle[i].Flags = (TacticalFlags)(StaleFlags is { } stale && i < stale.Count ? stale[i] & 0x6E00 : 0);
+            // orig: the loop leaves fighter-path-table (far 20A5:6238) and DS:D6FB as they were (Combatant.Path)
+            if (StalePaths is { } paths)
+            {
+                Array.Copy(paths.Paths, i * Combatant.PathLength, Battle[i].Path, 0, Combatant.PathLength);
+                Battle[i].PathIndex = paths.Indices[i];
+            }
             // C: the same loop sets every combatant's exchange (DS:CA57) to 7 (0E76:19D0), the members' too; the tests of the exchange
             // never take 7, but a battle file written in the battle keeps it (lockstep session savemid-mine).
             Battle[i].Exchange = Exchange.Placed;
+            // C: the attack facings (DS:D3FE) and the placed base loads (DS:C1C1) are not reset by a battle's start: a record keeps the last
+            //   battle's until this one sets it (an attack, a placement). Seen in the original's battle file of a battle after another
+            //   (round spawn: the mine's ambush after a wild fight, gen-carry-04, -14: member 3's facing and the wolves' records 8..10)
+            if (StaleVariables is { } left)
+            {
+                Battle[i].AttackFacing = (sbyte)left[BattleVariables.AttackFacing + i];
+                Battle[i].PlacedBaseLoad = (sbyte)left[BattleVariables.PlacedBaseLoad + i];
+            }
         }
+        // C: nor is the saved path (2E38:0C64) with its length (DS:DA43): route-keep R014+0x5DAC alone writes them
+        if (StaleVariables is { } held)
+        {
+            SavedPathLength = (short)(held[BattleVariables.SavedPathLength] | held[BattleVariables.SavedPathLength + 1] << 8);
+            Array.Copy(held, BattleVariables.SavedPath, SavedPath, 0, SavedPath.Length);
+        }
+        // orig: R002+0x0093 (0E76:0093): the timer is installed again at the battle's start (root 047C:0066+0x0B: DS:07E6 = 1)
+        // C: only when the sound letter DS:A876 is not 'n' / 'N'; the C# host always runs the battle clock, as with a sound card
+        TimerRate = 1;
         ActivationsEnabled = true;
         Battle.Alarm = 0;
         Battle.RealCombat = false;
@@ -340,6 +429,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
         // C: combat flag 0x10 (a new battlefield) is set by mode 0 of R002+0x0000; its levels are not prepared yet.
         var newBattlefield = !Store.Prepared;
         PrepareLevels();
+        KeepLevelFiles();
         for (var i = 0; i < Combatant.PartySlots; i++)
         {
             Battle[i].Floor = Battle.FloorShown;
@@ -348,13 +438,13 @@ public sealed partial class TacticalBattle : IBattleEndActions
         SwitchLevel(Battle.FloorShown);
         if (arrivedThroughDoor && Level.PartyRoom >= 0)
         {
-            // C: arrived through a door: its wall group is remembered as open (doors_opened) and its cells uncovered.
+            // C: arrived through a door: its wall group is remembered as open (opened-door-list) and its cells uncovered.
             RevealGroup(Level.PartyRoom);
             LevelChanged = true;
             _redraw = true;
         }
-        // combat_flags 0x10 (R024 0000, mode 0) and 0x20 (R014+0x0058, modes 2 and 3) place the party at the level's start before the
-        // timers are cleared; mode 1 (combat_flags 2) places nobody: each member stands where the last battle left it.
+        // fight-flags 0x10 (R024 0000, mode 0) and 0x20 (R014+0x0058, modes 2 and 3) place the party at the level's start before the
+        // timers are cleared; mode 1 (fight-flags 2) places nobody: each member stands where the last battle left it.
         // orig: R002+0x0098..0x00EE (R002+0x0000's modes) and R014+0x0058..0x0104, checked against the asm; tests: RevisitTests
         // C: the party's collision sizes are still the tables' bytes from the last battle (zeros in a fresh program) while the party is
         // placed; R014+0x0258 sets them from the animation sets below
@@ -362,6 +452,20 @@ public sealed partial class TacticalBattle : IBattleEndActions
         for (var i = 0; i < Combatant.PartySlots; i++)
         {
             (Battle[i].HalfWidth, Battle[i].HalfHeight) = ProgramMemory.PartySizes?[i] ?? (0, 0);
+            // C: the party's place tables (doors DS:C64C / DS:C678 / DS:C6EF, stairs DS:C77E, chest DS:C784, dissolve slot DS:C7CD,
+            //   exit zone DS:C7FE, stairs back DS:C8B2) are not set up for a new battle either: the last battle's values, or the .BSV's
+            //   after a load (the program's battle file); each tick's place checks change them where a member stands (b35: markers
+            //   written at R014+0x0000 in the original are all still there for slots 0..4 at the first activation test)
+            var t = ProgramMemory.PartyTables;
+            int Table(int at) => t is null ? 0 : (sbyte)t[at - BattleVariables.MemberDoor + i];
+            Battle[i].Door = Table(BattleVariables.MemberDoor);
+            Battle[i].DoorOpens = Table(BattleVariables.MemberDoorOpens) != 0;
+            Battle[i].DoorSide = Table(BattleVariables.MemberDoorSide);
+            Battle[i].StairsExit = Table(BattleVariables.MemberStairs);
+            Battle[i].Chest = Table(BattleVariables.MemberChest);
+            Battle[i].DissolveSlot = Table(BattleVariables.MemberDissolveSlot);
+            Battle[i].ExitZone = Table(BattleVariables.MemberExitZone);
+            Battle[i].StairsBack = Table(BattleVariables.MemberStairsBack);
         }
         if (keptPlaces is null)
         {
@@ -371,7 +475,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
         {
             KeepPlaces(keptPlaces);
         }
-        // combat_flags 4: the fight was started by an alarm trigger: its furniture or wall goes now.
+        // fight-flags 4: the fight was started by an alarm trigger: its furniture or wall goes now.
         // C: R014+0x0110 has no test of the box's x (−1 after the last battle): a trigger at x −1 would match.
         for (var k = 0; (combatFlags & 4) == 4 && k < (sbyte)Level.GetByte(TriggerCountAt); k++)
         {
@@ -419,17 +523,19 @@ public sealed partial class TacticalBattle : IBattleEndActions
                 ReadyWeapon(i, c.DefaultWeapon, 0);
             }
         }
+        // orig: R014+0x0254..0x027E: DS:C80F[i] = DS:1182[i], DS:C831[i] = DS:118E[i] for the party's slots, before this battle loads any
+        //   animation set: the slot sizes the last battle's loads left (a fresh program: the slots' own 5 and 2). Seen in the original with
+        //   a hook there (b35, dungeon-door-back): member 2's set is 7 wide, so in the second battle its box is 7 and the leader stops 2 px sooner
         for (var i = 0; i < Combatant.PartySlots; i++)
         {
             var c = Battle[i];
-            c.HalfWidth = Slots[i].HalfWidth;
-            c.HalfHeight = Slots[i].HalfHeight;
+            (c.HalfWidth, c.HalfHeight) = ProgramMemory.PartySlotSizes?[i] ?? (Slots[i].HalfWidth, Slots[i].HalfHeight);
             if (c.Status != CharacterStatus.Empty)
             {
                 SetPose(i, Pose.Walking);
             }
         }
-        // C: the clock as the loads of activations_check (R025's enemy sprites) and of weapon_ready left it
+        // C: the clock as the loads of trigger-check (R025's enemy sprites) and of weapon-armed left it
         _view.SetUpTime(1);
         EnemyTurn();
         Battle.Result = BattleResult.Running;
@@ -444,15 +550,19 @@ public sealed partial class TacticalBattle : IBattleEndActions
         // DS:D6F1 = 1, DS:D6ED: the frame drawn after the first tick opens order mode for that member, so the battle begins paused.
         PendingOrderMember = Battle.ActiveMember;
         MoveMode = 0;
-        // orig: R014+0x02FF / 0x0307: floor_view_draw(−1) (the view around the centre kept, DS:C866 / DS:C886: the placement's) and
-        // combat_draw, before the first tick: the draw list's random draws (the animated pieces of that view)
+        // orig: R014+0x02FF / 0x0307: floor-view-paint(−1) (the view around the centre kept, DS:C866 / DS:C886: the placement's) and
+        // fight-draw, before the first tick: the draw list's random draws (the animated pieces of that view)
         // orig: that draw's R014+0x99F6 (14F7:31E6) also turns whoever EnemyTurn just gave an action toward its target
         _view.MapChanged();
+        // orig: that fight-draw's R014+0x99F6 also sets every combatant's screen place before the first tick (local/batch/b32/a7-king: a battle
+        // taken up from the start screen, the view around 0,0: the first tick's follow test R014+0x1065 then centres the view on the leader and
+        // order mode opens at once, the start pause at the first tick's clock)
+        _view.SetUpScreenPlaces();
         TurnTowardTargets();
         Effects.Drawn(_view);
         RemoveArrivedMissiles();
         RefreshTargetCursor();
-        // C: mouse_show and root 047C:1293 (R014+0x030C) take time before R014+0x0311 reads the clock
+        // C: pointer-show and root 047C:1293 (R014+0x030C) take time before R014+0x0311 reads the clock
         _view.SetUpTime(2);
         NextTickAt = (ushort)(Clock + TickLength);
         // orig: R014+0x0311 reads the clock for DS:D9E4 (next tick); R014+0x0332 reads it again for DS:DA4F (the next activations check,
@@ -485,7 +595,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
     // orig: R014+0x0000 (0E76:0000) draft: DS:9920 is 1 (on) when combat flag 1 is set, DS:C8B7 is 0 and DS:A6C1 (real combat) is 0, else 2
     private void OfferSave() => Menus.SaveGame = (byte)(Battle.Persistent && !IsKeep && !Battle.RealCombat ? 1 : 2);
 
-    /// <summary>combat_flags 0x80: the first disabled activation is copied to the end of the list (still disabled) and itself re-enabled.</summary>
+    /// <summary>fight-flags 0x80: the first disabled activation is copied to the end of the list (still disabled) and itself re-enabled.</summary>
     // orig: R014+0x0620 (0E76:0620) matched
     private void RepeatActivation(int combatFlags)
     {
@@ -505,8 +615,8 @@ public sealed partial class TacticalBattle : IBattleEndActions
         }
     }
 
-    /// <summary>combat_state_clear (R020 06B6): the clock and every timer back to 0, step and frame delays 8.</summary>
-    // orig: combat_state_clear R020+0x06B6 (1EF8:06B6) draft (byte-matched per the draft notes)
+    /// <summary>fight-state-reset (R020 06B6): the clock and every timer back to 0, step and frame delays 8.</summary>
+    // orig: fight-state-reset R020+0x06B6 (1EF8:06B6) draft (byte-matched per the draft notes)
     private void ClearTimers()
     {
         Battle.Clock = 0;
@@ -529,14 +639,14 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// clock rebase, endurance recovery, idle frames, the activation check / enemy turn every 120
     /// ticks, the initial enemy placement, then <see cref="Tick"/>. Returns true when the battle is over.
     /// </summary>
-    // orig: combat_main R014+0x0000 (0E76:0000) draft (the main loop, spec D §1.2, asm-verified)
+    // orig: fight-main-loop R014+0x0000 (0E76:0000) draft (the main loop, spec D §1.2, asm-verified)
     public bool Iterate() => IterateHead() || IterateRest();
 
     /// <summary>
     /// The pass up to the endurance recovery (R014+0x08FE .. R014+0x45AE, called before R014+0x3166, the player's input); true when
     /// the battle is over.
     /// </summary>
-    // orig: combat_main R014+0x0000 (0E76:0000) calls the end test and the endurance recovery, then the input (R014+0x3166), then the rest
+    // orig: fight-main-loop R014+0x0000 (0E76:0000) calls the end test and the endurance recovery, then the input (R014+0x3166), then the rest
     public bool IterateHead()
     {
         OfferSave();
@@ -598,6 +708,9 @@ public sealed partial class TacticalBattle : IBattleEndActions
                 }
             }
         }
+        // the tester's rise -7: the callbacks a long pass (the order menu's reset R016+0x0CDC) had before the original read the clock for
+        //   this test (R014+0x05B4); none in play (ClockPhase is null there)
+        ClockPhase?.Invoke(-7);
         if (ActivationsAt < Clock)
         {
             if (CheckActivations())
@@ -627,7 +740,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
     public const int TravelIndividuallyText = 0x0768;
 
     /// <summary>The clock passed 50000: every timer moves back by 49000.</summary>
-    // orig: combat_main R014+0x0000 (0E76:0000) draft (the rebase, spec D §1.2)
+    // orig: fight-main-loop R014+0x0000 (0E76:0000) draft (the rebase, spec D §1.2)
     // C: adding 0x4098 to a 16-bit word subtracts 49000 modulo 2^16.
     private void Rebase()
     {
@@ -673,21 +786,28 @@ public sealed partial class TacticalBattle : IBattleEndActions
         Effects.Rebase(R);
     }
 
-    /// <summary>A debugging aid: called where a tick's phases begin (-1 the scheduler, -2 the melee exchanges, or earlier: after a rethink's path search in the scheduler; -3 after the activations' test), as MscRandom.BeforeDraw is before a draw
+    /// <summary>A debugging aid: called where a tick's phases begin (-1 the scheduler, -2 the melee exchanges, or earlier: after a rethink's path search in the scheduler; -3 after the activations' test; -6 a tick found not due), as MscRandom.BeforeDraw is before a draw
     /// (tools/oracle/battle_oracle.py gives the C# the clock the original's long passes had reached there, DARKLANDS_BATTLE_CLOCK_JUMPS).</summary>
     public static Action<int>? ClockPhase { get; set; }
 
     /// <summary>One combat tick when due: AI, places, melee exchanges, speed masks, actions.</summary>
     /// <returns>True when a tick ran.</returns>
-    // orig: combat_tick R014+0x0F58 (0E76:0F58) draft (spec D §1.3, asm-verified)
+    // orig: fight-tick R014+0x0F58 (0E76:0F58) draft (spec D §1.3, asm-verified)
     // C: while paused (the clock stopped) a tick still runs every 8 timer callbacks (DS:07D1): it draws (with the renderer's random
     // numbers) and turns the combatants, but the AI, melee and actions stay frozen.
     public bool Tick()
     {
-        // C: DS:CA29 (a pit or an alarm stopped the battle): combat_tick returns at once.
-        if (_stopped || Clock < NextTickAt && (!Paused || TimerCallbacks < 8))
+        // C: DS:CA29 (a pit or an alarm stopped the battle): fight-tick returns at once.
+        while (_stopped || Clock < NextTickAt && (!Paused || TimerCallbacks < 8))
         {
-            return false;
+            // the tester's rise -1 of a long pass whose tick the original made (its scheduler's mark): as many of its callbacks as made the
+            // tick due came before this test, one at a time (ClockPhase is null in play: the loop ends at once)
+            var before = Clock;
+            ClockPhase?.Invoke(-6);
+            if (_stopped || Clock == before)
+            {
+                return false;
+            }
         }
         TimerCallbacks = 0;
         Ticks++;
@@ -715,16 +835,20 @@ public sealed partial class TacticalBattle : IBattleEndActions
             RotateSpeedMasks();
             CombatActions();
         }
+        // orig: R014+0x1052: DS:D9E4 = DS:07D4 + 8, the clock as it is after the tick's phases (the tester's rise -4 of a long pass comes here)
+        ClockPhase?.Invoke(-4);
         NextTickAt = (ushort)(Clock + TickLength);
-        // orig: R014+0x105B: DS:CA29 set by this tick's actions (a pit, an alarm): combat_tick returns before the follow and the draw
+        // orig: R014+0x105B: DS:CA29 set by this tick's actions (a pit, an alarm): fight-tick returns before the follow and the draw
         if (_stopped)
         {
             return true;
         }
         // orig: R014+0x1065..0x10A7: with DS:11B1 the view follows the active member (DS:17B0) by its place in the last frame
-        if (FollowsActive)
+        if (FollowsActive && _view.KeepInView(Battle.ActiveMember))
         {
-            _view.KeepInView(Battle.ActiveMember);
+            // orig: R014+0x10A1: after floor-view-paint (09C0:1C2F) DS:D9E4 = DS:07D4 + 8 again (the tester's rise -5: the redraw's time)
+            ClockPhase?.Invoke(-5);
+            NextTickAt = (ushort)(Clock + TickLength);
         }
         TurnTowardTargets();
         Effects.Drawn(_view);
@@ -745,13 +869,25 @@ public sealed partial class TacticalBattle : IBattleEndActions
     }
 
     /// <summary>+1 endurance every 5/15/30/45 s outside real combat, up to three quarters of the maximum.</summary>
-    // orig: endurance_recover R014+0x45AE (0E76:45AE) draft (byte-matched, asm-verified)
+    // orig: endurance-regain R014+0x45AE (0E76:45AE) draft (byte-matched, asm-verified)
+    // DIVERGENCE: host timing: the original reads the timer's clock DS:07D4 anew for each member (R014+0x45CF), so a timer callback that
+    //   comes inside the loop gives the later members a time one higher (gen-carry-11, -13, -25, -34: right after the mine ambush's loot screen
+    //   member 0 at 2097, members 1..3 at 2098, DS:07D1 EB -> EC between them, no row redrawn; a read-only hook in the original). Where the
+    //   callback falls among the instructions is the original's CPU time against the timer; here the clock moves between passes only.
+    //   The tester gives the C# where they landed (tools/oracle/timer_marks.py, lockstep.py --timer-marks: RegainRead before each
+    //   member's read): with it gen-carry-11, -13, -25 and -34 agree in every tick, state and file.
     private void RecoverEndurance()
     {
         for (var i = 0; i < Combatant.PartySlots; i++)
         {
             var c = Battle[i];
-            if (c.Status is not (CharacterStatus.Able or CharacterStatus.Unconscious) || c.RecoverAt >= Clock)
+            if (c.Status is not (CharacterStatus.Able or CharacterStatus.Unconscious))
+            {
+                continue;
+            }
+            // orig: R014+0x45CF: mov dx, [07D4], the clock read for this member (the tester's callbacks inside the loop come here)
+            RegainRead?.Invoke(i);
+            if (c.RecoverAt >= Clock)
             {
                 continue;
             }
@@ -767,6 +903,10 @@ public sealed partial class TacticalBattle : IBattleEndActions
         }
     }
 
+    /// <summary>A debugging aid for the oracle (null in play): called before the endurance regain reads the clock for a member (its slot),
+    /// where tools/oracle/timer_marks.py found the original's timer callbacks inside the loop (DARKLANDS_BATTLE_REGAIN_RISES).</summary>
+    public static Action<int>? RegainRead { get; set; }
+
     /// <summary>After the battle: skill improvement from what was used (unless the party fell into a pit).</summary>
     // orig: R014+0x0694 (0E76:0694) draft (byte-matched per the draft notes)
     // DIVERGENCE: saving the level files belongs to the battlefield store (the levels stay in memory here).
@@ -776,7 +916,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
         Effects.EndPartyModifiers();
         if (Battle.Result != BattleResult.FellIntoPit)
         {
-            // orig: skill_change_msg R021+0x0080 (1EF8:0080) matched: "<skill> changed from X to Y" (msg_buf) shown by
+            // orig: ability-change-notice R021+0x0080 (1EF8:0080) matched: "<skill> changed from X to Y" (text-bank-buffer) shown by
             // R021+0x01E2 (1EF8:01E2) matched in colour 15 (a gain) or 12 (a loss)
             BattleEnd.ImproveSkills(Battle, (m, skill, from, to) =>
                 _view.MemberMessage(m, $"{Rules.MemberRules.SkillNames[skill]} changed from {from} to {to}", to > from ? 15 : 12));
@@ -787,17 +927,21 @@ public sealed partial class TacticalBattle : IBattleEndActions
     /// <summary>How many times a level was switched to (the harness of the single calls tells the original's file reloads by it).</summary>
     public int LevelSwitches { get; private set; }
 
-    /// <summary>DS:D4E4: the level in the buffer changed since it was loaded or saved (level_switch and the battle's end save it only then).</summary>
+    /// <summary>DS:D4E4: the level in the buffer changed since it was loaded or saved (level-change and the battle's end save it only then).</summary>
     public bool LevelChanged { get; set; }
 
-    // stairs records' +0x07 writes of take_exit made while DS:D4E4 was clear (the level buffer's byte, the value it had)
+    // stairs records' +0x07 writes of use-exit made while DS:D4E4 was clear (the level buffer's byte, the value it had)
     private readonly List<(int At, byte Before)> _unsavedLevelBytes = [];
 
-    /// <summary>The level in the buffer is saved when DS:D4E4 is set, else what take_exit wrote since is lost; DS:D4E4 is cleared.</summary>
-    // orig: level_switch R024+0x05B4 (the save of the level left) and AfterBattle R014+0x069A
+    /// <summary>The level in the buffer is saved when DS:D4E4 is set, else what use-exit wrote since is lost; DS:D4E4 is cleared.</summary>
+    // orig: level-change R024+0x05B4 (the save of the level left) and AfterBattle R014+0x069A
     private void SaveLevelOrLoseUnsaved()
     {
-        if (!LevelChanged)
+        if (LevelChanged)
+        {
+            SaveLevelFiles();
+        }
+        else
         {
             foreach (var (at, before) in _unsavedLevelBytes)
             {
@@ -808,9 +952,48 @@ public sealed partial class TacticalBattle : IBattleEndActions
         LevelChanged = false;
     }
 
-    /// <summary>Shows another level (level_switch).</summary>
-    // orig: level_switch R024+0x059A (1EF8:059A) draft (outline; the end checked against the asm: `if (DS:D6EE != 0) R024+0x07A2();`)
-    // DIVERGENCE: the levels stay in memory (no .flr/.atv files); the hidden wall lists of unopened doors are applied by LevelShown.
+    /// <summary>The prepared levels are the level files of a battlefield that has none yet.</summary>
+    private void KeepLevelFiles()
+    {
+        if (Store.FloorFiles is not null)
+        {
+            return;
+        }
+        Store.FloorFiles = [.. _levels.Select(l => (byte[])l.Image.Clone())];
+        Store.ActivationFiles = [.. Enumerable.Range(0, _levels.Count).Select(ActivationFile)];
+    }
+
+    /// <summary>The level in the buffer and its activations are written to their files.</summary>
+    private void SaveLevelFiles()
+    {
+        for (var i = 0; Store.FloorFiles is { } floors && i < _levels.Count && i < floors.Length; i++)
+        {
+            if (ReferenceEquals(_levels[i], Map.Level))
+            {
+                floors[i] = (byte[])Map.Level.Image.Clone();
+                Store.ActivationFiles![i] = ActivationFile(i);
+            }
+        }
+    }
+
+    /// <summary>A level's activations in the .atv form (the count, then 30 bytes each).</summary>
+    private byte[] ActivationFile(int level)
+    {
+        var activations = level < BattlefieldForces.MaxLevels ? Activations[level] : [];
+        var atv = new byte[1 + activations.Count * 30];
+        atv[0] = (byte)activations.Count;
+        for (var k = 0; k < activations.Count; k++)
+        {
+            activations[k].ToRecord().CopyTo(atv, 1 + 30 * k);
+        }
+        return atv;
+    }
+
+    /// <summary>Shows another level (level-change).</summary>
+    // orig: level-change R024+0x059A (1EF8:059A) draft (outline; the end checked against the asm: `if (DS:D6EE != 0) R024+0x07A2();`)
+    // DIVERGENCE: the levels stay in memory (the .flr/.atv files are BattlefieldStore.FloorFiles / ActivationFiles, which only the battle
+    // file reads): a level switched to is not read back from its file, so what changed in it without DS:D4E4 is kept here but for
+    // use-exit's stairs mark (SaveLevelOrLoseUnsaved); the hidden wall lists of unopened doors are applied by LevelShown.
     public void SwitchLevel(int floor)
     {
         if (floor < 0 || floor >= _levels.Count)
@@ -823,7 +1006,7 @@ public sealed partial class TacticalBattle : IBattleEndActions
         Map.Level = _levels[floor];
         Battle.ExitCards = Map.Level.ExitCards;
         LevelShown();
-        // C: DS:D6EE is the varying furniture's buffer, which battle_tiles_load allocates when the terrain's +0xB4 is not 0
+        // C: DS:D6EE is the varying furniture's buffer, which battle-tileset-load allocates when the terrain's +0xB4 is not 0
         if (Field.Terrain[0xB4] != 0)
         {
             VaryFurniture();
@@ -850,21 +1033,47 @@ public sealed partial class TacticalBattle : IBattleEndActions
         }
     }
 
-    // IBattleEndActions (combat_over's calls).
+    // IBattleEndActions (fight-finished's calls).
+
+    /// <summary>damage-resolve on combatant i; when it ran to its end it drew the party panel rows anew (party-panel-row-set(0x100), R014+0xAEC4).</summary>
+    private void ApplyDamage(int i)
+    {
+        if (Attacks.ApplyDamage(Battle, i))
+        {
+            _view.RowChanged(-1);
+        }
+    }
 
     public void LootAfterFight() => GatherLoot();
 
     public void OpenLoot(int member) => OpenLootPile(member);
 
+    // orig: R014+0x0AB5..0x0ABE: floor-view-paint(si) (09C0:1C2F) then fight-draw R014+0x6818 (14F7:0008), whose R014+0x99F6 turns the attackers
+    public void RedrawAround(int member)
+    {
+        if (member < 0)
+        {
+            _view.MapChanged();
+        }
+        else
+        {
+            _view.Recentre(member);
+        }
+        TurnTowardTargets();
+        Effects.Drawn(_view);
+        RemoveArrivedMissiles();
+        RefreshTargetCursor();
+    }
+
     public void LeftCombatMode()
     {
-        // orig: combat_mode_leave R014+0x0D86: DS:D6EB = 0 first (no more reinforcement waves)
+        // orig: fight-mode-exit R014+0x0D86: DS:D6EB = 0 first (no more reinforcement waves)
         WavesEnabled = false;
         // orig: R014+0x0D97..0x0D99: root 047C:040B(3), the enemies' palette cycle stopped (the screen's)
         _view.CombatModeLeft();
         Menus.Set(OrdersItem.EnemyInfo, 2);
         Menus.Set(OrdersItem.Surrender, 2);
-        // orig: combat_mode_leave R014+0x0D86 (0E76:0D86) draft (spec D §1.6): DS:A3D8[0..12] = 0 (0xDB2), the box bits and walk sizes.
+        // orig: fight-mode-exit R014+0x0D86 (0E76:0D86) draft (spec D §1.6): DS:A3D8[0..12] = 0 (0xDB2), the box bits and walk sizes.
         Array.Clear(_fireBlocked);
         foreach (var c in Battle.Combatants)
         {
@@ -878,9 +1087,9 @@ public sealed partial class TacticalBattle : IBattleEndActions
 
     public void PlaceWokenMember(int member) => PlaceWoken(member);
 
-    /// <summary>battle_run's end: after the result message, combat_recover for whatever the result (the unconscious of a lost
+    /// <summary>battle-entry's end: after the result message, fight-recovery for whatever the result (the unconscious of a lost
     /// battle wake on a free spot near where they lay, with their random draws).</summary>
-    // orig: R002+0x05C1 (thunk 09C0:1AF9 to combat_recover R014+0x0DEE), checked against the asm
+    // orig: R002+0x05C1 (thunk 09C0:1AF9 to fight-recovery R014+0x0DEE), checked against the asm
     public void RecoverAfterBattle() => BattleEnd.Recover(Battle, this);
 
     public void VictoryCleanUp()

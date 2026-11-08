@@ -17,21 +17,27 @@ public sealed class CardDispatcher
     public const int EndOfGame = 0x62;
     public const int QuitGame = -0x63;
 
-    private readonly Dictionary<int, Card> _cards;
+    private readonly CardRegistry _cards;
 
+    /// <summary>The game's own cards only (the scripts of the assemblies, default Darklands.Cards): Classic.</summary>
     public CardDispatcher(params Assembly[] scriptAssemblies)
+        : this(new CardRegistry(scriptAssemblies))
     {
-        _cards = (scriptAssemblies.Length > 0 ? scriptAssemblies : [typeof(Card).Assembly])
-            .SelectMany(a => a.GetTypes())
-            .Where(t => t.IsSubclassOf(typeof(Card)) && !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) is not null)
-            .Select(t => (Card)Activator.CreateInstance(t)!)
-            .ToDictionary(c => c.Number);
     }
+
+    /// <summary>The cards of a registry: the game's, and those mods registered on top of them (CardRegistry has the precedence).</summary>
+    public CardDispatcher(CardRegistry cards)
+    {
+        _cards = cards;
+    }
+
+    /// <summary>The cards this dispatcher runs.</summary>
+    public CardRegistry Cards => _cards;
 
     /// <summary>How many cards have scripts.</summary>
     public int ScriptedCount => _cards.Count;
 
-    public bool HasScript(int number) => _cards.ContainsKey(number);
+    public bool HasScript(int number) => _cards.Contains(number);
 
     /// <summary>Runs one card and moves the game on to the next one.</summary>
     // orig: one pass of the do/while in root 03A1:000A, the part that is not a battle
@@ -39,14 +45,14 @@ public sealed class CardDispatcher
     // card is skipped and the battle branch runs at once (DarklandsGame.Play).
     // C: DS:A88F = DS:A88D; DS:A88D = DS:A772; DS:A772 = DS:A764 — the previous card (DS:A88D, the previous-screen word) becomes PreviousCard here. The one before it (DS:A88F) is kept by the original, but no instruction of the EXE reads it (the root and all 136 overlays hold only its two stores, root 03A1 and R066+0x271F), so it is not kept here; test CardDispatcherTests.FinishPassMovesTheCardsDown.
     // C: "if (DS:A772 != 0xc) DS:A891 = 0": after any card but the map the original clears the map-leave mode word (DS:A891, GameState.MapLeaveMode, saved with the game); the map itself runs in DarklandsGame.Travel and keeps it.
-    // C: thunk 09C0:190F(0), called after every pass, is advance_hours(0) (the vector resolves to R029+0x54D8 (1367:05C8) through the overlay thunk table): the clock housekeeping TimePassage.Advance(state, 0) stands for. In the battle branch it is called a second time after thunk 09C0:1919(0) (= cards_startup, which reloads the card engine); nothing needs that here.
+    // C: thunk 09C0:190F(0), called after every pass, is pass-hours(0) (the vector resolves to R029+0x54D8 (1367:05C8) through the overlay thunk table): the clock housekeeping TimePassage.Advance(state, 0) stands for. In the battle branch it is called a second time after thunk 09C0:1919(0) (= cards-setup, which reloads the card engine): DarklandsGame.FightTheBattle makes that call.
     // C: a battle code (-2..-6) leaves the pass unfinished: the battle runs first (DS:A772 is still the card during it, a save in the
     // battle writes it) and FinishPass then moves on to the card the battle returned.
     public int RunCard(CardContext c)
     {
         var state = c.State;
         var number = state.CurrentCard;
-        var card = _cards.TryGetValue(number, out var scripted) ? scripted : new UnknownCard(number);
+        var card = _cards.Find(number) ?? new UnknownCard(number);
         var next = card.Run(c);
         if (!IsBattle(next))
         {

@@ -7,7 +7,7 @@ namespace Darklands.Cards.Scripts;
 /// </summary>
 // orig: R112+0x0000 (1838:0000) matched; tests: CardSmokeTests
 // orig: R112+0x0464 (1838:0464) matched (registration: an empty function; lines 10..19 keep an earlier card's handlers, all hidden)
-// C: the loop calls card_menu without card_options or card_text (card_load draws only the picture), so the menu works on the option
+// C: the loop calls card-choice-menu without card-option-lines or card-text-block (card-run draws only the picture), so the menu works on the option
 // C: lines the screen last laid out (the previous card's last text) with this card's states and handlers (CardMenu.DrawsOptions = false).
 // C: the card's three blocks (one per river) are never shown; which river is meant is not chosen by the card.
 public sealed class RiverboatLanding : Card
@@ -25,8 +25,8 @@ public sealed class RiverboatLanding : Card
         menu.Popup = () => c.MemberPopupHint();
 
         return menu.Run(
-            // DORMANT: lines 0..8 are never offered. Their actions: R112+0x020E, R112+0x0288,
-            // R112+0x0302 .. R112+0x03EA are empty; R112+0x0248 and R112+0x02C2 go to card 0x5A.
+            // Lines 0, 2, 4, 8 (R112+0x020E, R112+0x0288, R112+0x0302, R112+0x03EA) are empty; reachability unproven (how card 272 is entered is not settled).
+            // R112+0x0248 and R112+0x02C2 go to card 0x5A.
             new MenuLine(_ => { }, Unknown),
             // orig: R112+0x0248 (1838:0248) matched
             new MenuLine(_ => c.Next = 0x5A, Unknown),
@@ -38,7 +38,7 @@ public sealed class RiverboatLanding : Card
             new MenuLine(_ => { }, Unknown),
             new MenuLine(_ => { }, Unknown),
             new MenuLine(_ => { }, Unknown),
-            // orig: R112+0x0424 (1838:0424) matched; hint R112+0x042C (leaves without clearing cur_loc)
+            // orig: R112+0x0424 (1838:0424) matched; hint R112+0x042C (leaves without clearing location-now)
             new MenuLine(_ => c.Next = CardContext.MapCard, Unknown));
     }
 

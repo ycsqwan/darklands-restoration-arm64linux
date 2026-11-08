@@ -39,6 +39,8 @@ internal static class SdlNative
     internal const int KeyTab = 9;
     internal const int KeyV = 118;
     internal const int ScancodeF11 = 68;
+    internal const int ScancodeF12 = 69;
+    internal const int KeyModCtrl = 0x00C0;
     internal const byte MouseButtonLeft = 1;
     internal const byte MouseButtonRight = 3;
     internal const int KeyReturn = 13;
@@ -94,6 +96,11 @@ internal static class SdlNative
     internal const int KeyModRightShift = 0x0002;
     internal const int KeyModLeftCtrl = 0x0040;
     internal const int KeyModRightCtrl = 0x0080;
+    internal const int KeyModAlt = 0x0300;
+    internal const int KeyModGui = 0x0C00;
+    internal const int KeyModCaps = 0x2000;
+    internal const int KeyModAltGr = 0x4000;
+    internal const int KeyInsert = 1073741897;
 
     private const string LibraryName = "SDL2";
     private static readonly object ResolverLock = new();
@@ -155,7 +162,11 @@ internal static class SdlNative
 
         yield return Path.Combine(AppContext.BaseDirectory, "SDL2.dll");
         yield return "SDL2.dll";
+        // Linux (SteamOS included): a copy beside the program first, then the system's (the runtime tries ld.so's paths for a bare name)
+        yield return Path.Combine(AppContext.BaseDirectory, "libSDL2-2.0.so.0");
         yield return "libSDL2-2.0.so.0";
+        yield return "libSDL2-2.0.so";
+        yield return "libSDL2.so";
         yield return "libSDL2.dylib";
     }
 
@@ -200,6 +211,21 @@ internal static class SdlNative
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int SDL_GetRendererOutputSize(IntPtr renderer, out int width, out int height);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_GetRendererInfo(IntPtr renderer, out SdlRendererInfo info);
+
+    /// <summary>SDL_RendererInfo (its texture formats and maximum sizes are not read).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct SdlRendererInfo
+    {
+        internal IntPtr Name;
+        internal uint Flags;
+        internal uint TextureFormatCount;
+        internal fixed uint TextureFormats[16];
+        internal int MaxTextureWidth;
+        internal int MaxTextureHeight;
+    }
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr SDL_CreateTexture(
@@ -367,6 +393,29 @@ internal static class SdlNative
     internal static extern int SDL_OpenURL([MarshalAs(UnmanagedType.LPUTF8Str)] string url);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_ShowMessageBox(ref MessageBoxData data, out int buttonId);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MessageBoxButton
+    {
+        internal uint Flags;
+        internal int Id;
+        internal IntPtr Text;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MessageBoxData
+    {
+        internal uint Flags;
+        internal IntPtr Window;
+        internal IntPtr Title;
+        internal IntPtr Message;
+        internal int ButtonCount;
+        internal IntPtr Buttons;
+        internal IntPtr ColorScheme;
+    }
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr SDL_GetClipboardText();
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -392,6 +441,38 @@ internal static class SdlNative
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int SDL_GetWindowWMInfo(IntPtr window, ref SdlSysWmInfo info);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr SDL_GetCurrentAudioDriver();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_GetNumAudioDrivers();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr SDL_GetAudioDriver(int index);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_GetNumAudioDevices(int isCapture);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr SDL_GetAudioDeviceName(int index, int isCapture);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_GetAudioDeviceStatus(uint deviceId);
+
+    /// <summary>SDL 2.24 and later: the default output device's name (freed with SDL_free) and its own format.</summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SDL_GetDefaultAudioInfo(out IntPtr name, out SdlAudioSpec spec, int isCapture);
+
+    /// <summary>A string SDL owns (not freed), or null.</summary>
+    internal static string? Text(IntPtr text) => text == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(text);
+
+    /// <summary>The SDL2 library's version, e.g. "2.32.56"; sdl2-compat (SDL2 on top of SDL3) numbers its patch level 50 and up.</summary>
+    internal static (string Text, bool Sdl2Compat) LinkedVersion()
+    {
+        SDL_GetVersion(out var v);
+        return ($"{v.Major}.{v.Minor}.{v.Patch}", v.Major == 2 && v.Patch >= 50);
+    }
 
     /// <summary>The window's Windows handle (HWND), or zero elsewhere or when SDL cannot tell.</summary>
     internal static IntPtr WindowsHandle(IntPtr window)

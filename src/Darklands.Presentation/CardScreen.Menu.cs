@@ -1,12 +1,13 @@
 using Darklands.Cards;
 using Darklands.Core;
 using Darklands.Platform;
+using Darklands.Presentation.Commands;
 using Darklands.Presentation.Graphics;
 
 namespace Darklands.Presentation;
 
 /// <summary>The option menu of a card: hover highlight, Shift hints, the item and saint pop-up boxes, the choice.</summary>
-// orig: card_menu R043+0x1BD2 (150B:1142) draft (bytes match) + card_mouse R043+0x21D4 (150B:1744) draft (bytes match) + the box: R043+0x2CE2 (text, OptionPopupText), R043+0x2ACA (drawing; draft, unmatched only in register/branch layout) and R043+0x3292 (the main lines' width while the box is up); tests: OptionPopupTests, Host.Headless
+// orig: card-choice-menu R043+0x1BD2 (150B:1142) draft (bytes match) + card-mouse-handler R043+0x21D4 (150B:1744) draft (bytes match) + the box: R043+0x2CE2 (text, OptionPopupText), R043+0x2ACA (drawing; draft, unmatched only in register/branch layout) and R043+0x3292 (the main lines' width while the box is up); tests: OptionPopupTests, Host.Headless
 public sealed partial class CardScreen
 {
     /// <summary>DS:5202 = -10: no Shift hint is shown.</summary>
@@ -18,7 +19,7 @@ public sealed partial class CardScreen
 
     /// <summary>
     /// A laid-out option list on the screen: the lines, the column they share and the highlighted
-    /// line (the layout struct DS:E96E, whose byte at +1 is menu_highlight).
+    /// line (the layout struct DS:E96E, whose byte at +1 is menu-line-highlight).
     /// </summary>
     private sealed class OptionLayout(List<OptionArea> lines, int x, int width)
     {
@@ -31,12 +32,12 @@ public sealed partial class CardScreen
 
         public int Highlight { get; set; } = -1;
 
-        // orig: INSIDE(x, y, w, h, mx, my) of card_mouse: x + 0x3c <= mx <= w + x + 0x3c and y <= my <= y + h, both ends included, first hit wins
+        // orig: INSIDE(x, y, w, h, mx, my) of card-mouse-handler: x + 0x3c <= mx <= w + x + 0x3c and y <= my <= y + h, both ends included, first hit wins
         public int At(int mx, int my) => Lines.FindIndex(a => X <= mx && mx <= X + Width && a.Y <= my && my <= a.Y + a.Height);
     }
 
     /// <summary>An item or saint box on the screen: its rectangle, what it covers and its own option list.</summary>
-    private sealed record PopupBox(int X, int Y, int Width, int Height, SavedRegion Under, OptionLayout Layout, int MainWidth)
+    private sealed record PopupBox(int X, int Y, int Width, int Height, SavedRegion Under, OptionLayout Layout, int MainWidth, Cards.PopupBox Kind)
     {
         public bool Contains(int mx, int my) => X <= mx && mx <= X + Width && Y <= my && my <= Y + Height;
     }
@@ -50,24 +51,30 @@ public sealed partial class CardScreen
     public static (int X, int Y)? OptionPoint(int line) =>
         _choosing is { } l && line >= 0 && line < l.Lines.Count ? (l.X + 1, l.Lines[line].Y + 1) : null;
 
-    // orig: card_menu: combat_clock = 0, flush_keys, DS:EE41 = DS:EE42 = 0, menu_popup = DS:8DDE = 0, menu_highlight = -1; then per pass: menu_bar_run (GameUi), the party_icons_dirty redraw (not needed), a left press on a portrait -> 13a0, card_mouse (hover, box, hint, click), and a waiting key: Enter / Space with a highlighted line choose it (in the box: menu_member = opt / 4, menu_slot = opt % 4, the line is the main line the box belongs to, DS:A7BA[DS:A779]), Alt-Q quits (HotKeys), card_global_keys (HotKeys), Up / Down while the pointer is over a line move the highlight (wrapping) and the pointer onto it
-    // C: a choice by Enter in the box sets menu_member and menu_slot but not menu_popup, so the card rates and runs the line as a plain choice.
-    // C: Up from no highlight cannot happen in the original (the cursor keys need the pointer over a line, which card_mouse has just highlighted).
-    // DIVERGENCE: the pointer is not moved onto the line Up / Down select (the host owns it); the menu acts as if it were until the mouse moves. With GameUi.KeyboardCardMenus (an interface convenience, off unless a host turns it on): Up / Down also work while the pointer is off the lines (from no highlight: the first or last line), and the digits 1..9 choose the main list's lines in order.
+    // orig: card-choice-menu: fight-clock = 0, key-buffer-clear, DS:EE41 = DS:EE42 = 0, popup-menu-box = DS:8DDE = 0, menu-line-highlight = -1; then per pass: menu-bar-loop (GameUi), the party-icons-stale redraw (not needed), a left press on a portrait -> 13a0, card-mouse-handler (hover, box, hint, click), and a waiting key: Enter / Space with a highlighted line choose it (in the box: menu-owner-member = opt / 4, menu-choice-index = opt % 4, the line is the main line the box belongs to, DS:A7BA[DS:A779]), Alt-Q quits (HotKeys), card-hotkeys (HotKeys), Up / Down while the pointer is over a line move the highlight (wrapping) and the pointer onto it
+    // C: a choice by Enter in the box sets menu-owner-member and menu-choice-index but not popup-menu-box: the card rates the line with card-option-handler[k], which is then the box's table (DS:E96E holds the box's layout; CardMenu.Run).
+    // C: Up from no highlight cannot happen in the original (the cursor keys need the pointer over a line, which card-mouse-handler has just highlighted).
+    // DIVERGENCE: on a host that cannot move the pointer (MovePointer does nothing there), the pointer stays off the line Up / Down select; the menu acts as if it were on it until the mouse moves. GameUi.KeyboardCardMenus (an interface convenience, off unless a host turns it on) adds nothing a hand could not do: off the lines Up / Down put the pointer onto the line they name (from no highlight: the last or first line) and the digits 1..9 choose the line of that number by a ChooseLine command, the box's while one is up (docs/COMMANDS.md); on a host that cannot move the pointer those Up / Down do nothing.
     // DORMANT: the battle option kind (-1, marker 0x06): highlighting it calls R043+0x29CE, which does nothing (its message "Enemy stats will be displayed here" is never shown); leaving it redraws the panel, as here.
-    private int Select(List<OptionArea> areas, Func<int, OptionHint>? hint, Func<int, OptionHint>? popupHint)
+    private int Select(List<OptionArea> areas, Func<int, OptionHint>? hint, Func<int, OptionHint>? popupHint, Func<List<OptionArea>>? relaid = null)
     {
+        if (areas.Count == 0 && _cardName.Length > 0 && _messages?.Name != _cardName)
+        {
+            areas = WaitForLines(relaid ?? (() => _lastAreas));
+        }
         if (areas.Count == 0)
         {
             return 0;
         }
         var c = context();
         c.MenuPopup = false;
+        c.MenuBox = Cards.PopupBox.None;
         var main = new OptionLayout(areas, _optionX, _optionWidth);
         _choosing = main;
         var current = main;
         PopupBox? box = null;
         var hintShownFor = NoHint;
+        var entered = false;
         var lastMouse = (ui.Mouse.X, ui.Mouse.Y);
         (int X, int Y)? warped = null;
 
@@ -75,7 +82,7 @@ public sealed partial class CardScreen
 
         void CloseBox()
         {
-            // orig: gfx_draw_pic(win, DS:EE0D, DS:EE0F, DS:A776) (the saved rectangle back), gfx_recolor_rect(card_window, x, y, w, h, 5, DS:EE59 or 0), free_buffer, DS:EE41 = 0, R043+0x3292(2) (the main width back)
+            // orig: gfx-picture-draw(win, DS:EE0D, DS:EE0F, DS:A776) (the saved rectangle back), gfx-rect-recolour(card-text-window, x, y, w, h, 5, DS:EE59 or 0), release-work-buffer, DS:EE41 = 0, R043+0x3292(2) (the main width back)
             _canvas.RestoreTransparent(box!.Under);
             _canvas.Recolor(box.X, box.Y, box.Width, box.Height, 5, _textColor);
             main.Width = box.MainWidth;
@@ -91,7 +98,7 @@ public sealed partial class CardScreen
             }
         }
 
-        // orig: the first half of card_mouse, from the pointer position (MX, MY)
+        // orig: the first half of card-mouse-handler, from the pointer position (MX, MY)
         void Track(int mx, int my)
         {
             var i = current.At(mx, my);
@@ -106,6 +113,7 @@ public sealed partial class CardScreen
                     Unhighlight(current);
                 }
                 current.Highlight = i;
+                entered = true;
                 Highlight(current, i, true);
                 if (current.Lines[i].Kind is OptionKind.Items or OptionKind.Saints && box is null)
                 {
@@ -116,9 +124,10 @@ public sealed partial class CardScreen
             {
                 if (box is not null && !InBox() && box.Contains(mx, my))
                 {
-                    // orig: DS:A778 = DS:E96E; DS:E96E = DS:EA64; menu_highlight = -1; DS:EE42 = 1 (the main line stays lit)
+                    // orig: DS:A778 = DS:E96E; DS:E96E = DS:EA64; menu-line-highlight = -1; DS:EE42 = 1 (the main line stays lit)
                     current = box.Layout;
                     current.Highlight = -1;
+                    c.MenuBox = box.Kind;
                     return;
                 }
                 var keep = false;
@@ -126,6 +135,7 @@ public sealed partial class CardScreen
                 {
                     // orig: DS:EE42 = 0; DS:E96E = DS:A778 (the main list with its highlight); the box stays when the pointer is back on that very line
                     current = main;
+                    c.MenuBox = Cards.PopupBox.None;
                     keep = main.At(mx, my) == main.Highlight;
                 }
                 if (box is not null && !InBox() && !keep)
@@ -140,14 +150,17 @@ public sealed partial class CardScreen
             }
         }
 
-        // orig: the Shift part of card_mouse: show = (Shift held, BIOS flags 0040:0017 bits 0 and 1) && DS:ED6C == 1 && menu_highlight != -1; `if (show && menu_highlight != DS:5202)`: the panel is redrawn first when a hint was up (not at Expert), menu_member = opt / 4, menu_slot = opt % 4, r = opt_fn[opt]() (in the box the box's handlers: item_fn / saint_fn), DS:5202 = menu_highlight, R043+0x27E6(r.a, r.b); `if (DS:5202 != -10 && !show)` DS:5202 = -10 and the panel is redrawn (not at Expert)
-        // C: menu_member and menu_slot are set from the option number of a main line too (option / 4, option % 4): a Shift hint over line 5 leaves member 1, slot 1 behind.
-        void Hint(bool over)
+        // orig: the Shift part of card-mouse-handler: show = (Shift held, BIOS flags 0040:0017 bits 0 and 1) && DS:ED6C == 1 && menu-line-highlight != -1; `if (show && menu-line-highlight != DS:5202)`: the panel is redrawn first when a hint was up (not at Expert), menu-owner-member = opt / 4, menu-choice-index = opt % 4, r = card-option-handler[opt]() (in the box the box's handlers: item-handler-table / saint-handler-table), DS:5202 = menu-line-highlight, R043+0x27E6(r.a, r.b); `if (DS:5202 != -10 && !show)` DS:5202 = -10 and the panel is redrawn (not at Expert)
+        // C: menu-owner-member and menu-choice-index are set from the option number of a main line too (option / 4, option % 4): a Shift hint over line 5 leaves member 1, slot 1 behind.
+        void Hint(bool over, int mx)
         {
             var show = ui.ShiftHeld && over && current.Highlight != -1;
+            var wasEntered = entered;
+            entered = false;
             if (show && current.Highlight != hintShownFor)
             {
-                if (hintShownFor != NoHint)
+                var hintWasUp = hintShownFor != NoHint;
+                if (hintWasUp)
                 {
                     ClearHint();
                 }
@@ -158,6 +171,10 @@ public sealed partial class CardScreen
                 var r = InBox()
                     ? popupHint?.Invoke(main.Lines[main.Highlight].Option)
                     : hint?.Invoke(option);
+                if (r is { ChanceUnset: true } unset)
+                {
+                    r = unset with { Chance = LeftoverChance(hintWasUp, wasEntered, mx) };
+                }
                 ShowHint(r ?? OptionHint.Say(CardTexts.SuccessAssured));
             }
             if (hintShownFor != NoHint && !show)
@@ -167,16 +184,30 @@ public sealed partial class CardScreen
             }
         }
 
-        // After a full screen was shown over the card the picture, the text and the fade are drawn again; the highlight, a hint and the box are gone with them.
-        // C: 13f2 leaves DS:EE41 / DS:EE42 set: the next move puts back the area saved under the box, which the redraw already shows as it was.
+        // After a full screen was shown over the card the picture, the text and the fade are drawn again; the menu's state is kept.
+        // orig: R043+0x1E82 (150B:13F2) redraws only: it never writes menu-line-highlight (its text-paint-wrapped(.., &DS:E96E, ..), root
+        //   0265:0134 at 0x0179..0x0182 and the entries, writes the count and the lines, not the byte at +1), DS:EE41 / DS:EE42 (the box) nor
+        //   DS:5202 (the hint shown). So the line lit before stays the highlighted one (Enter / Space choose it) but is drawn unlit until the
+        //   pointer moves to another line (whose unhighlight recolour then changes nothing); a box stays up undrawn, with the main list's
+        //   width cut, until the next move closes it and puts back the area saved under it.
+        // DIVERGENCE: with the pointer inside an item or saint box (DS:EE42 = 1) when a sheet key was pressed, the redraw lays the main lines
+        //   into DS:E96E under the box's highlight byte while the in-box flag stays: the original's next pass and an Enter there work on that
+        //   mix (the option of the main line at the box's index); here the box is dropped and the main list is back in use with no line highlighted.
         void Refresh()
         {
+            if (current == main)
+            {
+                Redraw();
+                warped = null;
+                return;
+            }
             if (box is not null)
             {
                 main.Width = box.MainWidth;
                 box = null;
             }
             current = main;
+            c.MenuBox = Cards.PopupBox.None;
             main.Highlight = -1;
             Redraw();
             hintShownFor = NoHint;
@@ -184,6 +215,11 @@ public sealed partial class CardScreen
         }
 
         ui.Redraw = Refresh;
+        var outerTargets = ui.CommandTargets;
+        // a ChooseLine command's line: the box's while one is up, else the main list's (the point OptionPoint gives)
+        ui.CommandTargets = n => (box?.Layout ?? main) is var list && n >= 0 && n < list.Lines.Count
+            ? (list.X + 1, list.Lines[n].Y + 1)
+            : null;
         try
         {
             while (true)
@@ -197,90 +233,120 @@ public sealed partial class CardScreen
                 var (mx, my) = warped ?? mouse;
                 Track(mx, my);
                 var over = current.At(mx, my) >= 0;
-                Hint(over);
-                // orig: card_menu R043 (150B) passes every key it does not use to card_global_keys (F1..F6, Ctrl-F1..F5)
+                Hint(over, mx);
+                // orig: card-choice-menu R043 (150B) passes every key it does not use to card-hotkeys (F1..F6, Ctrl-F1..F5)
                 var action = ui.PollWithSheetKeys();
                 if (action is not { } a)
                 {
+                    // orig: R043+0x1C67..0x1C70: a read that took a Ctrl-Break's 0000h (between the look and the read) is a key the menu
+                    //   does not use: quit-check (R043+0x1DEB)
+                    if (ui.TakeBreakKeyRead())
+                    {
+                        ui.QuitCheck();
+                    }
                     ui.Idle();
                     continue;
                 }
-                if (a.IsLeftClick && a.X < WindowX)
+                switch (CardIntent.Of(a, WindowX, ui.KeyboardCardMenus))
                 {
-                    // orig: R043+0x1E30 (a press with mouse_x < 0x3c): the sheet of the member in that row if there is one
-                    if (OpenSheetAt(a.Y, refresh: false))
-                    {
-                        Refresh();
-                    }
-                    continue;
-                }
-                if (a.IsLeftClick)
-                {
-                    // C: card_mouse R043+0x21D4 follows the pointer before its click test in the same call (the click is the release INT 33h function 6 reports), so a click
-                    //   is judged with the line under the pointer highlighted, even when the pointer reached it in the frame of the press.
-                    Track(a.X, a.Y);
-                }
-                if (a.IsLeftClick && current.At(a.X, a.Y) >= 0 && current.Highlight >= 0)
-                {
-                    // orig: the click part of card_mouse: the press position over a line of the list shown; outside the box (and no box up) the highlighted line is chosen; in the box menu_slot = opt % 4, menu_member = opt / 4, menu_popup = 1 and the main line is chosen; with a box up, a click on the main lines does nothing
-                    // C: the line chosen is menu_highlight (from the pointer), not the line under the press; they are the same line unless the pointer moved in between.
-                    if (InBox())
+                    case PressOnPortraits press:
+                        // orig: R043+0x1E30 (a press with pointer-column < 0x3c): the sheet of the member in that row if there is one
+                        if (OpenSheetAt(press.Y, refresh: false))
+                        {
+                            Refresh();
+                        }
+                        continue;
+                    case PressAt press:
+                        // C: card-mouse-handler R043+0x21D4 follows the pointer before its click test in the same call (the click is the release INT 33h function 6 reports), so a click
+                        //   is judged with the line under the pointer highlighted, even when the pointer reached it in the frame of the press.
+                        Track(press.X, press.Y);
+                        if (current.At(press.X, press.Y) >= 0 && current.Highlight >= 0)
+                        {
+                            // orig: the click part of card-mouse-handler: the press position over a line of the list shown; outside the box (and no box up) the highlighted line is chosen; in the box menu-choice-index = opt % 4, menu-owner-member = opt / 4, popup-menu-box = 1 and the main line is chosen; with a box up, a click on the main lines does nothing
+                            // C: the line chosen is menu-line-highlight (from the pointer), not the line under the press; they are the same line unless the pointer moved in between.
+                            if (InBox())
+                            {
+                                var option = current.Lines[current.Highlight].Option;
+                                c.MenuSlot = option % 4;
+                                c.MenuMember = option / 4;
+                                c.MenuPopup = true;
+                                ui.WaitForButtonRelease();
+                                KeepTheBoxsLayout(box!);
+                                return main.Lines[main.Highlight].Option;
+                            }
+                            if (box is null)
+                            {
+                                ui.WaitForButtonRelease();
+                                return current.Lines[current.Highlight].Option;
+                            }
+                        }
+                        continue;
+                    case Confirm when current.Highlight != -1:
                     {
                         var option = current.Lines[current.Highlight].Option;
-                        c.MenuSlot = option % 4;
+                        if (!InBox())
+                        {
+                            return option;
+                        }
                         c.MenuMember = option / 4;
-                        c.MenuPopup = true;
-                        ui.WaitForButtonRelease();
+                        c.MenuSlot = option % 4;
+                        KeepTheBoxsLayout(box!);
                         return main.Lines[main.Highlight].Option;
                     }
-                    if (box is null)
+                    // orig: R043+0x1CE5 (Up, 0x4800) and R043+0x1D46 (Down, 0x5000): only with DS:ED6C == 1, which card-mouse-handler R043+0x21D4 sets when the
+                    // pointer is inside a line of the list shown (R043+0x2232); else the key is dropped (R043+0x1DEB)
+                    // The keyboard convenience (GameUi.KeyboardCardMenus), off the lines: the key is dropped there as in the original, and the
+                    //   pointer is put onto the line the key names (a PointAt command, carried out in the next pass): the menu then lights it
+                    //   from the pointer, as for a player's hand (docs/COMMANDS.md).
+                    case MoveHighlight move when !over && ui.KeyboardCardMenus:
                     {
-                        ui.WaitForButtonRelease();
-                        return current.Lines[current.Highlight].Option;
+                        var n = current.Lines.Count;
+                        var from = current.Highlight;
+                        var to = move.Step > 0 ? (from + 1) % n : from <= 0 ? n - 1 : from - 1;
+                        var line = current.Lines[to];
+                        ui.Commands.PutFirst(new PointAt(current.X + 1, line.Y + 2));
+                        break;
                     }
-                    continue;
-                }
-                if (a.Key is Keys.Enter or Keys.Space && current.Highlight != -1)
-                {
-                    var option = current.Lines[current.Highlight].Option;
-                    if (!InBox())
+                    case MoveHighlight move when over:
                     {
-                        return option;
+                        var n = current.Lines.Count;
+                        var from = current.Highlight;
+                        if (from >= 0)
+                        {
+                            Highlight(current, from, false);
+                        }
+                        current.Highlight = move.Step > 0
+                            ? (from + 1) % n
+                            : from <= 0 ? n - 1 : from - 1;
+                        Highlight(current, current.Highlight, true);
+                        // orig: pointer-move(pointer-column, y[line] + 2) (R043+0x1DD1, root 047C:1266): the pointer itself moves, so the next
+                        //   menu (menu-line-highlight = -1 at its entry, R043+0x1C0A) lights the line the keys chose (RC lead rc-s1-saints-101)
+                        var line = current.Lines[current.Highlight];
+                        var to = (over ? mx : current.X + 1, line.Y + 2);
+                        ui.MovePointer(to.Item1, to.Item2);
+                        lastMouse = (ui.Mouse.X, ui.Mouse.Y);
+                        warped = lastMouse == to ? null : to;
+                        break;
                     }
-                    c.MenuMember = option / 4;
-                    c.MenuSlot = option % 4;
-                    return main.Lines[main.Highlight].Option;
+                    // orig: R043+0x1C77..0x1D46 compare the key with 0x1C0D, 0x3920, 0x1000, 0x4800 and 0x5000 only (R043+0x33C6 takes the F keys):
+                    // a digit is dropped there; the convenience below (GameUi.KeyboardCardMenus) drops it too and chooses the line as the mouse
+                    //   does: a ChooseLine command (the pointer onto the line in the next pass, a click there in the one after). On an item or
+                    //   saint line that opens the box and chooses nothing; while a box is up the digits name the box's lines.
+                    case ChooseByNumber number:
+                        ui.Commands.PutFirst(new ChooseLine(number.Index));
+                        break;
                 }
-                // orig: R043+0x1CE5 (Up, 0x4800) and R043+0x1D46 (Down, 0x5000): only with DS:ED6C == 1, which card_mouse R043+0x21D4 sets when the
-                // pointer is inside a line of the list shown (R043+0x2232); else the key is dropped (R043+0x1DEB)
-                if (a.Key is Keys.Up or Keys.Down && (over || ui.KeyboardCardMenus))
+                // orig: R043+0x1DEB: quit-check root 0000:1338 after every key the menu does not leave on (a Ctrl-Break ends the program
+                //   here); a click goes back to the loop's head without it
+                if (a.Click == MouseButtons.None)
                 {
-                    var n = current.Lines.Count;
-                    var from = current.Highlight;
-                    if (from >= 0)
-                    {
-                        Highlight(current, from, false);
-                    }
-                    current.Highlight = a.Key == Keys.Down
-                        ? (from + 1) % n
-                        : from <= 0 ? n - 1 : from - 1;
-                    Highlight(current, current.Highlight, true);
-                    // orig: mouse_move(mouse_x, y[line] + 2)
-                    var line = current.Lines[current.Highlight];
-                    warped = (over ? mx : current.X + 1, line.Y + 2);
-                    continue;
-                }
-                // orig: R043+0x1C77..0x1D46 compare the key with 0x1C0D, 0x3920, 0x1000, 0x4800 and 0x5000 only (R043+0x33C6 takes the F keys):
-                // a digit is dropped there; the convenience below is not the original's
-                var digit = (a.Key & 0xFF) - '1';
-                if (ui.KeyboardCardMenus && !InBox() && a.Key >= '1' && digit is >= 0 and < 9 && digit < main.Lines.Count)
-                {
-                    return main.Lines[digit].Option;
+                    ui.QuitCheck();
                 }
             }
         }
         finally
         {
+            ui.CommandTargets = outerTargets;
             ui.Redraw = null;
             if (hintShownFor != NoHint)
             {
@@ -289,18 +355,112 @@ public sealed partial class CardScreen
         }
     }
 
+    /// <summary>
+    /// The menu of a card that only named itself (NameTheCard), on a block of the previous card's texts without option lines: nothing
+    /// can be chosen until the card is drawn again (a member's sheet from the portraits, the party information), which loads the named
+    /// card's texts and lays the block out anew; then the menu goes on with those lines.
+    /// </summary>
+    // orig: card-choice-menu R043+0x1BD2 with an empty hotspot list DS:E96E
+    // C: each pass runs the menu bar, the party-icons-stale redraw R043+0x1E82 and the portrait press R043+0x1E30 (member sheet, then
+    //   R043+0x1E82); the redraw's text-bank-read(DS:E957) and text-paint-wrapped(.., &DS:E96E, ..) give the menu the named card's lines
+    //   (card 0x5F after a guild's card: $Sneak00 block 0x0D). Only for that case; a menu without lines on the card's own texts keeps the deliberate fix of ChooseOnLastLayout (line 0).
+    private List<OptionArea> WaitForLines(Func<List<OptionArea>> relaid)
+    {
+        List<OptionArea> areas = [];
+        ui.Redraw = () =>
+        {
+            Redraw();
+            areas = relaid();
+        };
+        try
+        {
+            while (areas.Count == 0)
+            {
+                var action = ui.PollWithSheetKeys();
+                if (action is not { } a)
+                {
+                    if (ui.TakeBreakKeyRead())
+                    {
+                        ui.QuitCheck();
+                    }
+                    ui.Idle();
+                    continue;
+                }
+                if (a.IsLeftClick && a.X < WindowX && OpenSheetAt(a.Y, refresh: false))
+                {
+                    Redraw();
+                    areas = relaid();
+                }
+                // orig: R043+0x1DEB: quit-check after a key (as in Choose)
+                if (a.Click == MouseButtons.None)
+                {
+                    ui.QuitCheck();
+                }
+            }
+        }
+        finally
+        {
+            ui.Redraw = null;
+        }
+        return areas;
+    }
+
+    /// <summary>
+    /// A choice in the box leaves the box's layout as the menu's (DS:E96E): a card that calls card-choice-menu next without drawing its
+    /// options (ChooseOnLastLayout) works on the box's entries, at the places the box had.
+    /// </summary>
+    // orig: card-mouse-handler R043+0x246B (DS:E96E = DS:EA64 when the pointer entered the box); neither the click (R043+0x27A6) nor Enter (card-choice-menu R043+0x1C8A) puts the main list back
+    private void KeepTheBoxsLayout(PopupBox box)
+    {
+        _lastAreas = box.Layout.Lines;
+        _optionX = box.Layout.X;
+        _optionWidth = box.Layout.Width;
+    }
+
+    /// <summary>
+    /// The chance word a Shift hint gets from a handler that leaves it unset (r.a): what card-mouse-handler's own path left 10 bytes below
+    /// its SP before the call R043+0x26C4.
+    /// </summary>
+    // C: measured in the original (vis10 session uncert-polit-popup-hint, hooked at R043+0x26C4 / 0x27E6, the words below SP read):
+    //   - a hint was up for another line: party-panel-row-set root 0000:1716 ran just before (the panel put back); its [bp-2], the row mask,
+    //     ends at 0 (root 0000:1725 sets 0x1F and the loop shifts it out): 0;
+    //   - the pointer entered the line in this pass: pointer-show root 047C:1293 drew the pointer again, and its third argument is the
+    //     pointer's x minus the hot spot's (DS:6EEC - DS:6EF6; the hot spot was (0, 0) there, a game loaded into a town): 0xFA for x = 250;
+    //   - Shift pressed over the line the pointer rests on: the far return of the mouse query root 047C:1320 (R043+0x2713) of the pass
+    //     before, i.e. R043's code segment in memory: 0x1D2E on the reference machine (DOSBox-X loads the program at 0823); any segment is
+    //     above 100, so the hint shows the same.
+    // DIVERGENCE: an interrupt taken while SP stands at the handler between that writer and the call puts its frame there (seen once: a timer
+    //   tick at R043+0x265B left 0x0017 from the tick handler's pushes); on a PC the keyboard and mouse interrupts can too. Host timing, not
+    //   followed here.
+    // C: the hot spot x DS:6EF6 is the pointer shape's (GameUi.PointerHotSpot): 0 after a load or a sheet, 5 after the map (R030+0x0242),
+    //   which the card engine never sets back
+    private int LeftoverChance(bool hintWasUp, bool entered, int pointerX) =>
+        hintWasUp ? 0 : entered ? pointerX - ui.PointerHotSpot.X : CardCodeSegment;
+
+    /// <summary>R043's code segment on the reference machine (link 150B + load 0823).</summary>
+    private const int CardCodeSegment = 0x1D2E;
+
     /// <summary>Opens the box of an item or saint line next to the line.</summary>
-    // orig: card_mouse: DS:EA64 = DS:EB5A (kind 1) or DS:EC50 (kind 2), then R043+0x2ACA(win, win2, R043+0x2CE2(win, menu_highlight, kind)), DS:EE41 = 1, R043+0x3292(1)
-    // orig: R043+0x2ACA: font 1; hi = (measure_text_wrapped(win, msg_buf, w, 0, 0, font height, &DS:EA64, 1, 0, 0, 0) >> 16) + 6; y = the line's y, or 0xC1 - hi when y + hi passes 0xC1; x = the list's x + its width, or 0xF5 - w when x + w passes 0xF5; gfx_recolor_rect(card_window, x, y, w, hi, DS:EE59 or 0, 5), the rectangle saved (gfx_save_rect), recoloured back (5 -> DS:EE59 or 0); `if (DS:EE72 >= 0)` filled with 0xFF and outlined in colour 1; then draw_text_wrapped(win, msg_buf, w - 3, x + 3, y + 3, font height, &DS:EA64, 1, 0, 0, 0, 0) in the card's text colour; DS:EE0D / DS:EE0F / DS:EE11 / DS:EE10 = x, y, w, hi
+    // orig: card-mouse-handler: DS:EA64 = DS:EB5A (kind 1) or DS:EC50 (kind 2), then R043+0x2ACA(win, win2, R043+0x2CE2(win, menu-line-highlight, kind)), DS:EE41 = 1, R043+0x3292(1)
+    // orig: R043+0x2ACA: font 1; hi = (wrapped-text-size(win, text-bank-buffer, w, 0, 0, font height, &DS:EA64, 1, 0, 0, 0) >> 16) + 6; y = the line's y, or 0xC1 - hi when y + hi passes 0xC1; x = the list's x + its width, or 0xF5 - w when x + w passes 0xF5; gfx-rect-recolour(card-text-window, x, y, w, hi, DS:EE59 or 0, 5), the rectangle saved (gfx-rect-save), recoloured back (5 -> DS:EE59 or 0); `if (DS:EE72 >= 0)` filled with 0xFF and outlined in colour 1; then text-paint-wrapped(win, text-bank-buffer, w - 3, x + 3, y + 3, font height, &DS:EA64, 1, 0, 0, 0, 0) in the card's text colour; DS:EE0D / DS:EE0F / DS:EE11 / DS:EE10 = x, y, w, hi
     // orig: R043+0x3292(1): DS:EE13 = DS:E970; DS:E970 = DS:EE0D - DS:E972 (the main lines end where the box begins); 2802(2) puts the width back
     // C: the recolouring around the save turns colour-5 pixels under the box into the text colour when the box goes; the saved rectangle is a driver picture and goes back with colour 0 transparent (Canvas.RestoreTransparent), which is why the text colour is recoloured to 5 before the save.
     // DORMANT: DS:EE72 < 0 (no fill and outline): every card sets DS:EE72 = 7.
     private PopupBox OpenBox(OptionLayout main, OptionArea line)
     {
-        var text = OptionPopupText.Build(context(), line.Kind == OptionKind.Saints, ui.Text, _pictureName.StartsWith('x'));
+        var c = context();
+        // C: R043+0x2CE2 measures the lines in the font of its window, the card window DS:016A (font 3; hooked in the original: the box of
+        //   card 0x37's potion line is 0x43 wide, the widest line in font 3 plus 6, vis10 session uncert-polit-popup-hint); 2ACA then sets
+        //   font 1 for the height and the drawing.
+        var text = OptionPopupText.Build(c, line.Kind == OptionKind.Saints, ui.CardWindowText, _pictureName.StartsWith('x'));
+        // orig: the entries' states R043+0x2CE2 writes into the box layout DS:EA64 (+0x2E): what card-option-enabled becomes after a choice in the box
+        text.States.CopyTo(c.MenuBoxStates, 0);
         var layout = new CardTextLayout(ui.Text);
         var w = text.Width;
-        var hi = layout.MeasureHeight(text.Text, w, new CardTextLayout.Settings { Options = text.States, Leading = 0 }) - 1 + 6;
+        // C: measured on text-bank-buffer with the bytes after its zero: when the last listed member's last slot is empty (a hidden line at
+        //   the text's end) wrapped-text-size reads on into the 0x14 the builder cut off and counts one more line, so the box is one line
+        //   taller than its text (card 0x129, Hanse's one saint: y 103..112 empty in the original; vis10 visuals-fortress-saint)
+        var hi = layout.MeasureHeight(text.Buffer, w, 0, text.States) - 1 + 6;
         var y = line.Y + hi <= BoxBottom ? line.Y : BoxBottom - hi;
         var x = main.X - WindowX + main.Width;
         if (x + w > BoxRight)
@@ -319,14 +479,15 @@ public sealed partial class CardScreen
             Color = _textColor,
             Leading = 0,
         });
-        var box = new PopupBox(x, y, w, hi, under, new OptionLayout(lines, x + 3, w - 3), main.Width);
+        var box = new PopupBox(x, y, w, hi, under, new OptionLayout(lines, x + 3, w - 3), main.Width,
+            line.Kind == OptionKind.Saints ? Cards.PopupBox.Saints : Cards.PopupBox.Items);
         main.Width = x - main.X;
         return box;
     }
 
-    // orig: the highlight of card_mouse: gfx_recolor_rect(win, x, y[i], w, h[i], DS:EE59, 9) on, (…, 9, DS:EE59) off (DS:EE57 = 9); DS:EE59 is the text colour, 15 or 0; x and w are the list's (the main list's width is cut at the box while one is up)
-    // orig: highlight_rect R043+0x1E04 (150B:1374) draft (fn matched): mouse_hide, gfx_recolor_rect(win, x, y, w, h, c1, c2), mouse_show;
-    //   card_menu's Up/Down keys use it: off (…, DS:EE57 = 9, DS:EE59) on the old line, on (…, DS:EE59, DS:EE57) on the new one.
+    // orig: the highlight of card-mouse-handler: gfx-rect-recolour(win, x, y[i], w, h[i], DS:EE59, 9) on, (…, 9, DS:EE59) off (DS:EE57 = 9); DS:EE59 is the text colour, 15 or 0; x and w are the list's (the main list's width is cut at the box while one is up)
+    // orig: highlight-box R043+0x1E04 (150B:1374) draft (fn matched): pointer-hide, gfx-rect-recolour(win, x, y, w, h, c1, c2), pointer-show;
+    //   card-choice-menu's Up/Down keys use it: off (…, DS:EE57 = 9, DS:EE59) on the old line, on (…, DS:EE59, DS:EE57) on the new one.
     private void Highlight(OptionLayout layout, int index, bool on)
     {
         if (index < 0 || index >= layout.Lines.Count)
@@ -338,6 +499,6 @@ public sealed partial class CardScreen
             on ? _textColor : Palette.Highlight, on ? Palette.Highlight : _textColor);
     }
 
-    // orig: party_panel_frames(0x100); party_panel_rows(0x100)
+    // orig: party-panel-frame-set(0x100); party-panel-row-set(0x100)
     private void RedrawPanel() => panel.Draw(_canvas, context().State.Party);
 }

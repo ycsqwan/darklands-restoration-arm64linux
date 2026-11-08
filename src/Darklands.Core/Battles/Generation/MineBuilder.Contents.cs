@@ -735,10 +735,12 @@ internal sealed partial class MineBuilder
             kinds[n] = n;
         }
         // The two words after the list are the frame's stale words; nothing reads the second.
-        kinds[10] = StaleStackWord;
+        // orig: R009+0x4EAE: mov si, [bp-0Ch] (the word read once, after the list is built)
+        var stale = FillStaleWord();
+        kinds[10] = stale;
         var left = 10;
         var pointer = 10;
-        int itemA = StaleStackWord, itemB = 0;
+        int itemA = stale, itemB = 0;
         while (pile.Entries < 4)
         {
             var pick = Roll(left) - 1;
@@ -782,6 +784,8 @@ internal sealed partial class MineBuilder
                         AddLockedDoor(level, pile, 0xE8);
                         return 2;
                     case 12:
+                        // BUG: the relic of the deepest section of the dwarf, kobold and vulcan mines (R009+0x4E28..0x4E3B) is forced to quality 35:
+                        // any relic 0x96..0xAB gets quality 0x23 and type 0x9F whatever DARKLAND.LST gives it, as the fortress relics (R011+0x096A).
                         AddPileEntry(pile, RandomSpecialKind(), 0x9F, 0x23, 1);
                         return 1;
                 }

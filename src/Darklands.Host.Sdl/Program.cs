@@ -1,5 +1,7 @@
+using Darklands.Platform.Reporting;
 using Darklands.Platform;
 using Darklands.Audio;
+using Darklands.Audio.Packs;
 using Darklands.Content;
 using Darklands.Host.Sdl;
 using Darklands.Launcher;
@@ -10,8 +12,12 @@ using Darklands.Rendering;
 //   DarklandsRP [game folder] [--settings file] [--write-settings file] [--sdl path\SDL2.dll] [--screenshots folder]
 //                      [--no-audio] [--sound adlib|sb|sbpro2|mt32|cm32l|speaker|none] [--mt32-roms folder] [--saves folder]
 //                      [--text-font file] [--no-banner] [--no-intro] [--scale N | --resolution WxH] [--fullscreen] [--no-console]
-//                      [--hd-pack folder] [--setup | --no-launcher] (or hold Shift as it starts for the launcher)
-//                      [--version] [-- <the game's DOS command line: -Q, -O, -A<letter>>]
+//                      [--hd-pack folder] [--clean-drawing] [--audio-pack folder] [--soundfont file] [--mod folder-or-name ...] [--setup | --no-launcher] (or hold Shift as it starts for the launcher)
+//                      [--version] [--sound-test] [-- <the game's DOS command line: -Q, -O, -A<letter>>]
+// --sound-test checks the sound without the game window: SDL's audio driver and devices, beeps through each way of feeding SDL,
+// then a little of the game's
+// music on the card the settings choose, each with a plain verdict (SoundCheck). DARKLANDS_AUDIO_MODE=queue or native feeds the
+// audio device another way than SDL's callback (SdlAudioOutput), for a system where that stays silent.
 // The options come from the command line, else the environment variables, else the settings file darklands.settings.json
 // (--settings, else next to the program, else %APPDATA%\DarklandsRestoration; without one a commented template is written on the
 // first run, --write-settings writes it where asked; docs/SETTINGS.md), else the defaults.
@@ -42,6 +48,11 @@ var version = typeof(SdlHost).Assembly
 if (args.Contains("--version"))
 {
     Console.WriteLine("Darklands Restoration Project " + version);
+    return 0;
+}
+if (args.TakeWhile(a => a != "--").Any(a => a is "--help" or "-h" or "-?" or "/?"))
+{
+    Console.WriteLine(CommandLineUsage.Text);
     return 0;
 }
 
@@ -77,6 +88,13 @@ if (writeSettings is not null)
 // found and when the game could not start
 var setup = arguments.Remove("--setup");
 var noLauncher = arguments.Remove("--no-launcher");
+var soundCheck = arguments.Remove("--sound-test");
+// --mod <folder or name>, once per mod (docs/MODS.md): replaces the settings file's mods
+var mods = new List<string>();
+while (Option("--mod") is { } mod)
+{
+    mods.Add(mod);
+}
 var cli = new CommandLineOptions
 {
     SdlLibrary = Option("--sdl"),
@@ -86,24 +104,39 @@ var cli = new CommandLineOptions
     SavesFolder = Option("--saves"),
     TextFont = Option("--text-font"),
     Mt32Roms = Option("--mt32-roms"),
+    AudioPack = Option("--audio-pack"),
+    SoundFont = Option("--soundfont"),
     NoBanner = arguments.Remove("--no-banner"),
     NoIntro = arguments.Remove("--no-intro"),
     Scale = Option("--scale"),
     Resolution = Option("--resolution"),
     Fullscreen = arguments.Remove("--fullscreen"),
     HdPack = Option("--hd-pack"),
+    CleanDrawing = arguments.Remove("--clean-drawing"),
     NoConsole = arguments.Remove("--no-console"),
+    Mods = mods,
     GameCommandLine = commandLine,
     GameFolder = arguments.FirstOrDefault(),
 };
+// what is left is the game folder; an unknown option (or one missing its value) is said so, not taken as the folder
+if (CommandLineUsage.Unknown(arguments) is { } unknown)
+{
+    Console.Error.WriteLine($"Unknown option or missing value: {unknown}");
+    Console.Error.WriteLine(CommandLineUsage.Text);
+    return 2;
+}
 var settingsPath = SettingsFile.Locate(settingsFile);
+// the session log (logs folder beside the settings file) and the crash handler: docs/REPORTING.md
+var reports = ReportHost.Start(settingsPath, version, args, logIt: !soundCheck);
+new CrashHandler(reports, CrashHandler.ShowWithSdl, Console.Error.WriteLine).Install();
 var firstRun = settingsPath is null;
 GameSettings fileSettings = new();
-if (settingsPath is null)
+if (settingsPath is null && !soundCheck)
 {
     settingsPath = SettingsFile.WriteFirstRunTemplate(Console.Error.WriteLine);
+    reports.SettingsFile = settingsPath;
 }
-else
+else if (settingsPath is not null)
 {
     var load = SettingsFile.Load(settingsPath);
     foreach (var problem in load.Problems)
@@ -117,6 +150,15 @@ if (Resolve(fileSettings) is not { } settings)
     return 1;
 }
 var folder = FindGameFolder(settings.GameFolder, settingsPath);
+NoteRun();
+// SDL2: the settings file or --sdl, else the SDL2.dll next to the program, else DARKLANDS_SDL2_PATH or the developer's
+// local/paths.json "sdl", else the system's
+var besideProgram = Path.Combine(AppContext.BaseDirectory, "SDL2.dll");
+SdlNative.ConfigureLibrary(settings.SdlLibrary ?? (File.Exists(besideProgram) ? besideProgram : LocalPaths.Get("sdl", "DARKLANDS_SDL2_PATH")));
+if (soundCheck)
+{
+    return SoundCheck.Run(folder, settings, Console.Out);
+}
 LauncherReason? launch = noLauncher ? null
     : setup || settings.AlwaysLaunch || StartKeys.ShiftHeldBeforeWindow() ? LauncherReason.Asked
     : folder is null ? LauncherReason.GameNotFound
@@ -129,10 +171,6 @@ if (folder is null && launch is null)
     return 1;
 }
 
-// SDL2: the settings file or --sdl, else the SDL2.dll next to the program, else DARKLANDS_SDL2_PATH or the developer's
-// local/paths.json "sdl", else the system's
-var besideProgram = Path.Combine(AppContext.BaseDirectory, "SDL2.dll");
-SdlNative.ConfigureLibrary(settings.SdlLibrary ?? (File.Exists(besideProgram) ? besideProgram : LocalPaths.Get("sdl", "DARKLANDS_SDL2_PATH")));
 var title = "Darklands Restoration Project " + version;
 var window = settings.Window ?? DisplayLayout.WindowSize(null, null);
 using var host = launch is null ? new SdlHost(title, window.Width, window.Height, settings.Fullscreen) : LauncherHost.Open(title);
@@ -147,8 +185,13 @@ while (true)
 {
     if (launch is { } reason)
     {
-        if (LauncherHost.Run(host, reason, startProblem, fileSettings, cli, settingsPath, version) is not { } chosen)
+        if (LauncherHost.Run(host, reason, startProblem, fileSettings, cli, settingsPath, version, reports, out var saved) is not { } chosen)
         {
+            if (firstRun && !saved && settingsPath is not null)
+            {
+                // left without Play and without a change: still a first run, so the launcher shows again at the next start
+                ForgetFirstRun(settingsPath);
+            }
             return 0;
         }
         fileSettings = chosen;
@@ -158,6 +201,11 @@ while (true)
         }
         settings = resolved;
         folder = FindGameFolder(settings.GameFolder, settingsPath);
+        if (folder is null && chosen.GameFolder is { } picked && picked != settings.GameFolder)
+        {
+            // the folder named at the start holds no game: the one chosen on the launcher
+            folder = FindGameFolder(picked, settingsPath);
+        }
         if (folder is null)
         {
             (launch, startProblem) = (LauncherReason.GameNotFound, null);
@@ -165,18 +213,36 @@ while (true)
         }
         window = settings.Window ?? DisplayLayout.WindowSize(null, null);
         host.Resize(window.Width, window.Height, settings.Fullscreen);
+        NoteRun();
     }
     var start = new StartProgress();
     try
     {
-        return Play(host, settings, folder!, version, start);
+        return Play(host, settings, folder!, version, start, settingsPath, reports);
     }
     catch (Exception e) when (!start.Running && !noLauncher)
     {
         // the game could not start (a damaged HD pack, a missing file ...): back to the launcher, which says why
         Console.Error.WriteLine("Start: " + e.Message);
+        reports.Screenshot = null;
+        host.ReportRequested = null;
         (launch, startProblem) = (LauncherReason.StartFailed, "The game could not start: " + e.Message);
         LauncherHost.Fit(host);
+    }
+}
+
+// What a report and the session log should know of this run: the game folder, the saves folders, the settings and packs.
+void NoteRun()
+{
+    var (s, f) = (settings, folder);
+    reports.GameFolder = f;
+    reports.SavesFolders.Clear();
+    reports.SavesFolders.AddRange(ReportHost.SavesFolders(s, f));
+    reports.Facts = () => ReportHost.Facts(s, f);
+    reports.Log?.WriteLine("Game folder: " + (f ?? "none"));
+    foreach (var (key, value) in ReportHost.Facts(s, f))
+    {
+        reports.Log?.WriteLine(key + ": " + value);
     }
 }
 
@@ -194,7 +260,7 @@ ResolvedSettings? Resolve(GameSettings file)
 }
 
 // The game in the window, with its sound, console and saves; returns the program's exit code.
-static int Play(SdlHost host, ResolvedSettings settings, string folder, string version, StartProgress start)
+static int Play(SdlHost host, ResolvedSettings settings, string folder, string version, StartProgress start, string? settingsPath, ReportService reports)
 {
     host.Renderer = null;
     if (settings.HdPack is { } hdPack)
@@ -211,6 +277,12 @@ static int Play(SdlHost host, ResolvedSettings settings, string folder, string v
         host.TextFont = Darklands.Platform.TextFont.Load(textFont);
     }
     var files = new GameFiles(folder);
+    // a DARKLAND.EXE whose tables this program cannot read (the German release ...): back to the launcher, which says so,
+    // instead of a game that ends at the first screen that reads them
+    if (Darklands.Content.Formats.Exe.ExeVersion.Problem(files.Read("DARKLAND.EXE")) is { } exeProblem)
+    {
+        throw new InvalidDataException(exeProblem);
+    }
     if (settings.ConfigDrk is { } config)
     {
         // the game and the sound selection then read these words as CONFIG.DRK's
@@ -220,7 +292,10 @@ static int Play(SdlHost host, ResolvedSettings settings, string folder, string v
     var audioTrace = Environment.GetEnvironmentVariable("DARKLANDS_AUDIO_TRACE") is { Length: > 0 } tracePath
         ? TextWriter.Synchronized(new StreamWriter(tracePath) { AutoFlush = true })
         : null;
-    using var audioOutput = settings.NoAudio ? null : StartAudio(host, files, settings.SoundChoice, settings.Mt32Roms, settings.CommandLine, audioTrace);
+    // the pack that carries the sound pack's and the mods' music per card (docs/PACKS.md, docs/MODS.md); null without audio
+    AudioPack? soundPack = null;
+    using var audioOutput = settings.NoAudio ? null : StartAudio(host, files, settings.SoundChoice, settings.Mt32Roms, settings.AudioPack, settings.SoundFont, settings.CommandLine, audioTrace,
+        settings.Mods.Count > 0, pack => soundPack = pack);
     var game = new DarklandsGame(host, files)
     {
         ShowStartUp = settings.ShowBanner,
@@ -233,10 +308,59 @@ static int Play(SdlHost host, ResolvedSettings settings, string folder, string v
     {
         game.Ui.Trace = audioTrace.WriteLine;
     }
-    using var console = settings.ConsoleEnabled ? CreateConsole(game, settings, version) : null;
+    // problem reports (docs/REPORTING.md): the saved game last loaded or saved, the last frame, Ctrl-F12
+    game.SaveUsed = (savesFolder, name, loading) => reports.Saves.Used(savesFolder, name, loading);
+    reports.Screenshot = () =>
+    {
+        Directory.CreateDirectory(reports.Locations.Session);
+        var picture = Path.Combine(reports.Locations.Session, "last-frame.png");
+        game.Ui.SaveScreenshot(picture);
+        return picture;
+    };
+    host.ReportRequested = () =>
+    {
+        foreach (var line in ReportHost.Manual(reports, "Ctrl-F12", null))
+        {
+            Console.WriteLine(line);
+        }
+    };
+    // the mods (docs/MODS.md): --mod or the settings file's "mods"; none: the game's own cards (Classic)
+    game.Log = Console.Error.WriteLine;
+    if (settings.Mods.Count > 0)
+    {
+        var modBase = settings.ModsFromCommandLine || settingsPath is null ? Environment.CurrentDirectory : Path.GetDirectoryName(Path.GetFullPath(settingsPath));
+        var modFolders = new List<string>();
+        foreach (var mod in settings.Mods)
+        {
+            if (ModFolders.Find(mod, files.Root, modBase) is { } modFolder)
+            {
+                modFolders.Add(modFolder);
+            }
+            else
+            {
+                Console.Error.WriteLine($"mod {mod}: no folder with a mod.json found (as given, or in a mods folder next to the program, in the game folder or next to it)");
+            }
+        }
+        game.Mods = Darklands.Simulation.Mods.ModSet.Load(modFolders.Select(ModFolders.Read), Console.Error.WriteLine, game.Ui.Assets.IsGameMessageFile);
+        // the played mods' cards that name music (a pack's own music for the same card wins)
+        if (soundPack is not null && game.Mods.Music.Any())
+        {
+            soundPack.AddModMusic(game.Mods.Music).ToList().ForEach(Console.Error.WriteLine);
+        }
+    }
+    using var console = settings.ConsoleEnabled ? CreateConsole(game, settings, version, reports) : null;
     host.Console = console;
+    // what the sound pack could not use at the start (no SoundFont for its .mid music, a mod's missing music ...) is told in the console too
+    if (console is not null && soundPack is not null)
+    {
+        foreach (var problem in soundPack.Problems)
+        {
+            console.Console.Write(problem, Darklands.DevConsole.ConsoleLineKind.Error);
+        }
+    }
     using var corner = new CornerText(() => game.OnStartScreen ? "v" + version : null);
     host.Corner = corner;
+    game.Options.Apply(settings);
     game.Ui.ScreenshotFolder = settings.ScreenshotsFolder ?? Environment.CurrentDirectory;
     var saves = SaveLocation.Choose(settings.SavesFolder, game.SaveDirectory, SaveLocation.UserFolder(), SaveLocation.CanWrite);
     if (saves.FellBack)
@@ -248,20 +372,23 @@ static int Play(SdlHost host, ResolvedSettings settings, string folder, string v
     game.SaveDirectory = saves.Folder;
     start.Running = true;
     game.Run();
+    reports.Screenshot = null;
+    host.ReportRequested = null;
     audioTrace?.Dispose();
     return 0;
 }
 
 // The game's sound (chosen by Darklands.Audio.Mt32.SoundSelection, as any host does) through an SDL audio device.
-static IDisposable? StartAudio(SdlHost host, GameFiles files, string? choice, string? romFolder, IReadOnlyList<string> commandLine,
-    TextWriter? trace)
+static IDisposable? StartAudio(SdlHost host, GameFiles files, string? choice, string? romFolder, string? audioPack, string? soundFont,
+    IReadOnlyList<string> commandLine, TextWriter? trace, bool modsMayHaveMusic, Action<AudioPack> onPack)
 {
     var output = SdlAudioOutput.TryOpen(out var error);
     if (output is null)
     {
-        Console.Error.WriteLine("Sound: no audio device (" + error + "); no sound.");
+        Console.Error.WriteLine("Sound: no audio device (" + error + "); no sound. Run with --sound-test for details.");
         return null;
     }
+    Console.WriteLine("Sound: " + output.Description + ".");
     var sound = Darklands.Audio.Mt32.SoundSelection.Select(files, choice, romFolder,
         output.SampleRate, line => (Darklands.Audio.Mt32.SoundSelection.IsWarning(line) ? Console.Error : Console.Out).WriteLine("Sound: " + line),
         commandLine);
@@ -283,10 +410,57 @@ static IDisposable? StartAudio(SdlHost host, GameFiles files, string? choice, st
             trace.WriteLine(line);
         }
     };
-    var audio = sound.Start(files, output, traced);
-    host.Audio = trace is null ? audio : new TracedCalls(audio, audio, trace);
+    // an audio pack (docs/PACKS.md, sound.audioPack): the device plays its mixer, which renders the drivers underneath (muted
+    // while a replacement plays); the game's calls reach the drivers unchanged and the timer stays theirs
+    PackMixer? mixer = null;
+    if (audioPack is not null)
+    {
+        var pack = AudioPack.Load(audioPack, soundFont);
+        pack.Problems.ToList().ForEach(p => Console.Error.WriteLine(p));
+        Console.WriteLine($"Sound: audio pack {pack.Folder}, {pack.Count} replacement(s), {pack.CardMusics.Count()} card(s) with music");
+        var reported = pack.Problems.Count;
+        // the files that cannot be decoded are reported when the preload has tried them
+        _ = pack.PreloadAsync(output.SampleRate).ContinueWith(_ => pack.Problems.Skip(reported).ToList().ForEach(p => Console.Error.WriteLine(p)), TaskScheduler.Default);
+        mixer = new PackMixer(pack, output.SampleRate);
+        onPack(pack);
+    }
+    else if (modsMayHaveMusic)
+    {
+        // no audio pack, but a mod may name music for its cards: an empty pack carries it
+        var pack = AudioPack.ForMods(soundFont);
+        pack.Problems.ToList().ForEach(p => Console.Error.WriteLine(p));
+        mixer = new PackMixer(pack, output.SampleRate);
+        onPack(pack);
+    }
+    var audio = sound.Start(files, mixer is null ? output : new PackOutput(output, mixer), traced);
+    IAudio played = audio;
+    if (mixer is not null)
+    {
+        mixer.RenderedTicks = () => audio.RenderedTicks;
+        played = new PackAudio(audio, audio, mixer);
+    }
+    host.Audio = trace is null ? played : new TracedCalls(played, audio, trace);
     host.Timer = audio;
-    return new Disposables(output, sound);
+    // what reached the device, said a few seconds in and again later (silence that is our fault shows here: no frames pulled,
+    // only zero samples, or a driver fault)
+    var watch = new SoundWatch(output, audio);
+    return new Disposables(output, sound, watch);
+}
+
+// The settings file this first run wrote (its template, maybe with the game folder found), left without a change: removed.
+static void ForgetFirstRun(string settingsPath)
+{
+    try
+    {
+        if (File.Exists(settingsPath))
+        {
+            File.Delete(settingsPath);
+            Console.WriteLine("Settings: the launcher was closed without Play; it shows again at the next start.");
+        }
+    }
+    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+    {
+    }
 }
 
 /// <summary>
@@ -330,9 +504,13 @@ static string? FindGameFolder(string? named, string? settingsPath)
 }
 
 /// <summary>The developer console: the game commands on the game being played, and the host's own.</summary>
-static ConsoleOverlay CreateConsole(DarklandsGame game, ResolvedSettings settings, string version)
+static ConsoleOverlay CreateConsole(DarklandsGame game, ResolvedSettings settings, string version, ReportService reports)
 {
     var console = new Darklands.DevConsole.GameConsole();
+    // the console's lines go to the session log too
+    console.Echo = (line, kind) => reports.Log?.WriteLine("console: " + line, kind == Darklands.DevConsole.ConsoleLineKind.Error);
+    console.Add(new Darklands.DevConsole.ConsoleCommand("report", "report [text]  (make a problem report: a zip with the logs, settings, saves and last frame; opens its folder and the issue form; nothing is sent)",
+        words => Darklands.DevConsole.ConsoleResult.Ok([.. ReportHost.Manual(reports, "console", words.Length == 0 ? null : string.Join(' ', words))])));
     Darklands.DevConsole.GameCommands.Register(console, () => game.Playing);
     console.Add(new Darklands.DevConsole.ConsoleCommand("music", "music on|off  (the game's music option, as Alt-M sets it)", words =>
     {
@@ -394,6 +572,9 @@ sealed file class TracedCalls(IAudio audio, IGameTimer timer, TextWriter trace) 
         trace.WriteLine($"call current gives {ax}");
         return ax;
     }
+
+    // a read-only notice for a sound pack: not a driver call, so it is not traced
+    public void CardShown(int card) => audio.CardShown(card);
 }
 
 /// <summary>Whether the game got as far as running (a failure before is a failed start, shown on the launcher).</summary>
@@ -403,10 +584,11 @@ sealed file class StartProgress
 }
 
 /// <summary>Closes the audio device, then the synthesiser it pulled from.</summary>
-sealed file class Disposables(IDisposable output, IDisposable? midi) : IDisposable
+sealed file class Disposables(IDisposable output, IDisposable? midi, IDisposable? watch = null) : IDisposable
 {
     public void Dispose()
     {
+        watch?.Dispose();
         output.Dispose();
         midi?.Dispose();
     }

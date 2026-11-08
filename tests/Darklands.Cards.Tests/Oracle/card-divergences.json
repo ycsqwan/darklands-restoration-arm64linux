@@ -3,7 +3,7 @@
     "card": "074",
     "run": "*",
     "contains": "original '<end>', C# 'prayer ",
-    "why": "FactionLeadersRecruitment DIVERGENCE: the card installs no saint pop-up handlers, so a prayer calls whatever saint_fn the previous card left; run from a start state no card installed them in, the original calls 0000:0000. The C# uses the standard saint rating."
+    "why": "FactionLeadersRecruitment DIVERGENCE: the card installs no saint pop-up handlers, so a prayer calls whatever saint-handler-table the previous card left; run from a start state no card installed them in, the original calls 0000:0000. The C# uses the standard saint rating."
   },
   {
     "card": "0B6",
@@ -20,9 +20,14 @@
   {
     "card": "05F",
     "run": "*",
-    "contains": "",
-    "dropCSharp": "show $Sneak00 common",
-    "why": "SneakingThroughTheHall DIVERGENCE: the original never calls card_load (it keeps the previous card's picture until the engine redraws); the C# shows the card at once. The oracle loads the card's own texts first, so everything after the C#'s show is compared."
+    "contains": "C# 'menu 13 [11010000010000000000] '",
+    "why": "SneakingThroughTheHall DIVERGENCE: after a rebels' card ($Revol00, $Revol01: key part T$Revol00) block 0x0D is not in the loaded message file; the original prints from a text-bank-index entry text-bank-read did not set (undefined memory: 0d 0a 0a under the oracle), the C# an empty text with the same option lines."
+  },
+  {
+    "card": "073",
+    "run": "*",
+    "contains": "C# 'text 5 1 '",
+    "why": "BeforeTheCityWalls DIVERGENCE: after the initial test card ($Initi00, one block: key part T$Initi00) block 5 is not in the loaded message file; the original prints from a text-bank-index entry text-bank-read did not set (undefined memory: 01 0a 0e under the oracle), the C# an empty text."
   },
   {
     "card": "062",
@@ -46,49 +51,49 @@
     "card": "02A",
     "run": "*",
     "contains": "hint 0: ",
-    "why": "VillageGraveyard UNCERTAIN: the hint handlers return a struct res they never fill in (only msg_buf gets \"Success is assured.\"): the chance and member are stack leftovers (-558 and 2 here; the display shows the text for a negative chance); the C# says the text for the whole party."
+    "why": "VillageGraveyard UNCERTAIN: the hint handlers return a struct res they never fill in (only text-bank-buffer gets \"Success is assured.\"): the chance and member are stack leftovers (-558 and 2 here; the display shows the text for a negative chance); the C# says the text for the whole party."
   },
   {
     "card": "07D",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "CloakedKidnapperOnTheRoad DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "CloakedKidnapperOnTheRoad DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "109",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "UnfinishedBanditEncounter_MeetB03 DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "UnfinishedBanditEncounter_MeetB03 DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "10B",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "UnfinishedArmyScouts_Meeta03 DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "UnfinishedArmyScouts_Meeta03 DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "10C",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "NorthSeaVoyage DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "NorthSeaVoyage DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "10E",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "EasternBalticVoyage DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "EasternBalticVoyage DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "110",
     "run": "*",
     "contains": "",
     "ignoreTexts": true,
-    "why": "RiverboatLanding DIVERGENCE: the original never calls card_options (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
+    "why": "RiverboatLanding DIVERGENCE: the original never calls card-option-lines (the menu works on whatever option list the screen last drew) and shows text blocks its .MSG may not have; the C# offers its first block. The texts are compared without their words, everything else in full."
   },
   {
     "card": "0E9",
@@ -98,17 +103,10 @@
     "why": "SourceOfTheHorrors_MineH01 DIVERGENCE: without the horror's quest (a negative detail) the original draws no option block (the menu keeps what was shown); the C# uses the block the last card left. Texts compared without their words."
   },
   {
-    "card": "073",
-    "run": "*",
-    "contains": "",
-    "dropCSharp": "show $CityE00 ",
-    "why": "BeforeTheCityWalls DIVERGENCE: the original only fills the card name and picture buffers (no card_load; the engine draws them later); the C# shows the card at once. The oracle loads the card's own texts first, so everything after the C#'s show is compared."
-  },
-  {
     "card": "037",
     "run": "*",
-    "contains": "C# 'text 15 0 ",
-    "why": "HandbillThugs_Polit01 UNCERTAIN: the potion pop-up handlers never set the chance (struct res left unset): the action rolls against a stack leftover. Under the oracle the leftover lets the potion work (texts 11..14); the C# takes it as negative (StalePopupChance), so the potion always fails (text 15)."
+    "contains": "original 'text 15 0 ",
+    "why": "HandbillThugs_Polit01: the potion pop-up handlers never set the chance (struct res left unset): the action rolls against the stack word, which in the game the display driver's pointer hide has just written (0x0240, R057+0x1E5E -> MGRAPHIC drv+0x023D: PickedPopupChance), so the potion always works (texts 11..14). The card oracle stubs pointer-hide, so its original rolls against another leftover, which on some paths makes the potion fail (text 15)."
   },
   {
     "card": "0B8",
@@ -120,7 +118,7 @@
     "card": "06C",
     "run": "*",
     "contains": "hint 9: ",
-    "why": "The leave line's hint handler fills only msg_buf (\"Success is assured.\") and returns a struct res it never sets: the chance is a stack leftover (-558 under the oracle, which the display shows as the text); the C# says the text."
+    "why": "The leave line's hint handler fills only text-bank-buffer (\"Success is assured.\") and returns a struct res it never sets: the chance is a stack leftover (-558 under the oracle, which the display shows as the text); the C# says the text."
   },
   {
     "card": "073",
@@ -132,26 +130,26 @@
     "card": "0C2",
     "run": "*",
     "contains": "",
-    "why": "Card 0xC2 (\"$Forei03\") has no message file in MSGFILES: the original's msg_load (R043 150B) takes the size of an entry catalog_find did not find and file_load_far runs off into memory outside the loaded code; the C# finds no texts and shows empty blocks. No other card script sets next_card to 0xC2."
+    "why": "Card 0xC2 (\"$Forei03\") has no message file in MSGFILES: the original's text-bank-read (R043 150B) takes the size of an entry catalog-lookup did not find and file-load-far-buffer runs off into memory outside the loaded code; the C# finds no texts and shows empty blocks. No other card script sets following-card to 0xC2."
   },
   {
     "card": "*",
     "run": "*",
     "contains": "\"7E\":\"FF\"}, C#",
-    "why": "Inventory.KeepEach DIVERGENCE: when every roll of keep_items_pct fails the original removes one stack more than the pack holds and leaves the item count at -1 (the next item added is lost); the C# pack ends empty (count 0). The record's other bytes are compared."
+    "why": "Inventory.KeepEach DIVERGENCE: when every roll of item-keep-percent fails the original removes one stack more than the pack holds and leaves the item count at -1 (the next item added is lost); the C# pack ends empty (count 0). The record's other bytes are compared."
   },
   {
     "card": "16B",
     "run": "*",
     "contains": "",
     "dropCSharp": "text 0 0 ",
-    "why": "EmptyPrisonCell DIVERGENCE: the original draws block 0 as an option list (card_options) and returns at once, with no menu (the oracle records texts and menus as they are read); the C# shows the block as a text and waits. Everything else is compared."
+    "why": "EmptyPrisonCell: the original draws block 0 as an option list (card-option-lines R043+0x0F2A: drawn, waited for, the picture faded) with no menu after it, which the oracle does not record (it records texts and menus as they are read); the C#'s scripted trace screen shows it as a text (ICardScreen.OptionLines). Everything else is compared."
   },
   {
     "card": "151",
     "run": "*",
     "contains": "",
-    "why": "CollectorsCommission runs on the quest event saved_card names; the oracle's start state has none (saved_card 0, no event in slot 0): the original reads the type byte of the unused record events[0] points to (a value no case has: default text 0), the C# an absent event (type 0, text 1). Without its quest the card cannot be compared."
+    "why": "CollectorsCommission runs on the quest event remembered-card names; the oracle's start state has none (remembered-card 0, no event in slot 0): the original reads the type byte of the unused record events[0] points to (a value no case has: default text 0), the C# an absent event (type 0, text 1). Without its quest the card cannot be compared."
   },
   {
     "card": "119",
@@ -163,74 +161,26 @@
     "card": "0AB",
     "run": "*",
     "contains": "original 'menu 0 [1111]",
-    "why": "CityLeavingDirection DIVERGENCE: no line changes next_card, so the original offers the menu again for ever (its loop runs while next_card is 0x0C); the C# ends the card after one choice, with the same next card. The first menu and choice are compared."
+    "why": "CityLeavingDirection DIVERGENCE: no line changes following-card, so the original offers the menu again for ever (its loop runs while following-card is 0x0C); the C# ends the card after one choice, with the same next card. The first menu and choice are compared."
   },
   {
     "card": "0AB",
     "run": "*",
     "contains": "original 'menu 0 [0000]",
-    "why": "CityLeavingDirection DIVERGENCE: no line changes next_card, so the original offers the menu again for ever (its loop runs while next_card is 0x0C); the C# ends the card after one choice, with the same next card. The first menu and choice are compared (a run that forces a line of this menu ends in a menu with no line on: the original stops there too)."
+    "why": "CityLeavingDirection DIVERGENCE: no line changes following-card, so the original offers the menu again for ever (its loop runs while following-card is 0x0C); the C# ends the card after one choice, with the same next card. The first menu and choice are compared (a run that forces a line of this menu ends in a menu with no line on: the original stops there too)."
   },
   {
     "card": "100",
     "run": "*",
     "contains": "line 4: original 'text 14 0 506c6163696e672074686520706f74696f6e206361726566756c6c792c20",
-    "why": "CryptUnderTheRuinedChurch, item pop-up slots 1..3 of line 2 (forced): the registration (R108+0x0C25) gives them the empty handlers R108+0x0D30/0D32/0D34 (retf), so $ChosenOneName (DS:EE8C) keeps what it held before (here Gretch: text 14, \"Placing the potion carefully, $ChosenOneName leads you ...\"), where the C# rates every slot with slot 0's handler R108+0x0CDE, which names the pop-up's member (Ebhard). The card fills only item slot 0 (card_items DS:EE43 = -1 x 4, then 0x66), so the box never lists slots 1..3."
-  },
-  {
-    "card": "100",
-    "run": "probe L3-Vfacts+F3.0-O2",
-    "contains": "original 'picture boom'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "100",
-    "run": "probe L3-Vfacts+F3.1-O2",
-    "contains": "original 'picture boom'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "100",
-    "run": "probe L3-Vfacts+F3.2-O2",
-    "contains": "original 'picture boom'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "100",
-    "run": "probe L3-Vfacts+F4.0-O0",
-    "contains": "original 'picture xdungeon'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "100",
-    "run": "probe L3-Vfacts+F4.2-O0",
-    "contains": "original 'picture xdungeon'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "104",
-    "run": "probe L3-Vskilled+F12.3-O8",
-    "contains": "original 'picture xkntdemo'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "107",
-    "run": "probe L3-Vrich+F5.4-O3",
-    "contains": "original 'picture robmen2'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
-  },
-  {
-    "card": "108",
-    "run": "probe L3-Vrich+F4.2-O2",
-    "contains": "original 'picture robmen2'",
-    "why": "Forced line (the card never offers it): after a prayer from it the original redraws the picture last put in the picture buffer, the C# the card's main picture. Not reachable in play; the picture model follows the lines the card offers."
+    "why": "CryptUnderTheRuinedChurch, item pop-up slots 1..3 of line 2 (forced): the registration (R108+0x0C25) gives them the empty handlers R108+0x0D30/0D32/0D34 (retf), so $ChosenOneName (DS:EE8C) keeps what it held before (here Gretch: text 14, \"Placing the potion carefully, $ChosenOneName leads you ...\"), where the C# rates every slot with slot 0's handler R108+0x0CDE, which names the pop-up's member (Ebhard). The card fills only item slot 0 (card-item-lines DS:EE43 = -1 x 4, then 0x66), so the box never lists slots 1..3."
   },
   {
     "card": "*",
     "run": "*",
     "contains": "original '<end>', C# '",
     "end": "stops execution outside the loaded code at 00000",
-    "why": "Tester fault (forced handler calls): the original calls a far pointer 0000:0000, a handler slot nothing installed: opt_fn[k] of a line the card's text has no line for (its reset left it null), the hint of such a line, or the item_fn / saint_fn of a pop-up slot the card never fills (card_items / card_saints[k] = -1). The menu offers only the text's lines and the pop-up box lists only filled slots, so the game never makes that call; the C# goes on with its \"screwed up.\" default or the line's pop-up handler. Everything up to the call is compared."
+    "why": "Tester fault (forced handler calls): the original calls a far pointer 0000:0000, a handler slot nothing installed: card-option-handler[k] of a line the card's text has no line for (its reset left it null), the hint of such a line, or the item-handler-table / saint-handler-table of a pop-up slot the card never fills (card-item-lines / card-saint-lines[k] = -1). The menu offers only the text's lines and the pop-up box lists only filled slots, so the game never makes that call; the C# goes on with its \"screwed up.\" default or the line's pop-up handler. Everything up to the call is compared."
   },
   {
     "card": "*",
@@ -288,38 +238,32 @@
     "run": "*",
     "contains": "",
     "guardNotAMember": true,
-    "why": "HuntsmanAtTheCamp: the card is reached only from the camp, whose discovery (R036, CampStay.SpendDay) sets saved_card (DS:E7D8) to the first guard or -1; it names that member ($ChosenOneName = party[saved_card]). A saved game's start state holds another saved_card (a card number), so the original reads a character record past the party (another member's text, or code: it stops), the C# an empty name. Not a state the card runs from in play."
+    "why": "HuntsmanAtTheCamp: the card is reached only from the camp, whose discovery (R036, CampStay.SpendDay) sets remembered-card (DS:E7D8) to the first guard or -1; it names that member ($ChosenOneName = party[remembered-card]). A saved game's start state holds another remembered-card (a card number), so the original reads a character record past the party (another member's text, or code: it stops), the C# an empty name. Not a state the card runs from in play."
   },
   {
     "card": "16A",
     "run": "*",
     "contains": "",
     "guardNotAMember": true,
-    "why": "BanditsNearTheCamp: the card is reached only from the camp, whose discovery (R036, CampStay.SpendDay) sets saved_card (DS:E7D8) to the first guard or -1; it names that member ($ChosenOneName = party[saved_card]). A saved game's start state holds another saved_card (a card number), so the original reads a character record past the party (another member's text, or code: it stops), the C# an empty name. Not a state the card runs from in play."
+    "why": "BanditsNearTheCamp: the card is reached only from the camp, whose discovery (R036, CampStay.SpendDay) sets remembered-card (DS:E7D8) to the first guard or -1; it names that member ($ChosenOneName = party[remembered-card]). A saved game's start state holds another remembered-card (a card number), so the original reads a character record past the party (another member's text, or code: it stops), the C# an empty name. Not a state the card runs from in play."
   },
   {
     "card": "0BC",
     "run": "*",
     "contains": "end: original 'next 0', C# 'next 12'",
-    "why": "SiegeOfTheCityLord: line 0 goes back to prev_screen (DS:A88D, R091+0x0276); CardContext.CardBefore DIVERGENCE: a prev_screen of 0 (a game saved before its first card transition, francis0 at card 0x29) leads to the map in the C#, to card 0 in the original. The card is reached from the revolt cards, never with prev_screen 0."
+    "why": "SiegeOfTheCityLord: line 0 goes back to earlier-screen (DS:A88D, R091+0x0276); CardContext.CardBefore DIVERGENCE: a earlier-screen of 0 (a game saved before its first card transition, francis0 at card 0x29) leads to the map in the C#, to card 0 in the original. The card is reached from the revolt cards, never with earlier-screen 0."
   },
   {
     "card": "041",
     "run": "*",
     "contains": "original 'hint 1: ",
-    "why": "WildHunt.OutrunChance DIVERGENCE: when not everybody rides the original's hint (R060+0x0FF4) returns the chance word [bp-4] unwritten, a stack leftover of the menu engine; the C# gives the least agile member's effective Agility."
-  },
-  {
-    "card": "041",
-    "run": "*",
-    "contains": "original 'time 7', C# 'picture xhound'",
-    "why": "WildHunt.OutrunChance DIVERGENCE, line 1's action: when not everybody rides the hint (R060+0x0FF4..0x1050) never writes the chance word [bp-4], and the action (R060+0x0ECC) rolls against that leftover (here the oracle's menu stand-in left a high one: the party escapes, time 7, picture xms057, text 7); the C# rolls against the least agile member's effective Agility and fails (text 8, the fight). The leftover is the menu engine's stack, not a value of the game state."
+    "why": "WildHunt.OutrunChance DIVERGENCE (the hint shown, not the roll): when not everybody rides the original's hint (R060+0x0FF4) returns the chance word [bp-4] unwritten, a stack leftover of the menu engine; the C# shows the least agile member's effective Agility."
   },
   {
     "card": "041",
     "run": "*",
     "contains": "original 'picture xhound', C# 'time 7'",
-    "why": "WildHunt.OutrunChance DIVERGENCE, line 1's action, the other way round (see the entry above): the original rolls against the unwritten chance word of R060+0x0FF4 and fails, the C# against the least agile member's effective Agility and succeeds."
+    "why": "WildHunt.OutrunChance, line 1's action: when not everybody rides the handler R060+0x0FF4 never writes the chance word [bp-4]; in the game the display driver's pointer hide (R060+0x0B37, MGRAPHIC drv+0x023D) has just left 0x0240 there, so the party always escapes, as the C# does. The card oracle stubs pointer-hide, so its original rolls against another leftover and can fail."
   },
   {
     "card": "0AA",
@@ -333,13 +277,143 @@
     "run": "*",
     "contains": "",
     "leaderAbsent": true,
-    "why": "PeasantsDemandAMaiden: a start state whose leader slot holds nobody (postwar40: the normalised save empties slots 0 and 1, the leader byte names slot 0): the card names and deletes the leader (party_delete on an empty slot; the original removes the slot's record from the roster, the C# has none). In play the leader is always present (hours_pass, Party.EnsureAbleLeader)."
+    "why": "PeasantsDemandAMaiden: a start state whose leader slot holds nobody (postwar40: the normalised save empties slots 0 and 1, the leader byte names slot 0): the card names and deletes the leader (party-member-erase on an empty slot; the original removes the slot's record from the roster, the C# has none). In play the leader is always present (hours-elapse, Party.EnsureAbleLeader)."
   },
   {
     "card": "123",
     "run": "*",
     "contains": "",
     "leaderAbsent": true,
-    "why": "WitchAtYourMercy: a start state whose leader slot holds nobody (postwar40: the normalised save empties slots 0 and 1, the leader byte names slot 0): the card names and deletes the leader (party_delete on an empty slot; the original removes the slot's record from the roster, the C# has none). In play the leader is always present (hours_pass, Party.EnsureAbleLeader)."
+    "why": "WitchAtYourMercy: a start state whose leader slot holds nobody (postwar40: the normalised save empties slots 0 and 1, the leader byte names slot 0): the card names and deletes the leader (party-member-erase on an empty slot; the original removes the slot's record from the roster, the C# has none). In play the leader is always present (hours-elapse, Party.EnsureAbleLeader)."
+  },
+  {
+    "card": "011",
+    "run": "*",
+    "contains": "C# 'hint 1: 0 '' -2'",
+    "why": "RevolutionHouseAtNight.KnockChance BUG: on its first path (the politics fact at the place against the party's side) the hint (R048+0x124E) copies \"Success is assured.\" but returns 0 with DX as the calls before left it (21626 / 21622 under the oracle's menu stand-in: a stale register, not game state); the C# shows chance 0 for the whole party."
+  },
+  {
+    "card": "073",
+    "run": "*",
+    "contains": "C# 'text 7 1 '",
+    "why": "BeforeTheCityWalls DIVERGENCE (battle result 3): $CityE00.msg has 7 blocks, block 7 does not exist; the original prints text-bank-file + text-bank-index.ofs[7], an entry text-bank-read did not set (0 under the oracle: the file's header bytes 07 02 0A; in a game what an earlier message file left), the C# an empty text."
+  },
+  {
+    "card": "073",
+    "run": "*",
+    "contains": "C# 'text 8 1 '",
+    "why": "BeforeTheCityWalls DIVERGENCE (battle result 4): as block 7, block 8 of $CityE00.msg does not exist; the original prints from the stale text-bank-index.ofs[8], the C# an empty text."
+  },
+  {
+    "card": "08D",
+    "run": "plain Spolitical13-VP1+B1-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: fact (2, 0) holds at the political13 place, so the abbot's score [bp-0Ah] is never zeroed (R079+0x0D17) and starts as a stack leftover (1174 after line 1's text under the oracle, probe at 18D8:031D): the abbot rescues the party (picture ms039, text 8); the C# takes 0 and the bankers do (text 9). Not game state."
+  },
+  {
+    "card": "08D",
+    "run": "plain Spolitical13-VP1+B2-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score, as plain Spolitical13-VP1+B1-O0."
+  },
+  {
+    "card": "08D",
+    "run": "plain Spolitical13-VP1+B3-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score, as plain Spolitical13-VP1+B1-O0."
+  },
+  {
+    "card": "08D",
+    "run": "plain Spolitical13-VP1+B4-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score, as plain Spolitical13-VP1+B1-O0."
+  },
+  {
+    "card": "08D",
+    "run": "plain Spolitical13-VP1+B5-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score, as plain Spolitical13-VP1+B1-O0."
+  },
+  {
+    "card": "096",
+    "run": "*",
+    "contains": "C# 'hint 1: -1 'Success is assured.' -2'",
+    "why": "DragonTidings UNCERTAIN: the hints of the heir lines 1..3 (R081+0x16EA/0x1728/0x1766) return their member word [bp-2] unset (enter 4,0; only line 0's hint sets it): a stack leftover of the caller's frame (card-mouse-handler R043+0x26C4 in play, 0 under the oracle's call); the C# shows the hint for the whole party."
+  },
+  {
+    "card": "00D",
+    "run": "*",
+    "contains": "original '<end>', C# 'text 18 1 ",
+    "originalEnd": "vectors ['R037+0x3CD6']",
+    "why": "PartyRules.AddFromRoster DIVERGENCE: a fellow prisoner (event 0x4D) naming an entry past the roster's end (a start state's aimed event; in play the event names the roster entry of a member who went away) makes party-join R037+0x3CD6 read past the file's records, and the original runs into stale bytes (execution outside the loaded code); the C# lets nobody join and shows the text."
+  },
+  {
+    "card": "08D",
+    "run": "probe L52-Vat3_90+ev28_33_2_1+ev8_0_2_9999+fa900+hr8+mo8+pc107+pu0_0_6+rn82758+rp0+sz3-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "08D",
+    "run": "probe L56-Vev28_8_2_8+ev8_0_2_9999+hr23+iq72_40_1+iq73_40_0+iq77_40_9+it64+pc96+px4+py14+rn20629+sk12_3+sk14_90+sz1-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "08D",
+    "run": "probe L58-Vev28_9_2_32+ev8_0_2_9999+ev8_0_8_9999_4+fa50+hr5+iq72_10_0+iq75_10_30+iq76_10_3+iq79_40_1+pc95+px0+py72+rn6392+sk14_3+sz1-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "08D",
+    "run": "probe L6-Vat3_90+ev8_0_2_9999+fa900+hr8+pu30+rn47884+rp-45+sa54+sz1-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "08D",
+    "run": "probe L60-Vev23+ev28_0_2_0+ev28_16_2_2+ev28_21_2_1+ev28_22_10_13+ev43+hr17+mo11+rn76344+rp-5+sa22+sa3+sa48+sk17_2+sz1-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "08D",
+    "run": "probe L88-Vev26+ev28_0_2_0+ev28_16_2_2+ev28_17_2_2+ev81_0+hr6+mo7+rn6212+rp0+sk17_90+sz3-O0",
+    "contains": "",
+    "why": "PublicExecution.Verdict DIVERGENCE: the abbot's stack-leftover score (fact (2, 0) holds, R079+0x0D17 never zeroes it), a value that varies with the hints the probe called before the menu; the C# takes 0. An original bug on undefined stack memory, not game state (D-9903b8)."
+  },
+  {
+    "card": "034",
+    "run": "probe Snew-mines36-O3",
+    "contains": "saved game: chars record 0",
+    "why": "CityChurchByDay.GiveATenth DIVERGENCE: the original uses the best Religion value (37) as a member number (R057+0x06C2..0x0704) and reads past the party table (DS:9EE9) into the last formatted screen text, so nobody gets Divine Favor; the C# reads an empty member and its loop raises member 0. Depends on the text buffer, not on game state."
+  },
+  {
+    "card": "06C",
+    "run": "*",
+    "contains": "end: original 'stops execution outside the loaded code at 4A114",
+    "why": "NightInTheGuildLeadersHouse DIVERGENCE (case 2, (city + map y) % 5 == 2, fact 8): made-up-name for slot 0x27 writes about 7.9 KB below DS (R029+0x5CC4, outside the five-slot name table) and the original later runs off into linear 4A114; the C# draws the name, does not store it (CardContext.RandomName) and goes on to line 6."
+  },
+  {
+    "card": "107",
+    "run": "*",
+    "contains": "",
+    "shortStart": true,
+    "why": "RefugeesFromThePlague, TESTER: a start state with a party slot of status 0 (key part st<m>_0) is saved short (R037+0x2ACE writes the count and leaves the record out) and the original runs on that file as its loader reads it, out of step; the C# runs on the state itself, so the leader byte and the records after the empty slot differ before the card starts (C# hours-elapse moves the leader to slot 1 as R029+0x255A does). Keys without st<m>_0 agree."
+  },
+  {
+    "card": "020",
+    "run": "*",
+    "contains": "",
+    "shortStart": true,
+    "why": "DocksAtNight, TESTER: a start state with a party slot of status 0 is saved short (R037+0x2ACE) and the original reads it out of step: it sees a slot of status 255 (present, not Able) and offers the swim on foot, the C# state has three able mounted members and offers the mounted swim (R029+0x1326 is the same test in both). Keys without st<m>_0, and st<m>_2, agree."
+  },
+  {
+    "card": "097",
+    "run": "*",
+    "contains": "",
+    "shortStart": true,
+    "why": "DragonBlightedLand, TESTER: a start state with a party slot of status 0 is saved short (R037+0x2ACE) and the original reads it out of step; the C# runs on the state itself, so the saved games differ before the card starts. Keys without st<m>_0 agree."
   }
 ]

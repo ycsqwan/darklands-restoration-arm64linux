@@ -19,13 +19,17 @@ public sealed class BishopsRoadTithe : Card
     private const int ClerkPicture = 243;
     private const int GuardsPicture = 33;
 
+    // C: the card's picture buffer (image-buffer, DS:E3E3): every card-run of this card but the pleading's first goes through it.
+    private int _cardPicture;
+
     public override int Number => 264;
 
     public override int Run(CardContext c)
     {
-        Show(c, BishopPicture);
+        ShowCard(c, BishopPicture);
         c.Next = Number;
-        var menu = Menu(c, 0);
+        // C: settings-block is written after the empty-purse test (R110+0x013C): that way out leaves the block the card before left.
+        var menu = Menu(c, null);
         menu.Set(OptionState.Enabled, 0, 1, 2, 3, 4, 5);
         c.State.SavedCard2 = 0;
         c.Variables.Chosen[0] = c.Leader;
@@ -34,7 +38,7 @@ public sealed class BishopsRoadTithe : Card
         {
             c.Screen.Text(16);
             c.State.CurrentLocation = Core.GameState.Wilderness;
-            // The original returns 0x0C without changing next_card.
+            // The original returns 0x0C without changing following-card.
             return CardContext.MapCard;
         }
         // C: (unsigned) of the long pfennig counts keeps their low 16 bits, unsigned, before dividing.
@@ -44,47 +48,48 @@ public sealed class BishopsRoadTithe : Card
             tithe = Money.From(0, 0, (ushort)purse / 2);
         }
         c.Variables.Money[0] = tithe;
+        menu.Block = 0;
         c.SetCardItems(0x65, 0x66);
         c.SetCardSaints(0x3D, 0x4E);
         menu[5] = c.ItemsUsable();
         menu[1] = c.SaintsUsable();
         menu.Popup = () => c.SaintPopupChanceHint();
 
-        // C: after every choice the loop sets var_chosen1 = leader before the handler; a pop-up
-        // handler then names its own member. Each action does this first for line choices.
+        // C: after each choice the loop sets $ChosenOneName to the leader, then calls the handler (a box handler may name its member), then
+        // C: the action.
+        menu.OnChoice = () => c.Variables.Chosen[0] = c.Leader;
         return menu.Run(
             // orig: R110+0x052E (1838:052E) matched; hint R110+0x057E
-            new MenuLine(_ => { LeaderSpeaks(c); PayTheTithe(c, tithe); }, () => OptionHint.Say(SuccessAssured)),
+            new MenuLine(_ => { PayTheTithe(c, tithe); }, () => OptionHint.Say(SuccessAssured)),
             // orig: R110+0x05B6 (line 1); hint R110+0x0608 (1838:0608) matched
-            new MenuLine(_ => { LeaderSpeaks(c); PrayForAid(c, menu); }, () => OptionHint.Say("Select a person and a saint.")),
+            new MenuLine(_ => { PrayForAid(c, menu); }, () => OptionHint.Say("Select a person and a saint.")),
             // orig: R110+0x0640 (line 2); hint R110+0x0718 (1838:0718) matched
-            new MenuLine(p => { LeaderSpeaks(c); PleadYourVirtue(c, menu, p); }, () => OptionHint.ChanceOf(Math.Clamp(
+            new MenuLine(p => { PleadYourVirtue(c, menu, p); }, () => OptionHint.ChanceOf(Math.Clamp(
                 c.PartyAverageSkill((int)Skill.Virtue) + c.Skill(Who.Leader, (int)Skill.SpeakCommon) / 2, 0, 100), c.Leader)),
             // orig: R110+0x075C (1838:075C) matched; hint R110+0x07B6
-            new MenuLine(_ => { LeaderSpeaks(c); Refuse(c, menu); }, Unknown),
+            new MenuLine(_ => { Refuse(c, menu); }, Unknown),
             // orig: R110+0x07EE (line 4); hint R110+0x08FC (1838:08FC) matched
-            new MenuLine(p => { LeaderSpeaks(c); RideOff(c, menu, p); }, () => EscapeHint(c)),
+            new MenuLine(p => { RideOff(c, menu, p); }, () => EscapeHint(c)),
             // orig: R110+0x0948 (line 5); hint R110+0x0A04 (1838:0A04) matched
-            new MenuLine(p => { LeaderSpeaks(c); ThrowAPotion(c, menu, p); }, () => OptionHint.Say("Select a person and a potion."), () => PotionHint(c)),
+            new MenuLine(p => { ThrowAPotion(c, menu, p); }, () => OptionHint.Say("Select a person and a potion."), () => PotionHint(c)),
             // orig: R110+0x0A3C (1838:0A3C) matched; hint R110+0x0A8C
-            new MenuLine(_ => { LeaderSpeaks(c); Submit(c); }, () => OptionHint.Say(SuccessAssured)),
+            new MenuLine(_ => { Submit(c); }, () => OptionHint.Say(SuccessAssured)),
             // orig: R110+0x0AC4 (1838:0AC4) matched; hint R110+0x0ACA
-            new MenuLine(_ => { LeaderSpeaks(c); FightTheGuard(c); }, () => OptionHint.Say("Enter Combat")),
+            new MenuLine(_ => { FightTheGuard(c); }, () => OptionHint.Say("Enter Combat")),
             // DORMANT: lines 8 and 9 are never offered; actions R110+0x0B02/0b06 and hints R110+0x0B04/0b08
             // C: are empty; the hints return AX/DX; neutral hints are used.
-            new MenuLine(_ => LeaderSpeaks(c)),
-            new MenuLine(_ => LeaderSpeaks(c)));
+            new MenuLine(_ => { }),
+            new MenuLine(_ => { }));
     }
 
     private static OptionHint Unknown() => OptionHint.Say("You can always encounter the unknown");
 
-    /// <summary>The loop's var_chosen1 = leader, unless a pop-up named its member (see Run).</summary>
-    private static void LeaderSpeaks(CardContext c)
+    /// <summary>Shows the card with a picture through the card's picture buffer, which keeps it.</summary>
+    // C: _fstrcpy(image-buffer, image-file-names[n]), then card-run(card-title, image-buffer).
+    private void ShowCard(CardContext c, int picture)
     {
-        if (!c.MenuPopup)
-        {
-            c.Variables.Chosen[0] = c.Leader;
-        }
+        _cardPicture = picture;
+        Show(c, picture);
     }
 
     /// <summary>Throwing the potion: sure for a mounted party, else by the least nimble rider and the potion's quality.</summary>
@@ -100,16 +105,16 @@ public sealed class BishopsRoadTithe : Card
         }
         else if (c.MenuSlot == 0)
         {
-            chance = Math.Clamp(c.PartyMinMountedAgility() + c.ItemQuality(m, c.CardItems[c.MenuSlot]) + 1, 1, 99);
+            chance = Math.Clamp(c.PartyMinMountedAgility() + c.ItemQuality(m, c.CardItems[c.MenuEntrySlot]) + 1, 1, 99);
         }
         else
         {
-            chance = Math.Clamp(c.PartyMinMountedAgility() + c.ItemQuality(m, c.CardItems[c.MenuSlot]) + 10, 10, 95);
+            chance = Math.Clamp(c.PartyMinMountedAgility() + c.ItemQuality(m, c.CardItems[c.MenuEntrySlot]) + 10, 10, 95);
         }
         return OptionHint.ChanceOf(chance, m);
     }
 
-    // C: party_min_eff_attr2_bonus() is evaluated before member_skill(best_member, …) (checked against the asm),
+    // C: party-effective-stat-two-low-bonus() is evaluated before member-ability(top-scoring-member, …) (checked against the asm),
     // so the Riding is that of the least nimble rider it found.
     private static OptionHint EscapeHint(CardContext c)
     {
@@ -125,7 +130,7 @@ public sealed class BishopsRoadTithe : Card
     private void PayTheTithe(CardContext c, Money tithe)
     {
         c.State.Party.Purse = c.State.Party.Purse.Subtract(tithe);
-        Show(c, ClerkPicture);
+        ShowCard(c, ClerkPicture);
         c.Screen.Text(1);
         c.LeaveForTheMap();
     }
@@ -134,7 +139,7 @@ public sealed class BishopsRoadTithe : Card
     private static void PrayForAid(CardContext c, CardMenu menu)
     {
         c.Variables.Chosen[0] = c.MenuMember;
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
@@ -152,6 +157,7 @@ public sealed class BishopsRoadTithe : Card
     // orig: R110+0x0640 (1838:0640) matched; tests: CardSmokeTests
     private void PleadYourVirtue(CardContext c, CardMenu menu, int chance)
     {
+        // C: this card-run takes the second picture buffer (R110+0x0655): image-buffer keeps the card's picture.
         Show(c, 358);
         if (c.Random(100) <= chance)
         {
@@ -165,7 +171,8 @@ public sealed class BishopsRoadTithe : Card
         ShowPicture(c, ClerkPicture);
         c.Screen.Text(14);
         c.Next = 264;
-        Show(c, BishopPicture);
+        // C: card-run(card-title, image-buffer) (R110+0x0710): the picture the card last showed through its buffer.
+        Show(c, _cardPicture);
     }
 
     /// <summary>Submit to the guard or fight (the lines 6 and 7 of <paramref name="block"/>).</summary>
@@ -179,7 +186,7 @@ public sealed class BishopsRoadTithe : Card
     private void Refuse(CardContext c, CardMenu menu)
     {
         TheGuardsDrawWeapons(c, menu);
-        Show(c, GuardsPicture);
+        ShowCard(c, GuardsPicture);
         menu.Block = 4;
         c.Next = 264;
     }
@@ -191,20 +198,20 @@ public sealed class BishopsRoadTithe : Card
         TheGuardsDrawWeapons(c, menu);
         if (chance == 0)
         {
-            Show(c, GuardsPicture);
+            ShowCard(c, GuardsPicture);
             menu.Block = 7;
         }
         else
         {
             if (c.Random(100) <= chance)
             {
-                Show(c, 287);
+                ShowCard(c, 287);
                 c.Screen.Text(5);
                 c.PracticeSkill(Who.Everybody, (int)Skill.Riding, 1, 10, 0);
                 c.LeaveForTheMap();
                 return;
             }
-            Show(c, 286);
+            ShowCard(c, 286);
             menu.Block = 6;
             c.PracticeSkill(Who.Everybody, (int)Skill.Riding, 0, 10, 0);
         }
@@ -217,23 +224,23 @@ public sealed class BishopsRoadTithe : Card
         c.TakeItem(c.MenuMember, c.CardItems[c.MenuSlot]);
         if (c.Random(100) <= chance)
         {
-            Show(c, 189);
+            ShowCard(c, 189);
             c.Screen.Text(9);
             c.LeaveForTheMap();
             return;
         }
         TheGuardsDrawWeapons(c, menu);
-        Show(c, GuardsPicture);
+        ShowCard(c, GuardsPicture);
         menu.Block = 10;
         c.Next = 264;
     }
 
-    /// <summary>The guards take money and weapons (the original leaves for the map without clearing cur_loc).</summary>
+    /// <summary>The guards take money and weapons (the original leaves for the map without clearing location-now).</summary>
     // orig: R110+0x0A3C (1838:0A3C) matched; tests: CardSmokeTests
     private void Submit(CardContext c)
     {
         c.LoseItems(Who.Everybody);
-        Show(c, 177);
+        ShowCard(c, 177);
         c.Screen.Text(8);
         c.PassHours(2);
         c.Next = CardContext.MapCard;
@@ -244,7 +251,7 @@ public sealed class BishopsRoadTithe : Card
     /// away come back robbed; beaten, robbed. Every member then loses 2 Virtue and 25 Divine Favour.
     /// </summary>
     // orig: R110+0x031A (1838:031A) matched; tests: CardSmokeTests
-    // C: arguments right to left: rand_mod(2) + 4 is drawn before rand_mod(3); then run_battle draws its seed (-1).
+    // C: arguments right to left: roll-below(2) + 4 is drawn before roll-below(3); then battle-driver draws its seed (-1).
     private void FightTheGuard(CardContext c)
     {
         var lore = c.PartyLoreLevel();
@@ -255,7 +262,7 @@ public sealed class BishopsRoadTithe : Card
             case 0:
                 c.PassHours(1);
                 c.AdjustReputation(c.NearestCity(c.State.MapPosition.X, c.State.MapPosition.Y), -10, -20);
-                Show(c, 286);
+                ShowCard(c, 286);
                 c.Screen.Text(11);
                 c.LeaveForTheMap();
                 break;
@@ -269,21 +276,21 @@ public sealed class BishopsRoadTithe : Card
                         c.LoseItems(i);
                     }
                 }
-                Show(c, 61);
+                ShowCard(c, 61);
                 c.Screen.Text(15);
                 c.LeaveForTheMap();
                 break;
             case 3:
                 c.PassHours(c.Random(3) + 3);
                 c.LoseItems(Who.Everybody);
-                Show(c, 145);
+                ShowCard(c, 145);
                 c.Screen.Text(12);
                 c.LeaveForTheMap();
                 break;
             case 4:
                 c.PassHours(1);
                 c.LoseItems(Who.Everybody);
-                Show(c, 177);
+                ShowCard(c, 177);
                 c.Screen.Text(8);
                 c.LeaveForTheMap();
                 break;

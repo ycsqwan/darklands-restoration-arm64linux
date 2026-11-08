@@ -8,14 +8,16 @@ namespace Darklands.Persistence;
 /// 0x80-byte member record (the combatant record of the party slot), then the saints known
 /// (0x14 bytes), the formulas known (0x16 bytes) and the pack (64 entries of 6 bytes).
 /// </summary>
-// orig: the record as R037+0x2ACE writes it for a party member (combatants + slot * 0x80, saints_known[slot],
-// formulas_known[slot], inventories[slot]) and R037+0x8ED4 reads it back; field offsets from the member accessors
+// orig: the record as R037+0x2ACE writes it for a party member (combatants + slot * 0x80, saints-learned[slot],
+// known-recipes[slot], inventories[slot]) and R037+0x8ED4 reads it back; field offsets from the member accessors
 // (party[] = combatants + 0x14, DS:9C69) as the rules use them (Character, CombatantRecords); tests: OriginalSaveTests
 // C: party-relative offsets in the rules are record offsets − 0x14 (party[i][1] is the shield letter at record +0x15).
 // C: the short name field runs into the weapon potion byte (+0x48): a nickname of 10 letters ends on it, as the original's strcpy reads it.
-// UNCERTAIN: the bytes this model does not name (+0x02..+0x11 combat position and orders, +0x16, +0x18..+0x21, +0x23, +0x4A,
-// +0x4D/+0x4E, +0x52..+0x54, +0x56/+0x57, +0x59, +0x7F) are kept as read (Character.OriginalRecord); a character made by this program
-// has zeros there. The saint and formula bytes and all 64 pack entries are modelled as raw bytes (KnownBits, Pack).
+// C: the bytes this model does not name (+0x02..+0x11 combat position and orders, +0x16, +0x18..+0x21, +0x23, +0x4A,
+// +0x4D/+0x4E, +0x52..+0x54, +0x56/+0x57, +0x59, +0x7F) are kept as read (Character.OriginalRecord): R037+0x2ACE writes the 0x80 + 0x14 +
+// 0x16 + 0x180 bytes raw; a character made by this program carries the bytes the generator's reset writes (CharacterCreation.ResetRecord,
+// R037+0x675A; tests CharacterCreationTests.TheMadeCharacterKeepsTheResetRecordsBytes, OriginalSaveTests.AMadeCharacterIsWrittenWithTheResetRecordsBytes).
+// The saint and formula bytes and all 64 pack entries are modelled as raw bytes (KnownBits, Pack).
 public static class CharacterRecords
 {
     public const int Size = 0x22A;
@@ -67,7 +69,7 @@ public static class CharacterRecords
             Name = Text(r, NameAt, NameLength),
             ShortName = Text(r, ShortNameAt, ShortNameLength),
             WeaponPotions = r[WeaponPotionsAt],
-            // C: member_fatigue is a signed char (cbw).
+            // C: member-tiredness is a signed char (cbw).
             Encumbrance = (sbyte)r[EncumbranceAt],
             ArmourPotions = r[ArmourPotionsAt],
             FirewallStrength = r[FirewallAt],
@@ -93,9 +95,9 @@ public static class CharacterRecords
             c.Pack[i] = new ItemStack(UWord(e, 0), e[2], e[3], e[4], e[5]);
         }
         c.Pack.Stacks = (sbyte)r[ItemCountAt];
-        // orig: member_bit / saint tests: saint s is bit 0x80 >> (s & 7) of byte s >> 3 (Saints.cs)
+        // orig: member-flag-bit / saint tests: saint s is bit 0x80 >> (s & 7) of byte s >> 3 (Saints.cs)
         r.Slice(SaintsAt, SaintBytes).CopyTo(c.Saints.Bytes);
-        // orig: formula f = potion * 3 + grade is bit (1 << grade) of the potion's byte (CharacterCreation, has_item); the whole byte is kept
+        // orig: formula f = potion * 3 + grade is bit (1 << grade) of the potion's byte (CharacterCreation, carries-item); the whole byte is kept
         r.Slice(FormulasAt, FormulaBytes).CopyTo(c.Formulas.Bytes);
         return c;
     }

@@ -50,12 +50,14 @@ public sealed class ThiefOfTheDragonsHoard : Card
                 break;
             case 4:
                 ShowPicture(c, Picture);
+                // orig: R083+0x161E: settings-block = 4 (DS:EE53, which a later card may read); the other cases leave it.
+                c.OptionsBlock = 4;
                 break;
             default:
                 c.Next = 0x97;
                 break;
         }
-        // C: the growth is drawn as an argument of event_update.
+        // C: the growth is drawn as an argument of event-advance.
         var growth = c.Random(2);
         c.Events.Update(-1, -1, 0x1C, 1, growth, DragonQuest, EventUpdate.Add);
         c.Events.Update(-1, -1, 0x1C, 7, 1, DragonQuest, EventUpdate.Add);
@@ -152,7 +154,7 @@ public sealed class ThiefOfTheDragonsHoard : Card
     // C: the saint brings the party to the thief, but the script then neither records nor gives the cup.
     private static void InvokeASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

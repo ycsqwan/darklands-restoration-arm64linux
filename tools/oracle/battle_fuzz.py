@@ -24,6 +24,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+from paths import local_dir  # noqa: E402
 import battle_calls as bc  # noqa: E402
 from dosmachine import DS, P  # noqa: E402
 from orig_side import COMBATANTS, RECORD  # noqa: E402
@@ -143,6 +144,7 @@ def pack(v: int, width: int) -> str:
 class Fuzzer:
     def __init__(self, st: "bc.State", coord: str, args_spec, rng: random.Random, baseline, probes: int = 12):
         self.probes = probes
+        self.errors = {}          # what the original's errored calls were (dropped from the corpus): message -> count
         self.aimed = [] if os.environ.get("DARKLANDS_BATTLE_FUZZ_NOAIM") else aimed_ops(coord)       # NOAIM: without branch_flip.py's values (to see what they add)
         self.st, self.coord, self.args_spec, self.rng = st, coord, args_spec, rng
         self.seen_i = {k: set(v) for k, v in baseline[0].items()}
@@ -169,6 +171,26 @@ class Fuzzer:
                 if op["w"] == "ds" and 0 <= k < 13 and rest == 0x14 and op["hex"] in ("02", "03"):
                     args[0] = k
                     break
+            if len(args) > 1 and 0 <= args[0] < 13:
+                # the second argument is the animation set its one caller (R014+0x1584) worked out for the combatant at the head of its pass: the
+                # record's slot (+0x16), +2 fighting or hit, +4 dying for an enemy's slot (pose +0x18), as the rewrite's AnimationSet
+                rec = bytearray(self.st.record(args[0]))
+                base = COMBATANTS + RECORD * args[0]
+                for op in ops:
+                    if op["w"] == "ds" and base <= op["o"] < base + RECORD:
+                        data = bytes.fromhex(op["hex"])
+                        lo = op["o"] - base
+                        rec[lo:lo + len(data)] = data[:RECORD - lo]
+                slot, pose = rec[0x16], rec[0x18]
+                args[1] = slot + (2 if slot >= 5 and pose in (2, 3) else 4 if slot >= 5 and pose == 4 else 0)
+        if self.coord == "R016+0x0000" and args and args[0] == 0:
+            # no key waits: the held direction keys (DS:0880 / DS:0881, bytes of -1, 0 or 1) give an arrow (round B3)
+            return [{"w": "ds", "o": 0x880, "hex": "%02x" % rng.choice([0, 1, 0xFF])}, {"w": "ds", "o": 0x881, "hex": "%02x" % rng.choice([0, 1, 0xFF])}]
+        if self.coord == "R014+0x2170" and args:
+            for op in reversed(ops):
+                if op["w"] == "ds" and 0xA6C4 <= op["o"] < 0xA6C9:
+                    args[0] = op["o"] - 0xA6C4          # the member whose place the call carries out
+                    break
         if self.coord == "R014+0xDF28":
             chosen = [int(op["hex"], 16) for op in ops if op["o"] == 0xA6B2]
             return [] if chosen and chosen[-1] < 5 else [{"w": "ds", "o": 0xA6B2, "hex": "%02x" % rng.randrange(5)}]
@@ -181,7 +203,7 @@ class Fuzzer:
     def gen_args(self) -> list[int]:
         args = [f(self.rng, self) for f in self.args_spec]
         if self.coord in ("R014+0x1BA0", "R014+0x1F00") and args:
-            # the caller's animation set (combat_actions R014+0x11C4, 14F7:343C): the slot (+0x16), past the party's by the pose (+0x18)
+            # the caller's animation set (fight-action-table R014+0x11C4, 14F7:343C): the slot (+0x16), past the party's by the pose (+0x18)
             rec = self.records[args[0] % 13]
             slot, pose = rec[0x16] - (rec[0x16] >> 7 << 8), rec[0x18] - (rec[0x18] >> 7 << 8)
             args.append(slot if slot < 5 else slot + 2 if pose in (2, 3) else slot + 4 if pose == 4 else slot)
@@ -190,12 +212,110 @@ class Fuzzer:
             args[1], args[2] = self.rng.choice([(rec[0x22], rec[0x5A]), (0x40, 25), (0x41, 25), (rec[0x22], 25)])
         return args
 
-    def scenario(self) -> list[dict]:
+    def scenario(self, force=None) -> list[dict]:
         """Several coordinated changes at once: whole vectors of statuses, floors, the result, the timers."""
         rng = self.rng
         ops = []
-        pick = "doors" if self.coord in DOOR_FUNCTIONS and rng.random() < 0.6 else rng.choice(BIAS[self.coord]) if self.coord in BIAS and rng.random() < 0.7 else rng.choice(["statuses", "floors", "result", "times", "kill enemies", "kill party", "positions", "flags", "tables", "doors", "doors", "map", "missiles"])
-        if pick == "statuses":
+        pick = force or ("doors" if self.coord in DOOR_FUNCTIONS and rng.random() < 0.6 else rng.choice(BIAS[self.coord]) if self.coord in BIAS and rng.random() < 0.7 else rng.choice(["statuses", "floors", "result", "times", "kill enemies", "kill party", "positions", "flags", "tables", "doors", "doors", "map", "missiles"]))
+        if pick == "places":
+            # a member at a door / chest / stairs with the loot file there (the order the place carries out: R014+0x2170): doors, the member's spot, the loot
+            ops.extend(self.scenario("doors") if rng.random() < 0.7 else [])
+            ops.extend(self.member_state())
+            ops.extend(self.loot_state(False))
+            who_ = [int(op["hex"], 16) for op in ops if op["o"] == 0xA6B2][-1]
+            place = rng.choice([2, 2, 3, 4, 5, 6, 7, 8, 9])
+            ops.append({"w": "ds", "o": 0xA6C4 + who_, "hex": "%02x" % place})
+            if self.door_count:
+                ops.append({"w": "ds", "o": 0xC64C + who_, "hex": "%02x" % rng.randrange(self.door_count)})
+            # the place-changed bit (0x08) is set and cleared inside the pass that sets it: never in a state the call starts from
+            flags = [op for op in ops if op["w"] == "ds" and op["o"] == 0xA696 + 2 * who_]
+            if flags:
+                ops.append({"w": "ds", "o": 0xA696 + 2 * who_, "hex": pack(int.from_bytes(bytes.fromhex(flags[-1]["hex"]), "little") & ~0x08, 2)})
+            if place == 2:
+                # stairs: a record of the level (its number below the count), enemies that follow (the per-kind floor masks DS:C23E) and a few more
+                # a level switch is judged only with the level's own image (the other levels are the original's files') and DS:D4E4 set (the level saved)
+                ops[:] = [op for op in ops if not (op["w"] == "floor" and op["o"] < 0x4AEE)]
+                count = self.st.m.byte(P(FLOOR_SEG), 0x2FB6)
+                ops.append({"w": "ds", "o": 0xD4E4, "hex": "01"})
+                ops.append({"w": "ds", "o": 0xC77E + who_, "hex": "%02x" % (rng.randrange(count) if count else 0xFF)})
+                for slot in range(7):
+                    ops.append({"w": "ds", "o": 0xC23E + 2 * slot, "hex": pack(rng.choice([0, 0xFFFF, 1 << rng.randrange(8), rng.getrandbits(8)]), 2)})
+        elif pick == "around":
+            # a combatant is placed round a spot (R024+0x08F2): the spot and the direction in a 14-byte record at DS:FE80 (+8/+10 the spot, +12 the direction), with
+            # combatants standing near it to take the places
+            x, y = rng.choice(self.live_positions)
+            rec = bytearray(14)
+            rec[8:10] = ((x + rng.choice([-48, -24, 0, 0, 24, 48])) & 0xFFFF).to_bytes(2, "little")
+            rec[10:12] = ((y + rng.choice([-24, -8, 0, 0, 8, 24])) & 0xFFFF).to_bytes(2, "little")
+            rec[12] = rng.choice([0, 2, 4, 6])
+            ops.append({"w": "ds", "o": 0xFE80, "hex": bytes(rec).hex()})
+            sx, sy = int.from_bytes(rec[8:10], "little", signed=True), int.from_bytes(rec[10:12], "little", signed=True)
+            for k in rng.sample(range(13), rng.randrange(0, 9)):
+                ox, oy = rng.choice([(0, 0), (-12, 0), (12, 0), (0, -8), (0, 8), (-12, -8), (12, 8), (0, -16), (24, 0), (-24, 0), (0, 16), (36, 0)])
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 4, "hex": pack((sx + ox) & 0xFFFF, 2) + pack((sy + oy) & 0xFFFF, 2)})
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x14, "hex": "01"})
+        elif pick == "leave":
+            # the party leaves a level through a stairs record while enemies are alive (R023+0x17D2): the floor, combat or not, the enemies' kinds, endurances and
+            # the floors that follow (the per-kind masks DS:C23E), the stairs record the call is given (14 bytes at DS:FE80)
+            real = self.floor_values[:len(self.floor_values) - 2]
+            pf = rng.choice(real)
+            ops.append({"w": "ds", "o": 0xC623, "hex": "%02x" % pf})
+            ops.append({"w": "ds", "o": 0xA6C1, "hex": "%02x" % rng.choice([1, 1, 1, 0])})
+            ops.append({"w": "ds", "o": 0xD661, "hex": "%02x" % max(len(real), 1)})
+            for slot in range(7):
+                ops.append({"w": "ds", "o": 0xC23E + 2 * slot, "hex": pack(rng.choice([1 << pf, 1 << pf, 0, 0xFFFF, rng.getrandbits(8)]), 2)})
+            loaded = sorted({self.records[k_][0x16] for k_ in self.alive if k_ >= 5 and 4 <= self.records[k_][0x16] < 7}) or [4, 5, 6]          # the enemy animation slots the state has loaded (4..6; an empty one is no state of a battle)
+            kinds = [rng.choice(loaded) for _ in range(rng.choice([1, 2, 3]))]
+            for k in range(5, 13):
+                alive = rng.random() < 0.6
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x14, "hex": "%02x" % (1 if alive else rng.choice([0, 0, 3, 5]))})
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x16, "hex": "%02x" % rng.choice(kinds + loaded)})
+                maximum = rng.randrange(4, 40)
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x64, "hex": "%02x" % maximum})
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x5D, "hex": "%02x" % rng.choice([maximum, maximum, rng.randrange(0, maximum + 1), rng.randrange(0, 5)])})
+                ops.append({"w": "ds", "o": 0xA6B4 + k, "hex": "%02x" % (pf if rng.random() < 0.9 else rng.choice(real))})
+            for k in range(5):
+                ops.append({"w": "ds", "o": 0xA6B4 + k, "hex": "%02x" % (pf if rng.random() < 0.9 else rng.choice(real))})
+            rec = bytearray(14)
+            x, y = rng.choice(self.live_positions)
+            rec[8:10] = ((x + rng.choice([-64, 0, 64])) & 0xFFFF).to_bytes(2, "little")
+            rec[10:12] = ((y + rng.choice([-32, 0, 32])) & 0xFFFF).to_bytes(2, "little")
+            rec[12] = rng.randrange(8)
+            rec[6] = pf
+            ops.append({"w": "ds", "o": 0xFE80, "hex": bytes(rec).hex()})
+        elif pick == "endstate":
+            # who is where when the end of the battle is tested (R014+0x08FE): the enemies' floor, each member's status and floor (on it, elsewhere, left through an
+            # exit), the enemies', the leader and the active member
+            real = self.floor_values[:len(self.floor_values) - 2]
+            ef = rng.choice(real)
+            ops.append({"w": "ds", "o": 0xC651, "hex": "%02x" % ef})
+            others = [f for f in real if f != ef] or [ef]
+            def where():
+                return rng.choice([ef, ef, ef, rng.choice(others), rng.choice(others), 0x9D])
+            for k in range(5):
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x14, "hex": "%02x" % rng.choice([0, 1, 1, 1, 2, 2, 3, 5])})
+                ops.append({"w": "ds", "o": 0xA6B4 + k, "hex": "%02x" % where()})
+            mode = rng.random()
+            for k in range(5, 13):
+                alive = rng.random() < (0.15 if mode < 0.6 else 0.5)
+                ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x14, "hex": "%02x" % (rng.choice([1, 1, 2]) if alive else rng.choice([0, 0, 3, 5]))})
+                ops.append({"w": "ds", "o": 0xA6B4 + k, "hex": "%02x" % (ef if rng.random() < 0.8 else rng.choice(others))})
+            ops.append({"w": "ds", "o": 0xD4E4, "hex": "%02x" % rng.choice([0, 1, 1])})
+            ops.append({"w": "ds", "o": 0x907B, "hex": "%02x" % rng.choice([0, 1, 2, 3, 4, 4])})
+            ops.append({"w": "ds", "o": 0x17B0, "hex": "%02x" % rng.choice([0, 1, 2, 3, 4])})
+            ops.append({"w": "ds", "o": 0xC623, "hex": "%02x" % rng.choice(real)})
+            ops.append({"w": "ds", "o": 0x11CA, "hex": "%02x" % rng.choice(real)})
+            ops.append({"w": "ds", "o": 0xA893, "hex": pack(rng.choice([0xFFFF, 0, 0, 1, 2, 4, 5]), 2)})
+            ops.append({"w": "ds", "o": 0xA6C1, "hex": "%02x" % rng.randrange(2)})
+            ops.append({"w": "ds", "o": 0xD6CC, "hex": "%02x" % rng.randrange(self.act_count + 1)})
+        elif pick == "pointer":
+            # the pointer at and around the zones of the view's edges (R014+0x33A2: x 60/68/126/255/311, y 8/50/150/191), with the shape in use: one of the arrows, the normal one or none
+            x = rng.choice([rng.randint(0, 319)] * 2 + [58, 59, 60, 61, 66, 67, 68, 69, 124, 125, 126, 127, 253, 254, 255, 256, 309, 310, 311, 312, 319])
+            y = rng.choice([rng.randint(0, 199)] * 2 + [0, 6, 7, 8, 9, 48, 49, 50, 51, 52, 148, 149, 150, 151, 152, 189, 190, 191, 192, 193, 199])
+            ops.append({"w": "ds", "o": 0x6EEC, "hex": pack(x & 0xFFFF, 2) + pack(y & 0xFFFF, 2)})
+            handles = [self.st.ds(0xD72B + 2 * a, 2).hex() for a in range(8)] + [self.st.ds(0x9C42, 2).hex(), "ffff"]
+            ops.append({"w": "ds", "o": 0xA68F, "hex": rng.choice(handles)})
+        elif pick == "statuses":
             for k in range(13):
                 st = rng.choice([1, 1, 1, 2, 3, 5, 0]) if k < 5 else rng.choice([1, 1, 0, 0, 2, 3])
                 ops.append({"w": "ds", "o": COMBATANTS + RECORD * k + 0x14, "hex": "%02x" % st})
@@ -266,6 +386,8 @@ class Fuzzer:
             ops.extend(self.loot_state(pick == "dying"))
         elif pick == "orders":
             ops.extend(self.order_state())
+        elif pick == "panel":
+            ops.extend(self.panel_state())
         elif pick in ("regions", "triggers", "stairs", "zones"):
             ops.extend(self.features(pick))
         elif pick == "pack":
@@ -310,7 +432,7 @@ class Fuzzer:
                 rec[0x17] = rng.choice([15, 20, 30, 120])
                 rec[0x18] = rng.choice([0, 0, 0, 1])
                 if rec[0x10] == 0xFF and (rec[0x14] & 0x7F) < 6 and (rec[0x11] & 0x7F) == 0:
-                    # a weapon missile at a spot: missile_launch leaves done 0 only for a hit exchange, rolled against a target (R018+0x0212..0x024D)
+                    # a weapon missile at a spot: shot-launch leaves done 0 only for a hit exchange, rolled against a target (R018+0x0212..0x024D)
                     rec[0x11] |= 1
                 ops.append({"w": "ds", "o": 0x944D + 0x1A * i, "hex": bytes(rec).hex()})
         elif pick == "spells":
@@ -377,6 +499,38 @@ class Fuzzer:
             ops.append({"w": "ds", "o": 0x944D + 0x1A * i, "hex": bytes(rec).hex()})
         return ops
 
+    def panel_state(self) -> list[dict]:
+        """RC: the party panel's inputs: each member's order word (DS:9C65 + 0x80 m), status byte (DS:9C69), the attribute pairs the bars compare
+        (DS:9CB2.. / 9CB9..), the carried / away bytes (DS:A3D8, A6D3), the shown order letter's sub-order (DS:A6C4) and the order mode's selection."""
+        rng = self.rng
+        ops = []
+        for m in range(5):
+            if rng.random() < 0.6:
+                ops.append({"w": "ds", "o": 0x9C65 + 0x80 * m, "hex": pack(rng.choice([0, 1, 2, 6, 7, 0x0A, 0x0B, 0x11, 0x12, 0x22, 0x40, 0x40, 0x80, 0x100, 0x400, 0x400, 0x200]), 2)})
+            if rng.random() < 0.3:
+                ops.append({"w": "ds", "o": 0x9C69 + 0x80 * m, "hex": "%02x" % rng.choice([0, 1, 2, 5])})
+            if rng.random() < 0.5:
+                for o in range(0x9CB2, 0x9CC0):
+                    if rng.random() < 0.4:
+                        ops.append({"w": "ds", "o": o + 0x80 * m, "hex": "%02x" % rng.choice([0, 1, 3, 10, 20, 40, 60, 0x7F, 0x80, 0xF0, 0xFF])})
+            if rng.random() < 0.3:
+                ops.append({"w": "ds", "o": 0xA3D8 + m, "hex": "%02x" % rng.choice([0, 1, 2, 5])})
+            if rng.random() < 0.3:
+                ops.append({"w": "ds", "o": 0xA6D3 + m, "hex": "%02x" % rng.choice([0, 1])})
+            if rng.random() < 0.4:
+                ops.append({"w": "ds", "o": 0xA6C4 + m, "hex": "%02x" % rng.randrange(12)})
+            if rng.random() < 0.6:
+                ops.append({"w": "ds", "o": 0xA696 + 2 * m, "hex": pack(rng.choice([0, 1, 2, 4, 8, 9, 0x0A, 0x0C, 0x28, 0x48, 0x08, 0x40, 0x20]), 2)})
+        paused = rng.randrange(2)
+        ops.append({"w": "ds", "o": 0xA695, "hex": "%02x" % paused})
+        ops.append({"w": "ds", "o": 0x07D3, "hex": "%02x" % paused})
+        ops.append({"w": "ds", "o": 0xA6B3, "hex": "%02x" % rng.randrange(2)})
+        ops.append({"w": "ds", "o": 0xA6B2, "hex": "%02x" % (0 if rng.random() < 0.9 else rng.choice([1, 2, 3, 4, 0xFF]))})
+        ops.append({"w": "ds", "o": 0xA6C1, "hex": "%02x" % rng.choice([0, 0, 1])})
+        ops.append({"w": "ds", "o": 0xA6B0, "hex": pack(rng.choice([0xFFFF, 0, 1, 2, 7, 0x0B, 0x12, 0x22, 0x40, 0x80, 0x100, 0x400]), 2)})
+        ops.append({"w": "ds", "o": 0xA6D1, "hex": pack(rng.choice([0xFFFF, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), 2)})
+        return ops
+
     def order_state(self) -> list[dict]:
         """The order mode's variables (the orders menu and the keys read them): a member selected or not, the game paused or running, the order chosen and the
         cursor, the move mode, the marching order, the enable bytes of the menus."""
@@ -385,6 +539,7 @@ class Fuzzer:
         paused = rng.random() < 0.6
         selected = rng.randrange(5) if (paused and rng.random() < 0.85) or rng.random() < 0.15 else 0xFF
         ops.append({"w": "ds", "o": 0xA695, "hex": "%02x" % int(paused)})
+        ops.append({"w": "ds", "o": 0x07D3, "hex": "%02x" % int(paused)})
         ops.append({"w": "ds", "o": 0xA6B2, "hex": "%02x" % selected})
         ops.append({"w": "ds", "o": 0xA6B3, "hex": "%02x" % int(selected != 0xFF and (paused or rng.random() < 0.1))})
         if selected != 0xFF:
@@ -442,6 +597,7 @@ class Fuzzer:
             x, y = rng.randint(0x3C, 0x13F), rng.randint(0, 199)
         else:
             x, y = rng.randint(0, 0x3F), rng.randint(0, 199)
+        x, y = min(max(x, 0), 319), min(max(y, 0), 199)       # the pointer stays on the screen
         ops.append({"w": "ds", "o": 0x6EEC, "hex": pack(x & 0xFFFF, 2) + pack(y & 0xFFFF, 2)})
         ops.append({"w": "ds", "o": 0x6EF0, "hex": "%02x" % rng.choice([0, 1, 1])})
         ops.append({"w": "ds", "o": 0xD728, "hex": "%02x" % rng.randrange(2)})
@@ -457,6 +613,30 @@ class Fuzzer:
             ops.append({"w": "ds", "o": 0xC293, "hex": pack(16 * rng.randrange(1, 38), 2)})
         ops.append({"w": "ds", "o": 0x9409, "hex": "00"})
         return ops
+
+    def wave_state(self) -> list[dict]:
+        """The reinforcement waves (DS:D6EB on, DS:D6EC the enemies killed in this wave) and the wave's encounter record in the segment DS:7D44
+        names (+0xBE2: battle_calls.WAVE_AT): one of the level's encounter records with a reinforcement part, the kills one short of its batch
+        or not, the pool above the batch, equal, below or empty (R014+0x2709..0x2754)."""
+        rng = self.rng
+        recs = [bytes(self.st.m.read(P(FLOOR_SEG), 0x47EE + 30 * k, 30)) for k in range(self.act_count)]
+        rec = bytearray(rng.choice(recs) if recs and rng.random() < 0.7 else self.st.wave_base)
+        kinds = max(1, self.st.m.byte(DS, 0xD6CC))
+        if rng.random() < 0.7:
+            rec[7] = 1
+            rec[0x14] = rng.choice([0, 0, 1, 2, 0xFF, rng.randrange(max(kinds, 3))])
+            rec[0x15] = rng.choice([8, 16, 24, 32, 0])
+            x, y = rng.choice(self.live_positions)
+            rec[0x16:0x18] = ((x + rng.choice([-64, -32, 0, 32, 64])) & 0xFFFF).to_bytes(2, "little")
+            rec[0x18:0x1A] = ((y + rng.choice([-32, -16, 0, 16, 32])) & 0xFFFF).to_bytes(2, "little")
+            batch = rng.choice([1, 1, 2, 3, 4, 8])
+            rec[0x1A] = batch
+            rec[0x1B] = rng.choice([batch, batch + 1, 2 * batch, batch - 1, 0, 0x80, 1]) & 0xFF
+            rec[0x1C] = rng.randrange(8)
+        batch = rec[0x1A]
+        return [{"w": "ds", "o": 0xD6EB, "hex": "%02x" % rng.choice([1, 1, 1, 0])},
+                {"w": "ds", "o": 0xD6EC, "hex": "%02x" % ((batch - 1) & 0xFF if rng.random() < 0.7 else rng.randrange(max(batch, 1) + 1))},
+                {"w": "wave", "o": 0, "hex": bytes(rec).hex()}]
 
     def loot_state(self, dying: bool = False) -> list[dict]:
         """The loot file (6-byte records: item word, type, quality, count, weight), the piles that point into it (20A5:59C8, 12 bytes: offset, count, level, x, y,
@@ -514,6 +694,8 @@ class Fuzzer:
                 entries += item.to_bytes(2, "little") + bytes([kind, rng.choice([25, 25, 0xF0]), rng.choice([1, 2, 255]), rng.choice([1, 3])])
             if entries:
                 ops.append({"w": "floor", "o": 0x3954, "hex": bytes(entries).hex()})
+        if dying and rng.random() < 0.6:
+            ops.extend(self.wave_state())
         if dying and self.alive:
             k = rng.choice(self.alive)
             status = rng.choice([2, 3, 3, 3]) if k < 5 else rng.choice([2, 3, 3, 3, 3])
@@ -743,8 +925,8 @@ class Fuzzer:
     def writes(self, ops):
         out = []
         for op in ops:
-            if op["w"] == "loot":
-                out.append(("loot", 0, bytes.fromhex(op["hex"])))
+            if op["w"] in ("loot", "wave"):
+                out.append((op["w"], op["o"], bytes.fromhex(op["hex"])))
                 continue
             seg = DS if op["w"] == "ds" else self.st.far2_seg if op["w"] == "far2" else P(bc.PACK_SEG) if op["w"] == "far3" else P(FLOOR_SEG)
             out.append((seg, op["o"], bytes.fromhex(op["hex"])))
@@ -797,15 +979,18 @@ class Fuzzer:
             try:
                 r = self.run(args, ops)
             except Exception as e:      # a machine fault of the original on odd bytes: not an input
+                self.errors[type(e).__name__ + " " + str(e)[:50]] = self.errors.get(type(e).__name__ + " " + str(e)[:50], 0) + 1
                 continue
             if r["error"]:
+                key = r["error"][:200].split(";")[0] + (" @" + r["error"].split("frames")[-1][:80] if "frames" in r["error"] else "")
+                self.errors[key] = self.errors.get(key, 0) + 1
                 continue
             novel = self.novelty(r)
             probe = not novel and probes_left > 0 and ops and rng.random() < 0.15
             if novel or probe:
                 probes_left -= 0 if novel else 1
                 self.absorb(r)
-                item = {"args": args, "ops": ops, "ax": r["ax"], "dx": r["dx"], "changed": {str(k): v for k, v in r["changed"].items()}, "far_changed": {str(k): v for k, v in r["far_changed"].items()}, "far2_changed": {str(k): v for k, v in r["far2_changed"].items()}, "far3_changed": {str(k): v for k, v in r["far3_changed"].items()}, "loot": r["loot"],
+                item = {"args": args, "ops": ops, "ax": r["ax"], "dx": r["dx"], "changed": {str(k): v for k, v in r["changed"].items()}, "far_changed": {str(k): v for k, v in r["far_changed"].items()}, "far2_changed": {str(k): v for k, v in r["far2_changed"].items()}, "far3_changed": {str(k): v for k, v in r["far3_changed"].items()}, "wave_changed": {str(k): v for k, v in r["wave_changed"].items()}, "loot": r["loot"],
                         "random": r["random"], "draws": r["draws"], "seconds": r["seconds"], "instructions": r["instructions"],
                         "coverage": r["coverage"], "iteration": it, "novel": bool(novel)}
                 kept.append(item)
@@ -825,7 +1010,8 @@ anything = lambda rng, f: rng.choice([0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 0xFFFF, rng
 buffer = lambda rng, f: 0xFE80          # a DS offset above the stack for a function's output words
 DOOR_FUNCTIONS = {"R023+0x00B8", "R023+0x04AC"}
 # per function: the scenarios that matter most to it (70% of the scenarios drawn for it)
-BIAS = {"R025+0x0000": ["groups", "groups", "activations", "positions", "statuses"], "R014+0x2324": ["dying", "dying", "dying", "loot", "pack"], "R014+0xEA10": ["loot", "loot", "loot", "pack", "statuses"], "R014+0xB576": ["mouse", "mouse", "mouse", "mouse", "orders", "member"], "R014+0x0620": ["activations", "activations", "orders"], "R014+0x2170": ["member", "member", "doors", "regions", "pack", "stairs"], "R014+0xBC0C": ["orders", "orders", "member", "pack"], "R014+0xBCA8": ["orders", "orders", "orders", "member", "pack"], "R014+0x0F58": ["spells", "spells", "effects", "effects", "immune", "times", "pack", "tables"], "R016+0x0000": ["orders", "orders", "orders", "member", "pack", "menus", "doors", "tables"], "R014+0xDF28": ["member", "member", "member", "doors", "pack", "menus", "tables"], "R014+0xD04E": ["doors", "doors", "pack", "menus"], "R014+0xD402": ["regions", "regions", "pack", "menus"], "R014+0xD6DA": ["triggers"],
+BIAS = {"R025+0x0000": ["groups", "groups", "activations", "positions", "statuses"], "R014+0x2324": ["dying", "dying", "dying", "loot", "pack"], "R014+0xEA10": ["loot", "loot", "loot", "pack", "statuses"], "R014+0xB576": ["mouse", "mouse", "mouse", "mouse", "orders", "member"], "R014+0x0620": ["activations", "activations", "orders"], "R014+0x2170": ["places", "places", "places", "member", "doors", "regions", "pack", "stairs"], "R014+0xBC0C": ["orders", "orders", "member", "pack"], "R014+0xBCA8": ["orders", "orders", "orders", "member", "pack"], "R014+0x0F58": ["spells", "spells", "effects", "effects", "immune", "times", "pack", "tables"], "R016+0x0000": ["orders", "orders", "orders", "member", "pack", "menus", "doors", "tables", "places", "places", "places", "places"], "R014+0xDF28": ["member", "member", "member", "doors", "pack", "menus", "tables"], "R014+0xD04E": ["doors", "doors", "pack", "menus"], "R014+0xD402": ["regions", "regions", "pack", "menus"], "R014+0xD6DA": ["triggers"],
+        "R014+0x33A2": ["pointer"], "R023+0x17D2": ["leave", "leave", "leave", "positions", "statuses"], "R024+0x08F2": ["around", "around", "around", "positions", "statuses"], "R014+0x10672": ["effects", "effects", "effects", "positions", "statuses"], "R014+0x08FE": ["endstate", "endstate", "endstate", "statuses", "floors", "result"], "R022+0x03E4": ["statuses", "floors", "kill enemies", "kill party", "result", "positions"],
         "R014+0xDC14": ["doors", "regions", "triggers", "stairs", "zones", "pack", "menus"], "R014+0xD328": ["stairs", "menus"], "R014+0xD60A": ["zones", "menus"],
         "R014+0x1BA0": ["pack", "recov", "missiles"], "R018+0x03AE": ["recov"]}
 FX_BIAS = ["effects", "effects", "effects", "immune", "pack", "statuses", "times", "tables"]
@@ -834,6 +1020,9 @@ for _c in ("R019+0x0000", "R019+0x0300", "R019+0x058A", "R019+0x01E2", "R019+0x0
     BIAS[_c] = FX_BIAS
 for _c in ("R014+0xB0D8", "R014+0xB18E", "R014+0xB244"):
     BIAS[_c] = ["pack", "pack", "pack", "tables"]
+if os.environ.get("RC_PANEL"):
+    for _c in list(BIAS):
+        BIAS[_c] = BIAS[_c] + ["panel"] * 3
 spotx = lambda rng, f: rng.choice(f.live_positions)[0] + rng.choice([-24, -8, 0, 8, 24])
 spoty = lambda rng, f: rng.choice(f.live_positions)[1] + rng.choice([-12, -4, 0, 4, 12])
 target_ = lambda rng, f: rng.choice([0xFFFF, rng.randrange(13), rng.randrange(13)])
@@ -860,7 +1049,7 @@ def key_code_of(rng, f) -> int:
 
 
 FUNCTIONS = {
-    "R016+0x0000": [key_code_of],
+    "R016+0x0000": [key_code_of, lambda r, f: r.choice([0, 0, 0, 1, 2, 3, 4, 5])],
     "R014+0x0620": [], "R014+0x3C86": [who, lambda r, f: r.choice([0, 1, 2, 0x12, 0x06, 0x0A, 0x22, 0x80, 0x100, 0x400])],
     "R014+0xB576": [lambda r, f: r.choice([0, 0, 1, 1, 2]), lambda r, f: int(r.random() < 0.15)],
     "R014+0xEA10": [],
@@ -877,7 +1066,7 @@ FUNCTIONS = {
     "R014+0x45AE": [],
     "R014+0x4442": [],
     "R014+0x0F58": [],
-    "R014+0x0D86": [],
+    "R014+0x0D86": [], "R014+0x33A2": [], "R023+0x17D2": [member, buffer], "R024+0x08F2": [who, buffer], "R014+0x10672": [who, who], "R022+0x03E4": [lambda r, f: r.choice([1, 1, 1, 0])],
     "R014+0x2FA2": [who],
     "R014+0x306A": [who],
     "R018+0x04B6": [buffer],
@@ -926,7 +1115,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--baseline", default=None, help="pickle of (insns, edges) per record, the coverage a run must beat to be kept (battle_calls_measure.py baseline makes it); default <DARKLANDS_LOCAL>/batch/battlecalls/baseline.pkl")
     a = ap.parse_args()
-    baseline = pickle.load(open(a.baseline or os.environ.get("BATTLE_CALLS_BASELINE") or Path(os.environ["DARKLANDS_LOCAL"]) / "batch" / "battlecalls" / "baseline.pkl", "rb"))
+    baseline = pickle.load(open(a.baseline or os.environ.get("BATTLE_CALLS_BASELINE") or Path(local_dir()) / "batch" / "battlecalls" / "baseline.pkl", "rb"))
     funcs = a.functions.split(",")
     out = Path(a.out)
     for name in a.state_names.split(","):
@@ -951,6 +1140,8 @@ def main():
                 for n, item in enumerate(kept):
                     f.write(json.dumps({"unit": coord, "state": "%s#%d" % (name, item["iteration"]), "seconds": item["seconds"], **item["coverage"]}) + "\n")
             print(coord, name, "kept", len(kept), "of", a.iterations, "%.0f s wall, %.0f s cpu" % (fz.elapsed, fz.cpu), flush=True)
+            for msg, n in sorted(fz.errors.items(), key=lambda x: -x[1])[:5]:
+                print("   errored %4d x %s" % (n, msg), flush=True)
     print("worker cpu total %.1f s" % time.process_time(), flush=True)
 
 if __name__ == "__main__":

@@ -147,7 +147,9 @@ public sealed class WolfPackOnTheTrail : Card
     }
 
     // orig: R084+0x0536 (1838:0536) matched; tests: CardSmokeTests
-    // C: item_quality_flags(member, 0x02000000) as the long is pushed (low word 0); BUG: it tests item 0's flags.
+    // C: item-grade-flags(member, 0x02000000) as the long is pushed (low word 0); BUG: it tests item 0's flags.
+    // BUG: the mask is also wrong: R084+0x054F pushes 0x0200 then 0 (the long 0x02000000), while the mounts of this card are removed
+    //   with the flag 0x2000 (RemoveItemsWithFlags in the same card).
     private static OptionHint RidingChance(CardContext c)
     {
         var worst = c.PartyMinSkill(0x11);
@@ -176,12 +178,12 @@ public sealed class WolfPackOnTheTrail : Card
     // orig: R084+0x0572 (1838:0572) matched; R084+0x061C (1838:061C) matched; tests: CardSmokeTests
     private static void CallASaint(CardContext c, int picture)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
         }
-        c.NameToSlot(1, c.CardSaints[c.MenuSlot], 0);
+        c.NameToSlot(1, c.CardSaints[c.MenuEntrySlot], 0);
         ShowPicture(c, EscapePicture);
         if (answer != 0)
         {

@@ -19,7 +19,8 @@ namespace Darklands.Cards.Tests.Oracle;
 /// <remarks>
 /// Known differences that are not bugs are listed in Oracle/card-divergences.json (card, run or "*",
 /// what, why, optionally how the original's run ended); everything else fails. DARKLANDS_CARD_ORACLE_REPORT=file writes the per-card agreement
-/// (docs/faithfulness/CARDS.md is made from it).
+/// (docs/faithfulness/CARDS.md is made from it); DARKLANDS_CARD_ORACLE_DIFFS=file the differing runs and DARKLANDS_CARD_ORACLE_JUSTIFIED=file
+/// the runs that differ for a listed reason (card, run, which reason), both left out of the coverage that counts.
 /// </remarks>
 public sealed class CardOracleTests
 {
@@ -29,11 +30,11 @@ public sealed class CardOracleTests
 
     private static string Folder([CallerFilePath] string here = "") => Path.GetDirectoryName(here)!;
 
-    public static JsonDocument? Corpus()
+    public static JsonDocument? Corpus(string corpusFile = "cards-oracle.json.gz")
     {
         // DARKLANDS_CARD_ORACLE_CORPUS: another corpus (the pilot's start-state variations)
         var path = Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_CORPUS") is { Length: > 0 } other
-            ? other : Path.Combine(Folder(), "cards-oracle.json.gz");
+            ? other : Path.Combine(Folder(), corpusFile);
         if (!File.Exists(path))
         {
             return null;
@@ -50,17 +51,75 @@ public sealed class CardOracleTests
         {
             return;
         }
+        AgreeWith(corpus);
+    }
+
+    /// <summary>
+    /// The runs with controlled service results (local/batch/cards1): the battle ends with the result of the key's part B&lt;n&gt; and the
+    /// prayer screen answers as Y&lt;c|f|a&gt; (the oracle's stubs, tools/oracle/card_oracle.py results_of), reached by the first menu's line P&lt;k&gt;.
+    /// </summary>
+    [Fact]
+    public void ControlledResultsAgreeWithTheOriginal()
+    {
+        if (!CardHarness.Available || Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_CORPUS") is { Length: > 0 }
+            || Corpus("cards-controlled.json.gz") is not { } corpus)
+        {
+            return;
+        }
+        AgreeWith(corpus);
+    }
+
+    /// <summary>
+    /// The lead runs of local/batch/cards1 that start from built states (judged in local/batch/cards1o): the death film when nobody is
+    /// left, the member who leaves with the file's record tail, the text variable read through text-bank-file, a never-held slot's figure;
+    /// and those of local/batch/cards2 (judged in local/batch/cards2o): the heir who leaves nobody (the death film after the card), the
+    /// fellow prisoner who joins with the file's record, a choice in a pop-up box opened on a line whose handler has none of its own.
+    /// </summary>
+    [Fact]
+    public void LeadRunsAgreeWithTheOriginal()
+    {
+        if (!CardHarness.Available || Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_CORPUS") is { Length: > 0 }
+            || Corpus("cards-leads.json.gz") is not { } corpus)
+        {
+            return;
+        }
+        AgreeWith(corpus);
+    }
+
+    /// <summary>
+    /// The card's picture buffer (image-buffer, DS:E3E3): a handler that shows a picture through it leaves it there, and a later handler
+    /// that shows the buffer again shows that picture, not the card's first one (R108+0x05F0 then R108+0x0534 and R108+0x077F;
+    /// R109+0x02E6 then R109+0x0976; R109+0x26B4 then R109+0x2ACE; R110+0x0791 then R110+0x0710). The runs (forced lines) are the
+    /// original's, from card_oracle.py.
+    /// </summary>
+    [Fact]
+    public void PictureBufferRunsAgreeWithTheOriginal()
+    {
+        if (!CardHarness.Available || Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_CORPUS") is { Length: > 0 }
+            || Corpus("cards-picture-buffer.json.gz") is not { } corpus)
+        {
+            return;
+        }
+        AgreeWith(corpus);
+    }
+
+    private static void AgreeWith(JsonDocument corpus)
+    {
         var divergences = Divergences();
         var cards = typeof(Card).Assembly.GetTypes()
             .Where(t => t.IsSubclassOf(typeof(Card)) && !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) is not null)
             .Select(t => (Card)Activator.CreateInstance(t)!)
             .ToDictionary(c => c.Number);
         var allDifferences = new System.Collections.Concurrent.ConcurrentBag<string>();
+        // the runs that differ for a listed reason: they agree with nothing, so the coverage scripts leave them out as they do the differing ones
+        var justifiedRuns = new System.Collections.Concurrent.ConcurrentBag<string>();
         var report = new System.Collections.Concurrent.ConcurrentBag<string>();
         var failures = new System.Collections.Concurrent.ConcurrentBag<string>();
         var entries = corpus.RootElement.GetProperty("cards").EnumerateObject().ToList();
         var clock = Convert.ToUInt32(corpus.RootElement.GetProperty("clock").GetString()!, 16);
         var dump = Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_DUMP");
+        // "sound": true in the corpus: its traces hold the sound-start / music-start lines (card_oracle.py since the audio round); older corpora do not
+        var soundTrace = corpus.RootElement.TryGetProperty("sound", out var soundFlag) && soundFlag.GetBoolean();
         Parallel.ForEach(entries, entry =>
         {
             var number = Convert.ToInt32(entry.Name, 16);
@@ -76,6 +135,7 @@ public sealed class CardOracleTests
                     if (Justified(divergences, entry.Name, run.Name, "no C# card"))
                     {
                         justified++;
+                        justifiedRuns.Add($"{entry.Name}\t{run.Name}\tno C# card");
                     }
                     else
                     {
@@ -87,15 +147,17 @@ public sealed class CardOracleTests
                 var drop = divergences.Where(d => (d.Card == "*" || d.Card == entry.Name) && d.DropCSharp is { Length: > 0 })
                     .Select(d => d.DropCSharp!).ToList();
                 var blind = divergences.Any(d => (d.Card == "*" || d.Card == entry.Name) && d.IgnoreTexts);
-                var difference = Compare((Card)Activator.CreateInstance(card.GetType())!, run.Name, run.Value, clock, dump, texts, drop, blind);
+                var difference = Compare((Card)Activator.CreateInstance(card.GetType())!, run.Name, run.Value, clock, dump, texts, drop, blind, soundTrace);
                 if (difference is null && blind)
                 {
                     justified++;
+                    justifiedRuns.Add($"{entry.Name}\t{run.Name}\ttexts not compared");
                     continue;
                 }
                 if (difference is null && drop.Count > 0)
                 {
                     justified++;
+                    justifiedRuns.Add($"{entry.Name}\t{run.Name}\tC# lines dropped");
                     continue;
                 }
                 if (difference is null)
@@ -108,11 +170,13 @@ public sealed class CardOracleTests
                     // empty event slot), as the card ran without its quest:
                     // memory that holds something else; the C# reads an empty entry (TextVariables, CardContext.Events: DIVERGENCE)
                     justified++;
+                    justifiedRuns.Add($"{entry.Name}\t{run.Name}\tstray");
                     stray++;
                 }
                 else if (Justified(divergences, entry.Name, run.Name, difference, run.Value.TryGetProperty("end", out var origEnd) ? origEnd.GetString() : null))
                 {
                     justified++;
+                    justifiedRuns.Add($"{entry.Name}\t{run.Name}\tlisted");
                 }
                 else
                 {
@@ -139,13 +203,17 @@ public sealed class CardOracleTests
         {
             File.WriteAllLines(diffsFile, allDifferences.OrderBy(l => l, StringComparer.Ordinal));
         }
+        if (Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_JUSTIFIED") is { Length: > 0 } justifiedFile)
+        {
+            File.WriteAllLines(justifiedFile, justifiedRuns.OrderBy(l => l, StringComparer.Ordinal));
+        }
         Assert.True(failures.IsEmpty, $"{failures.Count} card(s) differ from the original:\n" +
             string.Join("\n", failures.OrderBy(f => f, StringComparer.Ordinal).Take(40)));
     }
 
     /// <summary>The first difference of one run, or null when the C# agrees.</summary>
     public static string? Compare(Card card, string runName, JsonElement expected, uint clock, string? dump = null, string[]? texts = null,
-        IReadOnlyList<string>? dropCSharp = null, bool ignoreTexts = false)
+        IReadOnlyList<string>? dropCSharp = null, bool ignoreTexts = false, bool soundTrace = false)
     {
         var parts = runName.Split(' ');
         var probe = parts[0] is "probe" or "hand" or "direct";
@@ -156,6 +224,11 @@ public sealed class CardOracleTests
         var direct = parts[0] == "direct" ? parts[2] : null;
         var option = int.Parse(key[(key.LastIndexOf("-O") + 2)..]);
         var (actual, end, random, sav) = Run(card, key, option, probe, clock, hand, direct);
+        if (!soundTrace)
+        {
+            // a corpus recorded before the sound lines existed: they are compared by CardSoundOracleTests against a sidecar of the original's
+            actual.RemoveAll(IsSound);
+        }
         foreach (var prefix in dropCSharp ?? [])
         {
             // a C# line the original has no counterpart for, listed in card-divergences.json
@@ -213,11 +286,14 @@ public sealed class CardOracleTests
         return CompareResult(expected, actual, end, random, sav, dump is { Length: > 0 } ? Path.Combine(dump, $"{card.Number:X3} {runName}.txt") : null, texts, ignoreTexts);
     }
 
+    /// <summary>A trace line of the sound device: <c>sound n</c> (sound-start, root 047C:078A) or <c>music x</c> (music-start, R043+0x09AE).</summary>
+    public static bool IsSound(string line) => line.StartsWith("sound ", StringComparison.Ordinal) || line.StartsWith("music ", StringComparison.Ordinal);
+
     /// <summary>A run's trace, end, random state and saved game against the original's (null: they agree).</summary>
     public static string? CompareResult(JsonElement expected, List<string> actual, string end, string random,
         (string Place, JsonObject Sections)? sav, string? dumpFile = null, string[]? texts = null, bool ignoreTexts = false)
     {
-        // the rules redraw the card after a full screen, a prayer or a battle (card_load through thunk 09C0:1EA5, "redraw" in the
+        // the rules redraw the card after a full screen, a prayer or a battle (card-run through thunk 09C0:1EA5, "redraw" in the
         // original's trace); the C# card shows its picture again itself: a "picture" right after one of those is that redraw
         actual = Pictures(actual);
         var want = expected.GetProperty("trace").EnumerateArray().Select(e => Resolve(e.GetString()!, texts))
@@ -255,9 +331,14 @@ public sealed class CardOracleTests
         // the menu policy gives up the same way on both sides (no choosable option, or more than 50 menus)
         const string PolicyStop = "throws InvalidOperationException: ";
         if (end.StartsWith(PolicyStop, StringComparison.Ordinal) && end[PolicyStop.Length..] is var reason
-            && (reason.StartsWith("Menu ", StringComparison.Ordinal) || reason.StartsWith("The card keeps asking", StringComparison.Ordinal)))
+            && (reason.StartsWith("Menu ", StringComparison.Ordinal) || reason.StartsWith("The card keeps asking", StringComparison.Ordinal) || reason == "battle loop"))
         {
             end = "stops " + reason;
+        }
+        // the game is over after the death film: the original's run stops at the kbhit() that follows it (INT 21h AH=0Bh)
+        if (end == GameOver && want.LastOrDefault() == "film death" && wantEnd.StartsWith("stops INT 21h AH=0Bh ", StringComparison.Ordinal))
+        {
+            end = wantEnd;
         }
         if (wantEnd != end)
         {
@@ -283,7 +364,7 @@ public sealed class CardOracleTests
             var got = Without((JsonObject)JsonNode.Parse(sav.Value.Sections.ToJsonString())!);
             if (want.Any(l => l.StartsWith("battle ", StringComparison.Ordinal)))
             {
-                // the oracle stubs cards_shutdown / cards_startup (R043+0x054E / R043+0x078E) with the battle: the original's table
+                // the oracle stubs cards-teardown / cards-setup (R043+0x054E / R043+0x078E) with the battle: the original's table
                 // keeps the slots an expiry freed before the fight, the C#'s comes back compacted (EventLog.Shutdown / Reload), so a
                 // later event takes another slot and the saved list's order differs: the events are compared as a set
                 SortedEvents(want2);
@@ -315,8 +396,8 @@ public sealed class CardOracleTests
             {
                 case "redraw" when p.Length > 2:
                     main = p[2];
-                    // after a battle or a prayer the rules redraw pic_buf, which the C# does not know (a card picture
-                    // may sit in pic_buf or pic_buf2): the next picture is compared whatever it is
+                    // after a battle or a prayer the rules redraw image-buffer, which the C# does not know (a card picture
+                    // may sit in image-buffer or image-buffer-two): the next picture is compared whatever it is
                     shown = afterFight ? "" : p[2];
                     continue;
                 case "main" when p.Length > 1:
@@ -379,7 +460,7 @@ public sealed class CardOracleTests
         if (sections["chars"] is JsonObject chars)
         {
             // a character whose item count changed: the item records past the new count are not items any more (the
-            // original's item_delete leaves what it shifted there, the C# keeps what the record held)
+            // original's item-erase leaves what it shifted there, the C# keeps what the record held)
             foreach (var (id, node) in chars.ToList())
             {
                 if (node is JsonObject bytes && bytes["7E"] is { } countByte)
@@ -430,6 +511,12 @@ public sealed class CardOracleTests
         }
     }
 
+    /// <summary>The C# run's end when nobody was left (the death film played; the game is over).</summary>
+    private const string GameOver = "game over";
+
+    /// <summary>Stops a run when nobody is left (<see cref="Run"/>).</summary>
+    private sealed class PartyPerishedStop : Exception;
+
     private static string Short(string s) => s.Length > 160 ? s[..160] + "…" : s;
 
     /// <summary>Runs the C# card on a start state as the oracle did.</summary>
@@ -440,35 +527,122 @@ public sealed class CardOracleTests
         // C: srand((unsigned)time(0)) of the oracle's machine: its DOS clock is fixed, time(0) gives the corpus's "clock"
         state.ClockSeed = () => clock;
         var (start, _) = Persistence.OriginalSaves.Write(state);
+        // A game saved in a battle comes up with DS:9081 bit 0 (GameState.ResumeBattle); the main loop starts the battle instead of the card and the card never
+        // runs with it set. The oracle runs the card directly, and the original writes the in-battle bit of the difficulty (R037+0x2B57) only while a battle
+        // runs (DS:907A = 1, R037+0x2AEF), so the saved game after the card has it clear: the run goes on as after the battle, with the bit consumed.
+        state.ResumeBattle = false;
+        // a roster entry outside the party is the saved game's record (OriginalSaves.Write writes its StoredRecord), as a load reads it:
+        // an aimed change made to a member that the start then drops (part sz<n>) is not in the file. In play a member who leaves the
+        // party has the record written back (party-leave R037+0x3B58), so the entry and the file's record are one.
+        for (var entry = 0; entry < state.Roster.Characters.Count; entry++)
+        {
+            if (Array.IndexOf(state.Roster.PartySlots, entry) < 0 && state.Roster.StoredRecord(entry) is var record
+                && !ReferenceEquals(record, state.Roster.Characters[entry]))
+            {
+                state.Roster.Characters[entry] = record.Copy();
+            }
+        }
         // the original runs on that saved game as loaded: its character records keep the bytes the model does not
-        // (the item records past the count, which keep_items_pct reads), as a loaded game's do
+        // (the item records past the count, which item-keep-percent reads), as a loaded game's do
         foreach (var character in state.Party.Members.Concat(state.Roster.Characters))
         {
             character.OriginalRecord ??= Persistence.CharacterRecords.Write(character);
         }
+        // the original's CHARACTR.TMP is that saved game's: its records of the party are the members as the start has them (aimed
+        // changes included), as a load leaves them (OriginalSaves.Read: CharacterRoster.KeepStored)
+        state.Roster.Reconcile(state.Party);
+        foreach (var entry in state.Roster.PartySlots.Where(e => e >= 0 && e < state.Roster.Characters.Count))
+        {
+            var member = state.Roster.Characters[entry];
+            state.Roster.KeepStored(member, member.Copy());
+        }
         var screen = new OracleScreen(option, probe, hand) { Force = CardOracleStates.ForceOf(key), Path = CardOracleStates.PathOf(key) };
+        // the texts the card before left loaded: the card's own, as card_oracle.py loads them first, or the key's T part
+        if ((CardOracleStates.TextsOf(key) ?? CardTable.Find(card.Number)?.Name) is { Length: > 0 } texts)
+        {
+            screen.PreloadTexts(texts);
+        }
         var c = new CardContext(state, CardHarness.World!, screen) { PersonalNames = CardHarness.PersonalNames };
+        if (OptionsBlockStart is { } block)
+        {
+            c.OptionsBlock = block;
+        }
         c.Screens = new OracleScreens(screen.Log);
-        // the oracle stubs the battle (result 0, as here without one) and the prayer screen (0, the prayer fails)
+        // sound: music-start(x) is a "music x" line and then the driver's command (sound x, or sound 1 with the music off), sound-start(n)
+        // a "sound n" line; the oracle's saved games hold music on (DS:01BF = 1). The presentation's wiring (DarklandsGame.Play)
+        // is the same: Music = GameUi.PlayMusic, SoundPlayer = Audio.PlayMusic, MusicPlaying = GameUi.MusicPlaying.
+        var audio = new OracleAudio(screen.Log);
+        c.Music = tune =>
+        {
+            screen.Log.Add($"music {tune}");
+            Darklands.Audio.GameSounds.PlayMusic(audio, tune, musicOn: true);
+        };
+        c.SoundPlayer = number => audio.PlayMusic(number);
+        c.MusicPlaying = () =>
+        {
+            screen.Log.Add("music 5");
+            return Darklands.Audio.GameSounds.RequestCurrentPiece(audio, musicOn: true);
+        };
+        // the oracle stubs the battle (result 0, or the run key's part B<n>) and the prayer screen (0, the prayer fails, or the part Y<c|f|a>)
+        var battleResults = CardOracleStates.BattleResultsOf(key);
+        var prayerAnswers = CardOracleStates.PrayerAnswersOf(key);
+        var battles = 0;
+        var prayers = 0;
         c.Battle = (side, seed, parameters) =>
         {
             screen.Log.Add($"battle {side} {(short)seed} {string.Join(" ", parameters)}");
-            return 0;
+            if (battleResults is not null && battles > 200)
+            {
+                // a constant controlled result that makes the card fight again and again: both sides give up here (card_oracle.py raises the same stop)
+                throw new InvalidOperationException("battle loop");
+            }
+            return battleResults is null ? 0 : battleResults[Math.Min(battles++, battleResults.Length - 1)];
         };
         // the films (root 030B:0004 plays each animation; the oracle records them)
+        // orig: R133+0x186C: cards-teardown (sound-start(1)), then each scene's tune (music-start) and its PAN film; Cinematics.Film does the same
         c.PlayFilm = steps =>
         {
-            foreach (var step in steps.Where(s => s.Animation is not null))
+            audio.StopMusic();
+            foreach (var step in steps)
             {
-                screen.Log.Add($"film {step.Animation!.ToLowerInvariant()}");
+                screen.Log.Add($"music {step.Tune}");
+                Darklands.Audio.GameSounds.PlayMusic(audio, step.Tune, musicOn: true);
+                if (step.Animation is not null)
+                {
+                    screen.Log.Add($"film {step.Animation.ToLowerInvariant()}");
+                }
             }
             return true;
         };
         c.SaintPrayer = (who, saint) =>
         {
             screen.Log.Add($"prayer {who} {saint}");
-            return 0;
+            return prayerAnswers is null ? 0 : prayerAnswers[Math.Min(prayers++, prayerAnswers.Length - 1)];
         };
+        // nobody left: hours-elapse R029+0x255A and battle-driver R029+0x2278 play the death film (the oracle records it) and end the program
+        // (the original's run stops at the kbhit after the film, INT 21h AH=0Bh); the game's host does the same (DarklandsGame: Perished,
+        // AllDead), the harness records the film and stops the run
+        // orig: battle-driver R029+0x2278: music-start(0x12), then the film (Cinematics.Death)
+        c.AllDead = () =>
+        {
+            screen.Log.Add("music 18");
+            Darklands.Audio.GameSounds.PlayMusic(audio, 0x12, musicOn: true);
+            screen.Log.Add("film death");
+            throw new PartyPerishedStop();
+        };
+        void Perished(Core.GameState perished)
+        {
+            if (ReferenceEquals(perished, state))
+            {
+                // orig: hours-elapse R029+0x255A: music-start(0x12), cards-teardown-overlay-entry (sound-start(1)), then the film (Cinematics.DeathAfterShutdown)
+                screen.Log.Add("music 18");
+                Darklands.Audio.GameSounds.PlayMusic(audio, 0x12, musicOn: true);
+                audio.StopMusic();
+                screen.Log.Add("film death");
+                throw new PartyPerishedStop();
+            }
+        }
+        Core.Rules.TimePassage.PartyPerished += Perished;
         screen.Context = c;
         state.CurrentCard = card.Number;
         var end = "";
@@ -499,20 +673,55 @@ public sealed class CardOracleTests
                 Core.Rules.TimePassage.Advance(state, 0);
             }
         }
+        catch (PartyPerishedStop)
+        {
+            // the game is over (also in the main loop's pass-hours(0) after the card): the original's run stops at the kbhit
+            // after the film, so there is no saved game to compare
+            end = GameOver;
+            ok = false;
+        }
         catch (Exception e)
         {
             end = $"throws {e.GetType().Name}: {e.Message}";
         }
+        finally
+        {
+            Core.Rules.TimePassage.PartyPerished -= Perished;
+        }
+        if (OptionsBlockStart is not null)
+        {
+            screen.Log.Add($"settings-block {c.OptionsBlock}");
+        }
         var random = state.Random is MscRandom msc ? msc.State.ToString("X8") : "?";
-        var sav = ok ? SaveDiff(start, state) : ((string, JsonObject)?)null;
+        (string, JsonObject)? sav = null;
+        if (ok)
+        {
+            try
+            {
+                sav = SaveDiff(start, state);
+            }
+            catch (Exception e) when (e is ArgumentOutOfRangeException or IndexOutOfRangeException)
+            {
+                // the C# state cannot be written as a saved game (nobody left in the party), or a short saved game's counts run past its end
+                // (SaveSections.Cut): a difference to report, not a crash of the replay
+                end = "saved game unwritable";
+            }
+        }
         return (screen.Log, end, random, sav);
     }
 
     /// <summary>
     /// The handlers of a card file's dormant option table (the card function never installs or offers them), called directly as
-    /// card_oracle.py run_direct does; run group D: the hint handlers of lines 0..9 (menu_member, menu_slot = line / 4, line % 4), the table's
+    /// card_oracle.py run_direct does; run group D: the hint handlers of lines 0..9 (menu-owner-member, menu-choice-index = line / 4, line % 4), the table's
     /// default ("screwed up."), the actions of lines 0..9 (each followed by the next card it set), group P: the item pop-up handlers of slots 0..3.
     /// </summary>
+    /// <summary>
+    /// DARKLANDS_CARD_ORACLE_OPTBLOCK=n (as card_oracle.py): every run starts with settings-block (DS:EE53, <see cref="CardContext.OptionsBlock"/>) = n
+    /// and its trace ends with the value the card left ("settings-block n").
+    /// </summary>
+    private static readonly int? OptionsBlockStart =
+        int.TryParse(Environment.GetEnvironmentVariable("DARKLANDS_CARD_ORACLE_OPTBLOCK"), out var block) ? block : null;
+
     private static void Direct(Card card, CardContext c, OracleScreen screen, string group)
     {
         var method = card.GetType().GetMethod("DormantOptions", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic
@@ -563,7 +772,7 @@ public sealed class CardOracleTests
                 < 0x70 => "date",
                 < 0x76 => "purse",
                 < 0x7C => "fame",
-                < 0x7E => "cur_loc",
+                < 0x7E => "DS:907E",
                 < 0x82 => "map position",
                 < 0x8C => "cards",
                 < 0x96 => "bank notes/stone/hirelings",
@@ -578,11 +787,11 @@ public sealed class CardOracleTests
     /// <summary>
     /// A listed difference: the runs whose first difference contains <see cref="Contains"/> (with <see cref="End"/>, whose original run
     /// ended with that prefix; with <see cref="OriginalEnd"/>, whose original end contains that text), or a C# line to leave out
-    /// (<see cref="DropCSharp"/>). Conditions on the run: <c>GuardNotAMember</c>, a start state whose saved_card (DS:E7D8) is not −1..4;
+    /// (<see cref="DropCSharp"/>). Conditions on the run: <c>GuardNotAMember</c>, a start state whose remembered-card (DS:E7D8) is not −1..4;
     /// <c>LeaderAbsent</c>, a start state whose leader's slot holds nobody.
     /// </summary>
     private sealed record Divergence(string Card, string Run, string Contains, string Why, string? DropCSharp = null, bool IgnoreTexts = false,
-        string? End = null, bool GuardNotAMember = false, bool LeaderAbsent = false, string? OriginalEnd = null);
+        string? End = null, bool GuardNotAMember = false, bool LeaderAbsent = false, string? OriginalEnd = null, bool ShortStart = false);
 
     private static List<Divergence> Divergences()
     {
@@ -596,5 +805,8 @@ public sealed class CardOracleTests
             && (d.End is null || (originalEnd ?? "").StartsWith(d.End, StringComparison.Ordinal))
             && (d.OriginalEnd is null || (originalEnd ?? "").Contains(d.OriginalEnd, StringComparison.Ordinal))
             && (!d.GuardNotAMember || CardOracleStates.FromKey(run.Split(' ')[1]).SavedCard is < -1 or > 4)
-            && (!d.LeaderAbsent || CardOracleStates.FromKey(run.Split(' ')[1]).Party is var party && !party.Leader.IsPresent));
+            && (!d.LeaderAbsent || CardOracleStates.FromKey(run.Split(' ')[1]).Party is var party && !party.Leader.IsPresent)
+            // a start with a party slot of status 0 is written short (R037+0x2ACE keeps the count, leaves the record out) and the original runs
+            // on it as its loader reads it, out of step; the C# runs on the state itself: the two start states differ, not the cards
+            && (!d.ShortStart || CardOracleStates.FromKey(run.Split(' ')[1]).Party.Members.Any(m => m.Status == Core.Characters.CharacterStatus.Empty)));
 }

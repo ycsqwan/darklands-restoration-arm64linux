@@ -79,7 +79,7 @@ public sealed class BeforeTheMagistrate : Card
     /// <summary>Endurance and strength lost to torture or the whip.</summary>
     private static void TheBailiffsWhip(CardContext c)
     {
-        // C: each loss is drawn as the argument of its own add_attr call, endurance first.
+        // C: each loss is drawn as the argument of its own raise-attribute-by call, endurance first.
         c.AddAttribute(Who.Everybody, 0, -c.Random(0x12));
         c.AddAttribute(Who.Everybody, 1, -c.Random(0x0C));
     }
@@ -140,7 +140,7 @@ public sealed class BeforeTheMagistrate : Card
             florins = 1;
         }
         c.Variables.Money[0] = Money.From(florins, 0, 0);
-        // C: party_money is declared int here: the fine is compared with the purse's florins word.
+        // C: party-purse is declared int here: the fine is compared with the purse's florins word.
         if (florins <= c.State.Party.Purse.Florins)
         {
             c.PassHours(24);
@@ -156,14 +156,14 @@ public sealed class BeforeTheMagistrate : Card
     // orig: R079+0x04D8 (1838:04D8) matched; R079+0x062A (1838:062A) matched; tests: CardSmokeTests
     private static void InvokeASaint(CardContext c, int picture)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;
         }
         if (answer != 0)
         {
-            c.NameToSlot(1, c.CardSaints[c.MenuSlot], 0);
+            c.NameToSlot(1, c.CardSaints[c.MenuEntrySlot], 0);
             ShowPicture(c, SentencePicture);
             c.Screen.Text(2);
             c.AddAttribute(Who.Everybody, 0, -c.Random(0x14));

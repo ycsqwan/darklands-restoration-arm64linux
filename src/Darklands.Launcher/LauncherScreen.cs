@@ -56,6 +56,8 @@ internal sealed class LauncherScreen
     private Rect? _notesLink;
     private Canvas? _background;
     private Rect _discord;
+    private Rect? _guideLink;
+    private Rect? _reportLink;
 
     public LauncherScreen(LauncherModel model, LauncherContext context, ILauncherSurface surface)
     {
@@ -84,6 +86,10 @@ internal sealed class LauncherScreen
         Play,
         Discord,
         Notes,
+        AudioPack,
+        PackGuide,
+        SoundFont,
+        Report,
     }
 
     public Item Focus => _focus;
@@ -94,8 +100,9 @@ internal sealed class LauncherScreen
     public bool Editing => _editing;
 
     private IEnumerable<Item> Order =>
-        new[] { Item.GameFolder, Item.Change, Item.Window, Item.Fullscreen, Item.HdPack, Item.Sound, Item.Roms, Item.Test, Item.Banner, Item.Intro, Item.Always, Item.Save, Item.Play, Item.Discord, Item.Notes }
-            .Where(i => (i != Item.Test || _context.SoundTest is not null) && (i != Item.Notes || _context.ReleaseNotesLink is not null));
+        new[] { Item.GameFolder, Item.Change, Item.Window, Item.Fullscreen, Item.HdPack, Item.Sound, Item.Roms, Item.Test, Item.AudioPack, Item.SoundFont, Item.Banner, Item.Intro, Item.Always, Item.Save, Item.Play, Item.Discord, Item.PackGuide, Item.Report, Item.Notes }
+            .Where(i => (i != Item.Test || _context.SoundTest is not null) && (i != Item.Notes || _context.ReleaseNotesLink is not null)
+                && (i != Item.PackGuide || _context.PackGuide is not null) && (i != Item.Report || _context.ReportProblem is not null));
 
     /// <summary>Handles one input; returns the player's choice when the launcher should end.</summary>
     public LauncherChoice? Handle(LauncherInput input)
@@ -121,6 +128,12 @@ internal sealed class LauncherScreen
                 return Activate(hit.Item, step: 1, cycle: false);
             case TextTyped typed when _editing:
                 _editText = (_editFresh ? "" : _editText) + typed.Text;
+                _editFresh = false;
+                return null;
+            case TextTyped typed when _focus == Item.GameFolder && !IsFixed(Item.GameFolder, out _):
+                // typing on the focused game folder starts editing it (no click or Enter needed)
+                StartEditing(_model.GameFolder ?? "");
+                _editText = typed.Text;
                 _editFresh = false;
                 return null;
             case KeyPressed key when _editing:
@@ -149,7 +162,7 @@ internal sealed class LauncherScreen
             case LauncherKey.Left:
             case LauncherKey.Right:
                 var step = key.Key == LauncherKey.Left ? -1 : 1;
-                if (_focus is Item.Window or Item.Fullscreen or Item.HdPack or Item.Sound or Item.Banner or Item.Intro or Item.Always or Item.GameFolder)
+                if (_focus is Item.Window or Item.Fullscreen or Item.HdPack or Item.AudioPack or Item.SoundFont or Item.Sound or Item.Banner or Item.Intro or Item.Always or Item.GameFolder)
                 {
                     return Activate(_focus, step, cycle: true);
                 }
@@ -159,8 +172,15 @@ internal sealed class LauncherScreen
                 return Activate(_focus, 1, cycle: false);
             case LauncherKey.Escape:
                 return LauncherChoice.Quit;
-            case LauncherKey.Paste when _focus == Item.GameFolder:
-                StartEditing(_surface.Clipboard() ?? "");
+            case LauncherKey.Paste when _focus is Item.GameFolder or Item.Change:
+                if (IsFixed(Item.GameFolder, out var by))
+                {
+                    _message = $"The game folder is set by {by}: change it there.";
+                    return null;
+                }
+                _focus = Item.GameFolder;
+                StartEditing(CleanPath(_surface.Clipboard()));
+                _editFresh = false;
                 return null;
             default:
                 return null;
@@ -172,8 +192,10 @@ internal sealed class LauncherScreen
         _message = null;
         _messageColour = PaleRed;
         _showSound = false;
-        if (IsFixed(item, out _))
+        if (IsFixed(item, out var fixedBy))
         {
+            _message = $"Set by {fixedBy}: change it there.";
+            _messageColour = PaleBlue;
             return null;
         }
         switch (item)
@@ -185,9 +207,9 @@ internal sealed class LauncherScreen
                 StartEditing(_model.GameFolder ?? "");
                 break;
             case Item.Change:
-                if (_surface.PickFolder is { } pick)
+                if (Pick("Choose your Darklands folder (the one with DARKLAND.EXE, or the GOG or Steam install folder)", out var picked))
                 {
-                    if (pick("Choose your Darklands folder (the one with DARKLAND.EXE, or the GOG or Steam install folder)") is { } picked)
+                    if (picked is not null)
                     {
                         SetGameFolder(picked);
                         if (!_model.CanPlay)
@@ -198,8 +220,11 @@ internal sealed class LauncherScreen
                 }
                 else
                 {
+                    // no dialog here: the folder is typed, pasted (Ctrl+V) or dropped instead
                     _focus = Item.GameFolder;
                     StartEditing(_model.GameFolder ?? "");
+                    _message ??= "Type or paste (Ctrl+V) the folder, or drop it on this window.";
+                    _messageColour = PaleBlue;
                 }
                 break;
             case Item.Window:
@@ -208,30 +233,44 @@ internal sealed class LauncherScreen
             case Item.Fullscreen:
                 _model.Fullscreen = !_model.Fullscreen;
                 break;
-            case Item.HdPack:
-                if (_model.HdPack is not null)
+            case Item.HdPack or Item.AudioPack:
+                ChoosePack(item == Item.HdPack ? PackKind.Pictures : PackKind.Sounds, step, cycle);
+                break;
+            case Item.SoundFont when cycle:
+                // left/right: back to the default (the SOUNDFONT folder)
+                if (IsFixed(Item.SoundFont, out var soundFontBy))
                 {
-                    _model.HdPack = null;
+                    _message = $"The SoundFont is set by {soundFontBy}.";
                 }
                 else
                 {
-                    _message = "Drop an HD pack's folder on this window to use it.";
+                    _model.SoundFont = null;
+                    SoundFontMessage();
                 }
+                break;
+            case Item.SoundFont:
+                PickSoundFont();
+                break;
+            case Item.Report when _context.ReportProblem is { } report:
+                _message = report();
+                break;
+            case Item.PackGuide when _context.PackGuide is { } guide:
+                _context.OpenLink(guide);
                 break;
             case Item.Sound:
                 _model.CycleSoundCard(step);
                 break;
             case Item.Roms:
-                if (_surface.PickFolder is { } pickRoms)
+                if (Pick("Choose the folder with your MT-32 or CM-32L ROM files", out var romFolder))
                 {
-                    if (pickRoms("Choose the folder with your MT-32 or CM-32L ROM files") is { } picked)
+                    if (romFolder is not null)
                     {
-                        SetRoms(picked);
+                        SetRoms(romFolder);
                     }
                 }
                 else
                 {
-                    _message = "Drop the folder with your MT-32 or CM-32L ROM files on this window.";
+                    _message = (_message is null ? "" : _message + " ") + "Drop the folder with your MT-32 or CM-32L ROM files on this window.";
                 }
                 break;
             case Item.Test when _model.GameFolderChecked is null:
@@ -273,8 +312,56 @@ internal sealed class LauncherScreen
         return null;
     }
 
+    /// <summary>
+    /// The system's folder dialog: false when there is none (or it could not be shown: <see cref="_message"/> says why); else true,
+    /// with the folder chosen or null when cancelled.
+    /// </summary>
+    private bool Pick(string title, out string? folder)
+    {
+        folder = null;
+        if (_surface.PickFolder is not { } pick)
+        {
+            return false;
+        }
+        try
+        {
+            folder = pick(title) is { } picked ? CleanPath(picked) : null;
+            return true;
+        }
+        catch (NotSupportedException e)
+        {
+            _message = e.Message;
+            _messageColour = PaleRed;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// A folder as typed, pasted or dropped, made usable: its first line, without the quotes and spaces around it, a file:// link
+    /// as its path, and a leading ~ as the home folder (as a Linux shell reads it).
+    /// </summary>
+    internal static string CleanPath(string? text)
+    {
+        var line = (text ?? "").Split('\n', '\r').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
+        line = line.Trim('"', '\'').Trim();
+        if (line.StartsWith("file://", StringComparison.OrdinalIgnoreCase) && Uri.TryCreate(line, UriKind.Absolute, out var uri) && uri.IsFile)
+        {
+            line = uri.LocalPath;
+        }
+        if (line == "~" || line.StartsWith("~/", StringComparison.Ordinal) || line.StartsWith(@"~\", StringComparison.Ordinal))
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (home.Length > 0)
+            {
+                line = line.Length == 1 ? home : Path.Combine(home, line[2..]);
+            }
+        }
+        return line;
+    }
+
     private void Dropped(string path)
     {
+        path = CleanPath(path);
         if (_editing)
         {
             StopEditing(apply: false);
@@ -287,19 +374,76 @@ internal sealed class LauncherScreen
         {
             SetRoms(path);
         }
-        else if (Directory.Exists(path) && File.Exists(Path.Combine(path, "manifest.json")))
+        else if (File.Exists(path) && path.EndsWith(".sf2", StringComparison.OrdinalIgnoreCase))
         {
-            if (!IsFixed(Item.HdPack, out _))
+            SetSoundFont(path);
+        }
+        else if (Directory.Exists(path) && (_model.Holds(path, PackKind.Pictures) || _model.Holds(path, PackKind.Sounds)))
+        {
+            // a folder of pictures, of sounds or of both: it becomes the pack of each kind it holds
+            foreach (var kind in new[] { PackKind.Sounds, PackKind.Pictures }.Where(k => _model.Holds(path, k)))
             {
-                _model.HdPack = path;
-                _focus = Item.HdPack;
+                SetPack(kind, path);
             }
         }
         else
         {
-            _message = $"{path} holds neither Darklands (DARKLAND.EXE), Roland ROMs nor an HD pack (manifest.json).";
+            _message = $"{path} holds neither Darklands (DARKLAND.EXE), Roland ROMs nor a pack (PNG pictures, OGG, WAV or MIDI sounds), and is not a SoundFont (.sf2).";
         }
     }
+
+    private static Item PackItem(PackKind kind) => kind == PackKind.Pictures ? Item.HdPack : Item.AudioPack;
+
+    /// <summary>A pack row: ←/→ go through None and the packs found; Enter or a click browses for a folder (or goes on, without a dialog).</summary>
+    private void ChoosePack(PackKind kind, int step, bool cycle)
+    {
+        var what = kind == PackKind.Pictures ? "a picture (HD) pack: PNG files named after the game's pictures"
+            : "a sound pack: OGG or WAV files named after the game's music and effects";
+        if (!cycle && _surface.PickFolder is not null && Pick("Choose the folder of " + what, out var chosen))
+        {
+            if (chosen is { } picked)
+            {
+                if (_model.Holds(picked, kind))
+                {
+                    SetPack(kind, picked);
+                }
+                else
+                {
+                    _message = $"{picked} holds no {(kind == PackKind.Pictures ? "PNG pictures" : "OGG or WAV sounds")}.";
+                }
+            }
+            return;
+        }
+        _model.CyclePack(kind, step);
+        PackMessage(kind);
+    }
+
+    private void SetPack(PackKind kind, string folder)
+    {
+        if (IsFixed(PackItem(kind), out var by))
+        {
+            _message = $"The {(kind == PackKind.Pictures ? "HD" : "audio")} pack is set by {by}.";
+            return;
+        }
+        _model.SetPack(kind, folder);
+        _focus = PackItem(kind);
+        PackMessage(kind);
+    }
+
+    /// <summary>The chosen pack's state in the message line: what it holds, or what could not be read (its manifest ...).</summary>
+    private void PackMessage(PackKind kind)
+    {
+        if (_model.PackOf(kind) is not { } folder)
+        {
+            return;
+        }
+        var status = _model.Pack(folder);
+        (_message, _messageColour) = status.Problem is { } problem ? (problem, PaleRed) : (PackSummary(kind, status), Green);
+    }
+
+    private string PackSummary(PackKind kind, PackStatus status) => kind == PackKind.Pictures
+        ? $"{status.Pictures} picture{(status.Pictures == 1 ? "" : "s")}."
+        : $"{status.Sounds} sound{(status.Sounds == 1 ? "" : "s")}{(_model.PackOf(kind) is { } f && File.Exists(Path.Combine(f, "audio.json")) ? ", audio.json read" : "")}.";
 
     private void SetGameFolder(string folder)
     {
@@ -310,6 +454,58 @@ internal sealed class LauncherScreen
         }
         _model.SetGameFolder(folder);
         _focus = _model.CanPlay ? Item.Play : Item.GameFolder;
+    }
+
+    private void PickSoundFont()
+    {
+        if (_surface.PickFile is not { } pick)
+        {
+            _message = "Drop a SoundFont (.sf2 file) on this window, or put it in the SOUNDFONT folder next to the program.";
+            return;
+        }
+        try
+        {
+            if (pick("Choose a General MIDI SoundFont (.sf2 file)") is { } chosen)
+            {
+                SetSoundFont(CleanPath(chosen));
+            }
+        }
+        catch (NotSupportedException e)
+        {
+            (_message, _messageColour) = (e.Message, PaleRed);
+        }
+    }
+
+    private void SetSoundFont(string file)
+    {
+        if (IsFixed(Item.SoundFont, out var by))
+        {
+            _message = $"The SoundFont is set by {by}.";
+            return;
+        }
+        if (!file.EndsWith(".sf2", StringComparison.OrdinalIgnoreCase) || !File.Exists(file))
+        {
+            _message = $"{file} is not a SoundFont (.sf2 file).";
+            return;
+        }
+        _model.SoundFont = file;
+        _focus = Item.SoundFont;
+        SoundFontMessage();
+    }
+
+    private void SoundFontMessage() =>
+        (_message, _messageColour) = _model.SoundFontFound is { } found
+            ? ($"SoundFont: {Path.GetFileName(found)}.", Green)
+            : ("No SoundFont found: a pack's .mid music is skipped and the game's own music plays.", PaleRed);
+
+    /// <summary>The SoundFont row's value: the file's name; "(default)" when it comes from the SOUNDFONT folder; "none found".</summary>
+    private string SoundFontShown()
+    {
+        if (_model.SoundFont is { } chosen)
+        {
+            return Path.GetFileName(chosen) + (File.Exists(chosen) ? "" : " (!)");
+        }
+        return _model.SoundFontFound is { } found ? Path.GetFileName(found) + " (default)" : "none found";
     }
 
     private void SetRoms(string folder)
@@ -345,9 +541,13 @@ internal sealed class LauncherScreen
     {
         _editing = false;
         _surface.TextInput(false);
-        if (apply && _editText.Trim() is { Length: > 0 } typed && typed != _model.GameFolder)
+        if (apply && CleanPath(_editText) is { Length: > 0 } typed && typed != _model.GameFolder)
         {
-            SetGameFolder(typed.Trim('"'));
+            SetGameFolder(typed);
+            if (!_model.CanPlay)
+            {
+                _message = $"{typed} holds no Darklands (DARKLAND.EXE).";
+            }
         }
     }
 
@@ -366,7 +566,7 @@ internal sealed class LauncherScreen
                 _editText = _editFresh ? "" : _editText[..^1];
                 break;
             case LauncherKey.Paste:
-                _editText = (_editFresh ? "" : _editText) + (_surface.Clipboard() ?? "");
+                _editText = (_editFresh ? "" : _editText) + CleanPath(_surface.Clipboard());
                 break;
         }
         _editFresh = false;
@@ -388,6 +588,8 @@ internal sealed class LauncherScreen
             Item.Window => "display.resolution",
             Item.Fullscreen => "display.fullscreen",
             Item.HdPack => "display.hdPack",
+            Item.AudioPack => "sound.audioPack",
+            Item.SoundFont => "sound.soundFont",
             Item.Sound => "sound.card",
             Item.Roms => "sound.mt32Roms",
             Item.Banner => "startup.banner",
@@ -416,7 +618,15 @@ internal sealed class LauncherScreen
         {
             _hotspots.Add((notes, Item.Notes));
         }
-        if ((_focus == Item.Discord ? _discord : _focus == Item.Notes ? _notesLink : null) is { } link)
+        if (_guideLink is { } guide)
+        {
+            _hotspots.Add((guide, Item.PackGuide));
+        }
+        if (_reportLink is { } reportLink)
+        {
+            _hotspots.Add((reportLink, Item.Report));
+        }
+        if ((_focus == Item.Discord ? _discord : _focus == Item.Notes ? _notesLink : _focus == Item.PackGuide ? _guideLink : _focus == Item.Report ? _reportLink : null) is { } link)
         {
             canvas.Fill(new Rect(link.X, link.Bottom - Math.Max(1, v.Len(1)), link.Width, Math.Max(1, v.Len(1))), Ink);
         }
@@ -507,6 +717,26 @@ internal sealed class LauncherScreen
         var underline = y + text.Ascent + Math.Max(1, v.Len(2));
         canvas.Fill(new Rect(after, underline, text.Measure(link), Math.Max(1, v.Len(1))), LinkRed);
         _discord = new Rect(after, y, text.Measure(link), underline + Math.Max(1, v.Len(1)) - y);
+        if (_context.PackGuide is not null)
+        {
+            y += line;
+            var guideAfter = text.Draw(canvas, "Your own pictures, music and sounds: ", x, y, Ink);
+            var guide = "how to make a pack";
+            text.Draw(canvas, guide, guideAfter, y, LinkRed);
+            var guideUnder = y + text.Ascent + Math.Max(1, v.Len(2));
+            canvas.Fill(new Rect(guideAfter, guideUnder, text.Measure(guide), Math.Max(1, v.Len(1))), LinkRed);
+            _guideLink = new Rect(guideAfter, y, text.Measure(guide), guideUnder + Math.Max(1, v.Len(1)) - y);
+        }
+        if (_context.ReportProblem is not null)
+        {
+            y += line;
+            var reportAfter = text.Draw(canvas, "Something broken? ", x, y, Ink);
+            var reportLabel = "make a problem report";
+            text.Draw(canvas, reportLabel, reportAfter, y, LinkRed);
+            var reportUnder = y + text.Ascent + Math.Max(1, v.Len(2));
+            canvas.Fill(new Rect(reportAfter, reportUnder, text.Measure(reportLabel), Math.Max(1, v.Len(1))), LinkRed);
+            _reportLink = new Rect(reportAfter, y, text.Measure(reportLabel), reportUnder + Math.Max(1, v.Len(1)) - y);
+        }
 
         var disclaimer = caption.Wrap("Darklands © 1992 MicroProse Software, Inc. Darklands and MicroProse are the property of their "
             + "respective owners. This is an unofficial fan project, not affiliated with or endorsed by them.", width);
@@ -590,17 +820,17 @@ internal sealed class LauncherScreen
         y += caption.LineHeight;
 
         // display
-        y += v.Len(4);
+        y += v.Len(2);
         heading.Draw(canvas, "Display", x, y, Yellow, shadow, Black);
-        y += heading.LineHeight;
+        y += heading.LineHeight - v.Len(3);
         y = Row(canvas, v, text, x, right, y, "Window size", LauncherModel.SizeLabel(_model.Windows[_model.WindowIndex]), Item.Window);
         y = Row(canvas, v, text, x, right, y, "Fullscreen", _model.Fullscreen ? "Yes" : "No", Item.Fullscreen);
-        y = Row(canvas, v, text, x, right, y, "HD pack", _model.HdPack is { } pack ? Path.GetFileName(Path.TrimEndingDirectorySeparator(pack)) : "None", Item.HdPack);
+        y = Row(canvas, v, text, x, right, y, "HD pack", Fit(text, PackShown(PackKind.Pictures), width / 2, fromEnd: false), Item.HdPack);
 
         // sound and music
-        y += v.Len(4);
+        y += v.Len(2);
         heading.Draw(canvas, "Sound & Music", x, y, Yellow, shadow, Black);
-        y += heading.LineHeight;
+        y += heading.LineHeight - v.Len(3);
         y = Row(canvas, v, text, x, right, y, "Sound card", _model.SoundCardLabel, Item.Sound);
         // the Roland ROM folder, as the game folder: its field, Change… and what it holds
         var romsLabel = "Roland ROMs";
@@ -628,11 +858,13 @@ internal sealed class LauncherScreen
         }
         caption.Draw(canvas, Fit(caption, romsStatus, statusRight - x, fromEnd: false), x, y, romsColour, shadow, Black);
         y += caption.LineHeight;
+        y = Row(canvas, v, text, x, right, y, "Audio pack", Fit(text, PackShown(PackKind.Sounds), width / 2, fromEnd: false), Item.AudioPack);
+        y = Row(canvas, v, text, x, right, y, "SoundFont", Fit(text, SoundFontShown(), width / 2, fromEnd: false), Item.SoundFont);
 
         // start-up
-        y += v.Len(4);
+        y += v.Len(2);
         heading.Draw(canvas, "Start-up", x, y, Yellow, shadow, Black);
-        y += heading.LineHeight;
+        y += heading.LineHeight - v.Len(3);
         y = Row(canvas, v, text, x, right, y, "Original start-up screen", _model.Banner ? "Yes" : "No", Item.Banner);
         y = Row(canvas, v, text, x, right, y, "Opening animation", _model.Intro ? "Yes" : "No", Item.Intro);
         y = Row(canvas, v, text, x, right, y, "Show launcher at every start", _model.Always ? "Yes" : "No", Item.Always);
@@ -654,6 +886,8 @@ internal sealed class LauncherScreen
 
         var help = Help(_focus);
         var helpLines = caption.Wrap(help, width);
+        // no further than the buttons (the texts are written to fit in two lines)
+        helpLines = [.. helpLines.Take(Math.Max(1, (buttons - v.Len(8) - y - v.Len(4)) / caption.LineHeight))];
         var hy = Math.Max(y + v.Len(4), buttons - v.Len(8) - helpLines.Count * caption.LineHeight);
         foreach (var l in helpLines)
         {
@@ -661,6 +895,12 @@ internal sealed class LauncherScreen
             hy += caption.LineHeight;
         }
     }
+
+    /// <summary>A pack row's value: the folder's name, marked when it cannot be read as a pack.</summary>
+    private string PackShown(PackKind kind) =>
+        _model.PackOf(kind) is { } folder && (_model.Pack(folder).Problem is not null || !_model.Holds(folder, kind))
+            ? LauncherModel.PackLabel(folder) + " (!)"
+            : LauncherModel.PackLabel(_model.PackOf(kind));
 
     /// <summary>What the ROM folder means for the sound card chosen: for a Roland module, whether its ROMs are there.</summary>
     private (string Text, uint Colour) RomsStatus(RomStatus roms) => _model.SoundCard switch
@@ -679,7 +919,7 @@ internal sealed class LauncherScreen
     /// <summary>A setting's row: its label at the left, its value at the right between ‹ ›; returns the y below.</summary>
     private int Row(Canvas canvas, View v, TextFace text, int x, int right, int y, string label, string value, Item item)
     {
-        var row = new Rect(x - v.Len(6), y, right - x + v.Len(12), v.Len(24));
+        var row = new Rect(x - v.Len(6), y, right - x + v.Len(12), v.Len(21));
         if (_focus == item)
         {
             Highlight(canvas, row);
@@ -719,15 +959,19 @@ internal sealed class LauncherScreen
         var help = item switch
         {
             Item.GameFolder => _editing
-                ? "Type or paste the folder, then Enter (Esc cancels)."
-                : "The folder with DARKLAND.EXE; the GOG or Steam install folder is fine." + (_model.Found.Count > 1 ? " ←/→: the other folders found." : ""),
-            Item.Change => _surface.PickFolder is not null ? "Choose the folder of your copy of Darklands." : "Type the folder of your copy of Darklands.",
+                ? "Type or paste (Ctrl+V) the folder, then Enter (Esc cancels). ~ is your home folder."
+                : "The folder with DARKLAND.EXE (the GOG or Steam install folder is fine): type, paste (Ctrl+V) or drop it." + (_model.Found.Count > 1 ? " ←/→: the other folders found." : ""),
+            Item.Change => _surface.PickFolder is not null ? "Choose the folder of your copy of Darklands." : "Type or paste (Ctrl+V) the folder of your copy of Darklands.",
             Item.Window => "The window's size; the game keeps its shape.",
             Item.Fullscreen => "Fill the whole screen; the game keeps its shape.",
-            Item.HdPack => "Replacement pictures; the game plays the same. Drop an HD pack's folder on this window to choose it.",
+            Item.HdPack => "Replacement pictures. " + PackHelp(PackKind.Pictures),
+            Item.AudioPack => "Replacement music and sounds (OGG, WAV). " + PackHelp(PackKind.Sounds),
+            Item.SoundFont => "For .mid music. Enter: choose an .sf2 file; ←/→: default.",
+            Item.PackGuide => "Opens the guide: how to make a picture or sound pack, and the names of the game's pictures, music and sounds.",
+            Item.Report => "Makes a zip with the logs, settings and saves for a bug report, and opens its folder and the report form. Nothing is sent: you attach the zip yourself.",
             Item.Sound => "The sound card the game plays its music and sounds on.",
-            Item.Roms => "The folder with your Roland MT-32 and/or CM-32L ROM files (control and PCM; side by side or in MT32 and CM32L subfolders). "
-                + (_surface.PickFolder is not null ? "Change… chooses it; dropping it on this window works too." : "Drop it on this window to choose it."),
+            Item.Roms => "Your MT-32 / CM-32L ROM files (side by side or in MT32, CM32L subfolders). "
+                + (_surface.PickFolder is not null ? "Change… or drop the folder here." : "Drop the folder on this window."),
             Item.Test => _context.SoundTest is { Playing: true } ? "Stops the music." : "Plays some of the game's music on the chosen card, with these ROMs.",
             Item.Banner => "The text page the 1992 game showed for a few seconds while it loaded.",
             Item.Intro => "The animated opening before the start screen.",
@@ -739,6 +983,15 @@ internal sealed class LauncherScreen
             _ => "",
         };
         return IsFixed(item, out var by) ? $"Set by {by}: change it there. " + help : help;
+    }
+
+    /// <summary>The chosen pack's state and how to choose another.</summary>
+    private string PackHelp(PackKind kind)
+    {
+        var state = _model.PackOf(kind) is { } folder
+            ? _model.Pack(folder) is { Problem: { } problem } ? problem + " " : PackSummary(kind, _model.Pack(folder)) + " "
+            : "";
+        return state + "←/→: None or a pack found; " + (_surface.PickFolder is not null ? "Enter: another folder." : "or drop a folder here.");
     }
 
     /// <summary>The text cut to <paramref name="width"/> with an ellipsis (at its start when <paramref name="fromEnd"/>, to keep a path's end).</summary>

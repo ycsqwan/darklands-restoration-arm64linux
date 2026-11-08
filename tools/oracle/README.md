@@ -25,6 +25,22 @@ The keys of `key:` steps go straight to the stubbed BIOS reads (047C:073D / 047C
 `kup:<hex>` give a key's make / break bytes (set 1, `E0` prefix allowed) to the game's own INT 9 handler (root 044A:020E, through vector 9,
 port 60h giving the byte), which keeps DS:0880..0889 (the held direction key, Enter): the overland map, the battle's keys and its order-mode
 cursor read them. In a battle (after a bwait) they are delivered at the head of the next pass, where the C# host's frame starts.
+`tkey:<n>:<key>[,<key>...]` (tick_keys.py) presses keys at a timer tick, whatever the game is doing: once the step is the next one, the
+game's timer callback (root 047C:000A) runs n more times, then the keys are in the buffer at once (each read finds the next without the
+idle wait of a `key:` step): a key pressed inside a loop that does not look at the keyboard (the map's rest), or two keys before one pass
+reads them. The C# host waits n / 60 s of its clock. A script with a tkey step is run with tick_keys.TickKeySession and its recording
+hashes tick_keys.py too; the other recordings keep their keys.
+`tclick:<n>:<x>,<y>` (tick_mouse.py) presses the left button at (x, y) at a timer tick in the same way (the driver's state DS:6EF0 and
+press word DS:6EF2), let go as a `click:` is: a button pressed inside a loop that polls no input but the button between its waits
+(the map's rest, R030+0x0F60). The C# host waits n / 60 s of its clock and holds the button as long as the original's log says
+("tclick held <ms>"). A script with a tclick step is run with tick_mouse.session_class(Session) and its recording hashes
+tick_mouse.py too; the other recordings keep their keys.
+`kbreak:<n>[:<key>]` (ctrl_break.py) is Ctrl-Break at a timer tick in the same way, as the BIOS delivers it: the buffer emptied, the
+word 0000h stored (key-waiting-test sees no key behind it, read-key takes it as key 0) and INT 1Bh run (the game's handler sets
+DS:07F4, which quit-check root 0000:1338 ends the program on). With a key, the key is pressed and the interrupt comes just before the
+read that would take it (the map's look, then its read of 0000h: R030+0x0C44 with key 0). The C# host does the same through
+IInput.TakeCtrlBreak. A tkey, tclick or kbreak right after a tkey or kbreak counts its ticks at once in the C# host. A script with a
+kbreak step is run with ctrl_break.session_class(Session) and its recording hashes ctrl_break.py too.
 
 ## Original side and compare side
 
@@ -111,6 +127,18 @@ expires (they are not in any recording's key either).
   reported as GAP / SKIP and are not credited.
 * `battle_calls_run.py` runs the three steps; `battle_calls_measure.py` counts the open outcomes of `branches-missed.csv` the agreeing runs reach.
 
+## Direct calls of the drawing: card text layout and panel bars
+
+The emulator loads no graphics driver, so a screen cannot be read back from it; instead the driver's entries are recorded with their
+arguments and the window's words (colour +0x0C, font +0x10) and drawn by the rewrite's own painter (map_draw.py does the same for the map).
+`text_calls.py <state> <out>` calls text-paint-wrapped root 0265:0134 and wrapped-text-size root 0265:0654 from a card-screen state
+(`world_calls.py capture`, e.g. `tyrnau`'s `inn`) with every .MSG text block and synthetic edge cases (`--part k/n` splits the inputs between
+runs); `panel_calls.py <state> <out>` calls member-gauge-bars root 0000:1A9C with generated member values. Their jobs go to
+`tests/Darklands.Rendering.Tests` (`DARKLANDS_TEXT_CALLS` / `DARKLANDS_PANEL_CALLS`, with `..._OUT` for results.tsv and side-by-side
+pictures: original | rewrite | differences in magenta): the recorded calls and the rewrite's CardTextLayout / PartyPanel are drawn on two
+screens and compared pixel by pixel, with the hot-spot table and the measured height; a difference a registered divergence explains is
+reported as EXPLAINED with its id. A sample of agreeing jobs is kept in the test project (`TextCalls/`).
+
 ## What new coverage gains: `cov_gain.py`
 
 `cov_gain.py --baseline <dir | branches-work> [--baseline ...] --new <cov dir> [--new ...] [--exclude <file of 'unit|state' lines>] [--open branches-missed.csv] [--out gained.json]`
@@ -121,3 +149,42 @@ Use it instead of an ad-hoc script: it streams every `cov-*.jsonl` (recursively)
 It is the only gain tool; there is no separate per-folder script and no helper folder to pass. For one folder's own hits give it as `--new`
 with no `--baseline`; for the items only that folder reaches give the other folders as `--baseline`. (It replaces `measure_new_outcomes.py`,
 which needed a git-ignored `cov.py`; on five folders the old and the new numbers were identical.)
+
+## Sound requests
+
+The game starts music and plays effects through one command, `sound-start(n)` (root 047C:078A: the driver's play slot; 1 stops the music, 2 / 3
+pause and resume, 5 asks for the number last played, any other number is a tune or an effect), and `music_play(x)` (R043+0x09AE) in front of it
+(`if (DS:01BF) sound-start(x); else sound-start(1)`). Both sides write them as trace lines, `music x` for a music_play request and `sound n` for each
+driver command, so a tune an event starts (or fails to start) is a difference like any other:
+
+* `card_oracle.py`: the stub of sound-start and a hook on music_play write the lines into the run's trace (cards-teardown, which ends with
+  sound-start(1), is a stub that writes its line); the C# test side (`OracleAudio`, the `Music`, `SoundPlayer` and `MusicPlaying` hooks of
+  `CardOracleTests.Run`, `GameSounds`) writes the same words. A corpus whose root has `"sound": true` holds them in its traces and is compared with
+  them; an older corpus is compared without (`CardOracleTests.Compare`). `audio_rerun.py` reruns the original over the runs of an older corpus and
+  keeps the sound lines (a sidecar, replayed by `CardSoundOracleTests`: `DARKLANDS_CARD_ORACLE_SOUNDS`, `DARKLANDS_CARD_ORACLE_SOUND_DIFFS`), or, with
+  `--full`, the whole result of each run as a new corpus with the sound lines.
+  Memory: a worker's emulated machine grows by about 35 MB of commit per card it has run (measured: 35 MB at start, 419 MB after 10 cards,
+  so about 12 GB over all 365 cards in one long-lived worker, which ended the 2026-10-28 golden run with access violations and MemoryError).
+  `--cards-per-worker N` (default 8; 0 = never) replaces a worker after N cards (`Pool(maxtasksperchild=N)`; with N=8 a worker peaks at
+  about 350 MB). Results do not change (checked byte for byte on cards 1..10). `DARKLANDS_CARD_ORACLE_MEMLOG=<file>` appends `pid card commit-MB`
+  after each card, for measuring.
+* `lockstep.py` / `battle_oracle.py`: the original side (patch 06 of the queue; `orig_side.py`, `battle_orig.py`) logs `sound n at T ms in <callers>` and
+  `music x at ...` after a `sound log on` line; the C# headless host writes `sound n` / `music x` with `DARKLANDS_SOUND_LOG=1` (set by `run_rewrite`).
+  `sound_compare` compares both per segment between the script's state steps (`report.json` "sound", a `sound:` line); a recording made before the
+  patch has no `sound log on` line and is reported as not recorded. The original's start-up `sound-start(7)` (R000+0x052A, after the driver is
+  loaded) is left out: the C# host plays it when its sound device is made.
+
+## Pictures of the original: `vis10.py`
+
+The lockstep machine stubs every graphics-driver slot, so it draws nothing. `vis10.py` runs a session with a subclass of `orig_side.Session`
+(its own file, so no recording's key changes and no recording is replaced: it runs live into its own recordings folder) that loads the game's
+own MGRAPHIC.EXE through the game's loader (root 047C:07CE, with DOS function 4B03h implemented here) and installer (root 047C:08C8), leaves
+those slots un-stubbed (misc.exe's keys and mouse, the sound driver and the key reads stay stubbed), tracks the VGA colour registers (ports
+3C7/3C8/3C9, INT 10h AH=10h, read-back included, since the driver's fades read the colours they start from) and reads the 320x200 mode-13h
+screen at A000:0000 at a script step. A script is an ordinary session script with `shot:<name>` (both sides save the screen at that step),
+`series:<name>,<n>,<ms>` or `<name>,<n>,p<k>` (before a key / click: n frames every ms milliseconds or k battle passes) and, for the original
+only, `shotsave:<name>` (the screen at the next file the game creates: a box shown while a save is written). `state:` steps must not be used:
+the state capture's copy and restore breaks the machine that has the driver loaded. Files are written as 64000 palette indices followed by
+the 256 colours (the C# host's `.idx` format); `vis10.py compose` makes the side-by-side PNG / GIF (3x, labelled), `vis10.py jobs` runs
+`vis10-sessions/jobs.txt`, `vis10.py index notes.json` writes an index page. The original runs far slower than a real PC, so its times in
+a GIF are not real times, and the C# host's frames are paired with it by pump or by battle pass, to about two of them.

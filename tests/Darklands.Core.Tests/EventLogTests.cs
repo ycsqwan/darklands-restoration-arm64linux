@@ -27,7 +27,7 @@ public sealed class EventLogTests
         var i = s.Events.CreateHere(0x0B, EventLog.Forever);
 
         Assert.Equal(new GameDate(23, 31, 12, 1499), s.Events[i]!.End);
-        Assert.Equal(100, s.Events[i]!.Value);   // event_here's value
+        Assert.Equal(100, s.Events[i]!.Value);   // event-here-test's value
         Assert.Equal(s.CurrentLocation, s.Events[i]!.Location);
     }
 
@@ -41,7 +41,7 @@ public sealed class EventLogTests
         Assert.False(s.Events.At(0x30, 5));
         Assert.False(s.Events.Started(0x30));
         Assert.Equal(0, s.Events.ValueAt(0x30, 5));
-        Assert.Equal(9, s.Events.Value(0x30));   // event_value does not ask
+        Assert.Equal(9, s.Events.Value(0x30));   // event-datum does not ask
         Assert.Equal(1, s.Events.Count(0x30));
         Assert.True(s.Events.Exists(0x30));
     }
@@ -162,6 +162,27 @@ public sealed class EventLogTests
     }
 
     [Fact]
+    public void AdvanceOnAFullLogChangesAFoundFactInPlaceAndRefusesANewOne()
+    {
+        // The session ev300-night (and its controls ev300-night-kept / -free): quest 7's night count on a full table (synth_saves.py q7night*).
+        var s = TestGame.Create();
+        s.Messages = new GameMessageLog();
+        var kept = s.Events.Create(-2, 168, 0, EventKinds.LocationFact, 5, 4, 0, EventLog.Forever, 0, 7);
+        for (var k = 1; k < EventLog.Capacity; k++)
+        {
+            s.Events.Create(0x7FF0, 413, 0, EventKinds.LocationFact, 0x7F, 0, 0, 10, 0, 0);
+        }
+        Assert.Equal(kept, s.Events.Update(-2, -1, EventKinds.LocationFact, 5, 1, 7, EventUpdate.Add));
+        Assert.Equal(5, s.Events[kept]!.Value);
+        s.Events.Free(kept);
+        s.Events.Create(0x7FF0, 413, 0, EventKinds.LocationFact, 0x7F, 0, 0, 10, 0, 0);
+        // no fact and no free slot: -1 (R029+0x2F05 / 0x2F0E: the scan ends at 300 on the last filler; 0x2F23 / 0x2F25), nothing changed
+        Assert.Equal(-1, s.Events.Update(-2, -1, EventKinds.LocationFact, 5, 1, 7, EventUpdate.Add));
+        Assert.Equal(0, s.Events.FactValueAnywhere(7, 5));
+        Assert.Equal(EventLog.Capacity, s.Events.Count(EventKinds.LocationFact));
+    }
+
+    [Fact]
     public void ExpiredEventsAreRemovedAfterTimePasses()
     {
         var s = TestGame.Create();
@@ -191,7 +212,7 @@ public sealed class EventLogTests
     }
 
     /// <summary>
-    /// cards_shutdown / world_load around a battle: the battle runs on an empty table, what it adds below the file's
+    /// cards-teardown / world-read around a battle: the battle runs on an empty table, what it adds below the file's
     /// count is lost (a boost called in the battle is never undone), the rest stays, and the table comes back compacted.
     /// </summary>
     [Fact]

@@ -64,14 +64,19 @@ internal static class TacticsOverlay
         new("activations enabled", 0xD6F0, 1, "ActivationsEnabled"),
         new("delayed start", 0xD842, 1, "DelayedStart"),
         new("group move allowed", 0xD610, 1, "GroupMoveAllowed"),
-        // the pause byte itself (0x11 after Esc with nobody selected, 0x03 after order_mode_leave's missile to record -1)
+        // the pause byte itself (0x11 after Esc with nobody selected, 0x03 after command-mode-end's missile to record -1)
         new("paused", 0xA695, 1, "PauseByte", Byte: true),
-        // DS:D4E4: the level in the buffer changed since it was loaded or saved (level_switch saves the level it leaves only then)
+        // DS:D4E4: the level in the buffer changed since it was loaded or saved (level-change saves the level it leaves only then)
         new("level changed", 0xD4E4, 1, "LevelChanged"),
         new("stopped", 0xCA29, 1, "_stopped"),
         new("lock is door", 0xCA99, 1, "LockIsDoor"),
         new("next to pile", 0xC865, 1, "NextToPile"),
+        // DS:D6EB: reinforcement waves on (set by enemy-placement mode 0 for a group with a reinforcement part, cleared by fight-mode-exit)
+        new("waves on", WavesOn, 1, "WavesEnabled"),
     ];
+
+    /// <summary>DS:D6EB waves on, DS:D6EC the enemies killed in this wave (R014+0x270D..0x2754).</summary>
+    public const int WavesOn = 0xD6EB, WaveKills = 0xD6EC;
 
     private static readonly (string Name, int Ds, string Property)[] Words =
     [
@@ -121,12 +126,30 @@ internal static class TacticsOverlay
             Set(t, property, Convert.ChangeType((ushort)Word(ds, at), kind));
         }
         t.TimerCallbacks = ds[TimerCallbacksAt];
+        Set(t, "WaveKills", (int)ds[WaveKills]);
+        if (image.Wave is { } wave)
+        {
+            // the wave's encounter record, in the segment DS:7D44 names (+0xBE2): a copy of the group whose reinforcements arrive
+            Set(t, "WaveGroup", EnemyGroup.FromRecord(wave));
+        }
+        // the floors each enemy kind's slot follows the party to (DS:C23E, a word per slot, set when the group is placed)
+        var follows = Get<int[]>(t, "_slotFollows");
+        for (var s = 0; s < follows.Length; s++)
+        {
+            follows[s] = Word(ds, 0xC23E + 2 * s);
+        }
+        // the enemy kind of each slot (DS:C28D, a word per slot): LeaveLevel (R023+0x1A04..0x1A1A) reads it for the new encounter record
+        var kinds = Get<int[]>(t, "_slotKind");
+        for (var s = 0; s < kinds.Length; s++)
+        {
+            kinds[s] = Word(ds, 0xC28D + 2 * s);
+        }
         // the enemy slots' identities (DS:D65F slot 5, DS:D67E slot 6; −1 free)
         t.EnemySlotIdentity[0] = (short)Word(ds, SlotIdentities);
         t.EnemySlotIdentity[1] = (short)Word(ds, SlotIdentity2);
         // DS:E0C0: the doors' open flags the last enemy path search kept (R014+0x48DE), put back by every enemy search's exit (R014+0x4B5A)
         ds.AsSpan(DoorsBeforeSearch, 40).CopyTo(Get<byte[]>(t, "_doorsBeforeSearch"));
-        // the eleven animation slots' tables (sprite_file_load's, AnimationSlot): what the loaded files left in DS
+        // the eleven animation slots' tables (sprite-file-read's, AnimationSlot): what the loaded files left in DS
         for (var s = 0; s < t.Slots.Length; s++)
         {
             var slot = t.Slots[s];
@@ -200,6 +223,8 @@ internal static class TacticsOverlay
                 }
                 pack.Stacks = (sbyte)ds[ImageOverlay.Combatants + ImageOverlay.Record * k + CountAt];
             }
+            // the party purse (2E38:0BB0: florins, groschen, pfennigs), which LeaveLevel copies into the new encounter record (R023+0x1A5B..0x1A6B)
+            t.Purse = Darklands.Core.Economy.Money.From(Word(packs, 0xBB0), Word(packs, 0xBB2), Word(packs, 0xBB4));
         }
         else
         {
@@ -494,6 +519,11 @@ internal static class TacticsOverlay
             }
         }
         ds[TimerCallbacksAt] = (byte)t.TimerCallbacks;
+        ds[WaveKills] = (byte)t.WaveKills;
+        if (image.Wave is { } waveRecord && t.WaveGroup is { } waveGroup)
+        {
+            waveGroup.ToRecord().CopyTo(waveRecord, 0);
+        }
         PutWord(ds, SlotIdentities, t.EnemySlotIdentity[0]);
         PutWord(ds, SlotIdentity2, t.EnemySlotIdentity[1]);
         Get<byte[]>(t, "_doorsBeforeSearch").CopyTo(ds, DoorsBeforeSearch);
@@ -669,6 +699,10 @@ internal static class TacticsOverlay
         if (ds == TimerCallbacksAt)
         {
             return "timer callbacks";
+        }
+        if (ds == WaveKills)
+        {
+            return "wave kills";
         }
         if (ds >= DoorsBeforeSearch && ds < DoorsBeforeSearch + 40)
         {

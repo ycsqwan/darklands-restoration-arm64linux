@@ -47,7 +47,7 @@ public sealed class CultAltarOnTheHill : Card
                     menu[0] = OptionState.Shown;
                 }
             }, () => DefaceChance(c)),
-            new MenuLine(() => BurnOutTheTaint(c), OptionHint.Saying(CardTexts.SelectPotion),
+            new MenuLine(chance => BurnOutTheTaint(c, chance), OptionHint.Saying(CardTexts.SelectPotion),
                 () => PotionHint(c, c.MenuMember, c.MenuSlot)),
             // orig: R079+0x1D82 (line 2); R079+0x224C (19A0:0BCC) matched; R079+0x22D6 (19A0:0C56) matched; tests: CardSmokeTests
             new MenuLine(() => CallASaint(c), OptionHint.Saying(CardTexts.SelectSaint), c.SaintPopupHint),
@@ -79,7 +79,7 @@ public sealed class CultAltarOnTheHill : Card
     // orig: R079+0x187C (19A0:01FC) matched; tests: CardSmokeTests
     private static void FightTheDemon(CardContext c)
     {
-        // C: arguments are evaluated right to left: rand_mod(3) + 1 (third group), rand_mod(5), then the first group's rand_mod(3).
+        // C: arguments are evaluated right to left: roll-below(3) + 1 (third group), roll-below(5), then the first group's roll-below(3).
         var third = c.Random(3) + 1;
         var second = c.Random(5) + 4;
         var first = c.Random(3) + c.PartyLoreLevel() / 4 + 1;
@@ -178,10 +178,10 @@ public sealed class CultAltarOnTheHill : Card
     }
 
     // orig: R079+0x1BCC (19A0:054C) matched; R079+0x1D4A (19A0:06CA) matched; tests: CardSmokeTests
-    private static void BurnOutTheTaint(CardContext c)
+    // C: the chance is the handler's the loop calls: the option line's -1 (member and slot whatever the pop-up left), the item box's
+    // C: for a click there, or for Enter there card-option-handler[1], the box's handler for slot 1 (CardMenu.Run).
+    private static void BurnOutTheTaint(CardContext c, int chance)
     {
-        // C: the option line itself gives chance -1 (and member and slot whatever the pop-up left).
-        var chance = c.MenuPopup ? PotionHint(c, c.MenuMember, c.MenuSlot).Chance : -1;
         c.PassHours(1);
         c.TakeItem(c.MenuMember, c.CardItems[c.MenuSlot]);
         switch (c.MenuSlot)
@@ -221,7 +221,7 @@ public sealed class CultAltarOnTheHill : Card
     // orig: R079+0x1D82 (19A0:0702) matched; R079+0x1EA0 (19A0:0820) matched; tests: CardSmokeTests
     private static void CallASaint(CardContext c)
     {
-        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuSlot]);
+        var answer = c.InvokeSaint(c.MenuMember, c.CardSaints[c.MenuEntrySlot]);
         if (answer == -1)
         {
             return;

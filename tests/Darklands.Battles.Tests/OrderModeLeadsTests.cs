@@ -2,6 +2,7 @@ using System.Reflection;
 using Darklands.Cards;
 using Darklands.Core.Battles;
 using Darklands.Core.Battles.Tactics;
+using Darklands.Core.Characters;
 
 namespace Darklands.Battles.Tests;
 
@@ -58,6 +59,41 @@ public sealed class OrderModeLeadsTests
         Assert.False(t.CursorKeysOn);
     }
 
+    /// <summary>
+    /// A battle started in the order mode the last one left (DS:A6B3 = 1, DS:A6B2 = 0xFF before the first tick's command-mode-begin): the
+    /// pointer takes the order-mode branches with nobody chosen. The hover R014+0xC044 reads record -1's order word (DS:9BE5, 0x1A6D) and
+    /// puts the target cursor on an enemy; a click R014+0xC33C off the members gives nothing here (record -1 is not reproduced), on a member
+    /// it chooses that member (R016+0x0A2C) without leaving order mode first.
+    /// </summary>
+    [Fact]
+    public void APointerInOrderModeWithNobodyChosen()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var t = Start();
+        t.TakeOrderMode(true);
+        Assert.True(t.InOrderMode);
+        Assert.Equal(-1, t.Selected);
+        const int enemy = Combatant.PartySlots;     // the front-most enemy hot spot under the pointer, as the screen finds it
+        var ground = t.Battle[t.Battle.Leader].Position;
+        t.Hover(-1, enemy, ground);
+        Assert.Equal(enemy, t.CursorTarget);
+        Assert.Equal(OrderCursor.Target, t.Cursor);
+        t.Hover(-1, -1, ground);
+        Assert.Equal(-1, t.CursorTarget);
+        Assert.Equal(OrderCursor.None, t.Cursor);
+        Assert.False(t.OrderClick(-1, enemy, ground));
+        Assert.False(t.OrderClick(-1, -1, ground));
+        Assert.Equal(-1, t.CursorTarget);
+        Assert.True(t.InOrderMode);
+        var member = Enumerable.Range(0, Combatant.PartySlots).First(k => t.Battle[k].IsAble && t.Battle[k].Floor == t.Battle.FloorShown);
+        Assert.False(t.OrderClick(member, -1, ground));
+        Assert.Equal(member, t.PendingOrderMember);
+        Assert.True(t.InOrderMode);
+    }
+
     /// <summary>R016+0x0A7D: choosing a member stores its flee bit in DS:D6EA, which Esc (R016+0x13D4) gives back.</summary>
     [Fact]
     public void SelectingAMemberKeepsItsFleeBit()
@@ -91,7 +127,152 @@ public sealed class OrderModeLeadsTests
         Assert.Equal(-1, t.Selected);
     }
 
-    /// <summary>combat_draw (R014+0x6D39) removes an arrived missile in the tick that drew it.</summary>
+    /// <summary>
+    /// R014+0x2256..0x2263: Dissolve Lock calls use-up-slot (R014+0xB434) with the slot byte DS:C7CD[m] found when the order was given,
+    /// whatever the pack holds then: past the last stack the stale entry's count goes down and, when it was 1, the pack's count (the last
+    /// stack lost); slot 0xFF (the Eater-Water gone) is entry 255, for member 0 member 3's entry 63. With OriginalBehaviour.FixStaleDissolveSlot
+    /// only an Eater-Water is used up.
+    /// </summary>
+    [Fact]
+    public void ADissolveOrderUsesUpTheSlotFoundWhenTheOrderWasGiven()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var use = typeof(TacticalBattle).GetMethod("UseUpDissolveSlot", Any)!;
+        foreach (var fix in new[] { false, true })
+        {
+            foreach (var slot in new[] { 3, -1 })
+            {
+                var t = Start();
+                t.Battle.Behaviour = new Darklands.Core.OriginalBehaviour { FixStaleDissolveSlot = fix };
+                var c = t.Battle[0];
+                c.Items.Clear();
+                c.Items.Add(new ItemStack(10, 0, 20, 1, 1));
+                c.Items.Add(new ItemStack(99, 0, 30, 2, 1));
+                c.Items.Add(new ItemStack(12, 0, 25, 1, 1));
+                c.Items[3] = new ItemStack(99, 0, 30, 1, 1);
+                var other = t.Battle[3].Items;
+                other[63] = new ItemStack(5, 0, 5, 1, 1);
+                c.DissolveSlot = slot;
+                use.Invoke(t, [0]);
+                if (fix)
+                {
+                    Assert.Equal(3, c.Items.Stacks);
+                    Assert.Equal(1, c.Items[1].Count);
+                    Assert.Equal(1, c.Items[3].Count);
+                    Assert.Equal(1, other[63].Count);
+                    continue;
+                }
+                Assert.Equal(2, c.Items.Stacks);
+                Assert.Equal(2, c.Items[1].Count);
+                Assert.Equal(slot == 3 ? 0 : 1, c.Items[3].Count);
+                Assert.Equal(slot == 3 ? 1 : 0, other[63].Count);
+            }
+        }
+    }
+
+    /// <summary>
+    /// R016+0x0F9A..0x0FBA: the Dissolve key outside order mode calls use-up-slot (R014+0xB434) with the selected member DS:A6B2 (the
+    /// member under the pointer, else −1) and member 0's slot byte DS:C7CD, with no test: the pointer on member 1 uses up member 1's
+    /// entry at member 0's slot; nobody selected with slot 0xFF uses up member 2's entry 63 (entry −64 + 255); nobody selected with a slot
+    /// below 64 writes before the packs (not modelled: nothing changes). With OriginalBehaviour.FixDissolveKeyMember the leader's
+    /// Eater-Water is used up whoever is selected.
+    /// </summary>
+    [Fact]
+    public void TheDissolveKeyUsesMemberZerosSlotOfTheSelectedMember()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        foreach (var fix in new[] { false, true })
+        {
+            foreach (var (selected, slot) in new[] { (1, 1), (-1, -1), (-1, 1), (0, 1), (2, 1) })
+            {
+                var t = Start();
+                t.Battle.Behaviour = new Darklands.Core.OriginalBehaviour { FixDissolveKeyMember = fix, FixStaleDissolveSlot = fix };
+                Assert.False(t.Paused);
+                t.Battle.Leader = 2;
+                var m0 = t.Battle[0];
+                m0.Items.Clear();
+                m0.Items.Add(new ItemStack(10, 0, 20, 1, 1));
+                m0.Items.Add(new ItemStack(99, 0, 30, 2, 1));
+                m0.DissolveSlot = slot;
+                var m1 = t.Battle[1];
+                m1.Items.Clear();
+                m1.Items.Add(new ItemStack(10, 0, 20, 1, 1));
+                m1.Items.Add(new ItemStack(12, 0, 25, 3, 1));
+                var m2 = t.Battle[2];
+                m2.Items.Clear();
+                m2.Items.Add(new ItemStack(99, 0, 40, 2, 1));
+                m2.DissolveSlot = 0;
+                m2.Items[63] = new ItemStack(5, 0, 5, 4, 1);
+                t.Menus.Set(OrdersItem.DissolveLock, 1);
+                t.DissolveKey(selected);
+                if (fix)
+                {
+                    // the leader's (member 2's) own Eater-Water
+                    Assert.Equal(1, m2.Items[0].Count);
+                    Assert.Equal(4, m2.Items[63].Count);
+                    Assert.Equal(2, m0.Items[1].Count);
+                    Assert.Equal(3, m1.Items[1].Count);
+                    continue;
+                }
+                Assert.Equal(2, m2.Items[0].Count);
+                Assert.Equal(selected == 0 ? 1 : 2, m0.Items[1].Count);
+                Assert.Equal(selected == 1 ? 2 : 3, m1.Items[1].Count);
+                Assert.Equal(selected == -1 && slot == -1 ? 3 : 4, m2.Items[63].Count);
+                Assert.Equal(selected == 2 ? 0 : 1, m2.Items.Stacks);
+                Assert.Equal(2, m0.Items.Stacks);
+                Assert.Equal(2, m1.Items.Stacks);
+            }
+        }
+    }
+
+    /// <summary>
+    /// fight-draw R014+0x6818 calls R014+0x99F6 (at R014+0x6926) whatever its caller: the draws after a loot pile (R014+0xE3B3) and a
+    /// chest (R023+0x1532, after floor-view-paint(DS:17B0)) turn an attacker toward its target, as the tick end's draw does.
+    /// </summary>
+    [Fact]
+    public void TheDrawsAfterALootPileAndAChestTurnTheAttackers()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        foreach (var site in new[] { "OpenChest", "OpenLootPile" })
+        {
+            var t = Start();
+            var l = t.Battle.Leader;
+            var e = -1;
+            for (var i = 0; i < Combatant.Count; i++)
+            {
+                if (i != l && t.Battle[i].Status == CharacterStatus.Able && t.Battle[i].Floor == t.Battle.FloorShown && t.Battle[i].Position != t.Battle[l].Position)
+                {
+                    e = i;
+                    break;
+                }
+            }
+            Assert.True(e >= 0);
+            var c = t.Battle[e];
+            c.Action = CombatAction.Melee;
+            c.Target = (sbyte)l;
+            var facing = t.FacingToTarget(e);
+            c.Facing = c.SpriteFacing = (facing + 4) & 7;
+            if (site == "OpenLootPile")
+            {
+                Set(t, "_lootLeft", true);
+                t.Battle[l].LootPile = -1;
+            }
+            typeof(TacticalBattle).GetMethod(site, Any)!.Invoke(t, [l]);
+            Assert.Equal(facing, c.Facing);
+            Assert.Equal(facing, c.SpriteFacing);
+        }
+    }
+
+    /// <summary>fight-draw (R014+0x6D39) removes an arrived missile in the tick that drew it.</summary>
     [Fact]
     public void AnArrivedMissileGoesInTheTickThatDrawsIt()
     {
@@ -141,7 +322,7 @@ public sealed class OrderModeLeadsTests
             last.GiveUpUntil = 5;
             var active = t.Battle.ActiveMember;
             Set(t, "CursorTarget", -2);
-            Set(t, "_orderSpot", new MapPoint(300, 200));
+            Set(t, "OrderSpot", new MapPoint(300, 200));
             Set(t, "_orderClock", (ushort)1234);
             t.Battle.PartyFloor = t.Battle.FloorShown;
             t.LeaveOrderMode();
@@ -149,8 +330,107 @@ public sealed class OrderModeLeadsTests
             Assert.Equal(fix ? Exchange.Placed : Exchange.None, last.Exchange);
             Assert.Equal(fix ? 5 : 1234 + 30, last.GiveUpUntil);
             Assert.Equal(active, t.Battle.ActiveMember);      // DS:17B0 = 0xFF is not reproduced
-            Assert.Equal(fix ? 0 : 1, Get<int>(t, "_actionBeforeRecords"));
+            Assert.Equal(fix ? 0x1A6D : 1, t.ProgramMemory.ActionBeforeRecords);     // DS:9BE5 holds 0x1A6D from start-up
         }
+    }
+
+    /// <summary>
+    /// R014+0xBC6A (order mode's start) and R016+0x13DA (Esc) clear DS:C652, the spot's x, alone, and nothing but the ground click
+    /// (R014+0xC6F3 / 0xC6FA) writes DS:C67D: a walk order given with no spot clicked goes to x 0 and the last spot's y
+    /// (R014+0xBFC0..0xBFCC), in the next battle too (the battle's reset clears neither).
+    /// </summary>
+    [Fact]
+    public void AWalkWithNoSpotClickedGoesToTheLastSpotsY()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var t = Start();
+        var member = t.Battle.Leader;
+        t.EnterOrderMode(member);
+        Set(t, "OrderSpot", new MapPoint(300, 200));
+        t.CancelOrder();
+        Assert.Equal(new MapPoint(0, 200), t.ProgramMemory.OrderSpot);
+        t.EnterOrderMode(member);
+        Set(t, "OrderAction", 1);
+        Set(t, "CursorTarget", -2);
+        t.Battle.PartyFloor = t.Battle.FloorShown;
+        t.LeaveOrderMode();
+        Assert.Equal(CombatAction.Walk, t.Battle[member].Action);
+        Assert.Equal(new MapPoint(0, 200), t.Battle[member].Destination);
+    }
+
+    /// <summary>
+    /// DS:E237, the enemies' turn rotation, is a program global: enemy-move-phase (R018+0x0706) increments it and keeps two bits, and no other
+    /// code of the EXE writes it, so a battle's first enemy turn goes on from the last battle's (gen-carry-30: the gate twice after an Alt-L
+    /// agrees in every tick only so; gen-carry-21's enemy 11, waiting with no target, shot at a member one turn early in the C#).
+    /// </summary>
+    [Fact]
+    public void TheEnemiesTurnRotationOutlastsTheBattle()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var memory = new Darklands.Core.Battles.Generation.GenerationProcessMemory();
+        Assert.Equal(0, memory.TurnRotation);
+        var enemyTurn = typeof(TacticalBattle).GetMethod("EnemyTurn", Any)!;
+        void Turn(TacticalBattle t)
+        {
+            t.PauseByte = 0;
+            Set(t, "DelayedStart", false);
+            enemyTurn.Invoke(t, null);
+        }
+        var first = Start();
+        first.ProgramMemory = memory;
+        Turn(first);
+        Turn(first);
+        Assert.Equal(2, memory.TurnRotation);
+        var next = Start();
+        next.ProgramMemory = memory;
+        Turn(next);
+        Assert.Equal(3, memory.TurnRotation);
+        Turn(next);
+        Assert.Equal(0, memory.TurnRotation);
+    }
+
+    /// <summary>
+    /// DS:9BE5, the order of record -1, is 0x1A6D from start-up and only command-mode-end writes it: a missile given to record -1 in one
+    /// battle is what the next battle's Enter with nobody selected gives again (R014+0xBE48..0xBE94: 0x02 of the pause byte set).
+    /// </summary>
+    [Fact]
+    public void TheOrderOfRecordMinusOneOutlastsTheBattle()
+    {
+        if (GameFolder.Files is null)
+        {
+            return;
+        }
+        var memory = new Darklands.Core.Battles.Generation.GenerationProcessMemory();
+        Assert.Equal(0x1A6D, memory.ActionBeforeRecords);
+        var first = Start();
+        first.Battle.Behaviour = new Darklands.Core.OriginalBehaviour { FixLeaveOrderModeWithoutSelection = false };
+        first.ProgramMemory = memory;
+        Set(first, "OrderAction", 0x80);
+        Set(first, "CursorTarget", 1);
+        Set(first, "OrderSpot", new MapPoint(300, 200));
+        first.LeaveOrderMode();
+        Assert.Equal(0x80, memory.ActionBeforeRecords);
+        var next = Start();
+        next.Battle.Behaviour = new Darklands.Core.OriginalBehaviour { FixLeaveOrderModeWithoutSelection = false };
+        next.ProgramMemory = memory;
+        next.PauseByte = 1;
+        Set(next, "CursorTarget", 1);
+        Set(next, "OrderSpot", new MapPoint(300, 200));
+        next.LeaveOrderMode();
+        Assert.Equal(3, next.PauseByte);
+        var fresh = Start();
+        fresh.Battle.Behaviour = new Darklands.Core.OriginalBehaviour { FixLeaveOrderModeWithoutSelection = false };
+        fresh.PauseByte = 1;
+        Set(fresh, "CursorTarget", 1);
+        Set(fresh, "OrderSpot", new MapPoint(300, 200));
+        fresh.LeaveOrderMode();
+        Assert.Equal(1, fresh.PauseByte);
     }
 
     /// <summary>R014+0xBCDC..0xBCEE and 0xBD48..0xBD5B: with nobody selected the Hurry bit of flags[-1] is the pause byte's 0x10.</summary>
@@ -167,9 +447,9 @@ public sealed class OrderModeLeadsTests
         t.LeaveOrderMode();
         Assert.Equal(1, t.PauseByte);
         t.PauseByte = 0x11;
-        Set(t, "_actionBeforeRecords", 0x1BE);
+        t.ProgramMemory.ActionBeforeRecords = 0x1BE;
         Set(t, "CursorTarget", -1);
-        Set(t, "_orderSpot", new MapPoint(300, 200));
+        Set(t, "OrderSpot", new MapPoint(300, 200));
         t.LeaveOrderMode();
         Assert.Equal(1, t.PauseByte);
     }

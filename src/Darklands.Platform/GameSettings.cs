@@ -24,10 +24,22 @@ public sealed class GameSettings
     /// <summary>A folder of replacement pictures (an HD pack; not part of the game). Null: the original pictures.</summary>
     public string? HdPack { get; set; }
 
+    /// <summary>true: the cleaner drawing of 0.9.5 (GameOptions.CleanDrawing); false/null: the 1992 game's drawing, oddities included.</summary>
+    public bool? CleanDrawing { get; set; }
+
     /// <summary>One of <see cref="SoundCards"/>.</summary>
     public string? SoundCard { get; set; }
 
     public string? Mt32Roms { get; set; }
+
+    /// <summary>A folder of replacement music and battle effects (an audio pack; not part of the game). Null: the game's own sound.</summary>
+    public string? AudioPack { get; set; }
+
+    /// <summary>The SoundFont (.sf2 file) that plays the audio pack's .mid files. Null: the first .sf2 in the SOUNDFONT folder next to the program.</summary>
+    public string? SoundFont { get; set; }
+
+    /// <summary>The mods to play with (docs/MODS.md): mod folders, or names of folders in a mods folder. Null or empty: none (the game's own cards).</summary>
+    public List<string>? Mods { get; set; }
 
     /// <summary>Values that replace the ones of the game's CONFIG.DRK (null: CONFIG.DRK as it is).</summary>
     public ConfigDrkSettings? ConfigDrk { get; set; }

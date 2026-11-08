@@ -108,3 +108,7 @@ record NNN (9653 overlay functions).
   behavioural claim.
 * The status is tied to the toolchain (MSC 6.00A) and to the reference revision recorded in the local
   mapping; rebuild the mapping after reference changes.
+
+## Credit
+
+The semantics were read from a verified reference decompilation, kept machine-local; only coordinates, statuses and our own descriptions are published here.

@@ -80,6 +80,58 @@ public class SettingsParsingTests
         Assert.Null(ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, new GameSettings()).HdPack);
     }
 
+    /// <summary>The SoundFont file: relative to the settings file's folder; --soundfont replaces it.</summary>
+    [Fact]
+    public void TheSoundFontIsAPathAndTheCommandLineWins()
+    {
+        using var scratch = new Scratch();
+        var path = System.IO.Path.Combine(scratch.Folder("settings"), "darklands.settings.json");
+        File.WriteAllText(path, """{ "sound": { "soundFont": "fonts/gm.sf2" } }""");
+        var load = SettingsFile.Load(path);
+        Assert.Empty(load.Problems);
+        Assert.Equal(System.IO.Path.GetFullPath(System.IO.Path.Combine(scratch.Path, "settings", "fonts", "gm.sf2")), load.Settings.SoundFont);
+        Assert.Equal(load.Settings.SoundFont, ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, load.Settings).SoundFont);
+        var cli = new CommandLineOptions { SoundFont = "D:/other.sf2" };
+        Assert.Equal("D:/other.sf2", ResolvedSettings.Resolve(cli, _ => null, load.Settings).SoundFont);
+        Assert.Equal("--soundfont", cli.Overrides(_ => null)["sound.soundFont"]);
+        Assert.Null(ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, new GameSettings()).SoundFont);
+    }
+
+    /// <summary>The audio pack folder: relative to the settings file's folder; DARKLANDS_AUDIO_PACK and --audio-pack replace it.</summary>
+    [Fact]
+    public void TheAudioPackFolderIsAPathAndTheCommandLineWins()
+    {
+        using var scratch = new Scratch();
+        var path = System.IO.Path.Combine(scratch.Folder("settings"), "darklands.settings.json");
+        File.WriteAllText(path, """{ "sound": { "audioPack": "packs/sound" } }""");
+        var load = SettingsFile.Load(path);
+        Assert.Empty(load.Problems);
+        Assert.Equal(System.IO.Path.GetFullPath(System.IO.Path.Combine(scratch.Path, "settings", "packs", "sound")), load.Settings.AudioPack);
+        Assert.Equal(load.Settings.AudioPack, ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, load.Settings).AudioPack);
+        Assert.Equal("E:/env", ResolvedSettings.Resolve(new CommandLineOptions(), v => v == "DARKLANDS_AUDIO_PACK" ? "E:/env" : null, load.Settings).AudioPack);
+        var cli = new CommandLineOptions { AudioPack = "D:/other" };
+        Assert.Equal("D:/other", ResolvedSettings.Resolve(cli, _ => "E:/env", load.Settings).AudioPack);
+        Assert.Equal("--audio-pack", cli.Overrides(_ => null)["sound.audioPack"]);
+        Assert.Null(ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, new GameSettings()).AudioPack);
+    }
+
+    [Fact]
+    public void TheModsAreAListAndTheCommandLineReplacesIt()
+    {
+        var load = SettingsFile.Parse("""{ "mods": ["wayside-shrine", "D:/mods/other", ""] }""");
+        Assert.Empty(load.Problems);
+        var fromFile = ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, load.Settings);
+        Assert.Equal(["wayside-shrine", "D:/mods/other"], fromFile.Mods);
+        Assert.False(fromFile.ModsFromCommandLine);
+        var cli = new CommandLineOptions { Mods = ["mine"] };
+        var fromCli = ResolvedSettings.Resolve(cli, _ => null, load.Settings);
+        Assert.Equal(["mine"], fromCli.Mods);
+        Assert.True(fromCli.ModsFromCommandLine);
+        Assert.Equal("--mod", cli.Overrides(_ => null)["mods"]);
+        Assert.Empty(ResolvedSettings.Resolve(new CommandLineOptions(), _ => null, new GameSettings()).Mods);
+        Assert.Contains(SettingsFile.Parse("""{ "mods": 5 }""").Problems, p => p.Contains("mods"));
+    }
+
     [Fact]
     public void ResolutionAndCommandLineAsText()
     {
@@ -199,6 +251,23 @@ public class SettingsPrecedenceTests
         Assert.True(r.ShowBanner);
         Assert.True(r.PlayIntro);
         Assert.Empty(r.CommandLine);
+    }
+
+    [Fact]
+    public void CleanDrawingIsOffByDefaultAndFollowsTheFile()
+    {
+        Assert.Null(SettingsFile.Parse("{}").Settings.CleanDrawing);
+        Assert.False(ResolvedSettings.Resolve(new CommandLineOptions(), NoEnvironment, new GameSettings()).CleanDrawing);
+        var template = SettingsFile.Parse(SettingsFile.Template);
+        Assert.Empty(template.Problems);
+        Assert.False(template.Settings.CleanDrawing);
+        var on = SettingsFile.Parse("""{ "display": { "cleanDrawing": true } }""");
+        Assert.Empty(on.Problems);
+        Assert.True(on.Settings.CleanDrawing);
+        Assert.True(ResolvedSettings.Resolve(new CommandLineOptions(), NoEnvironment, on.Settings).CleanDrawing);
+        Assert.True(ResolvedSettings.Resolve(new CommandLineOptions { CleanDrawing = true }, NoEnvironment, new GameSettings()).CleanDrawing);
+        Assert.Equal("--clean-drawing", new CommandLineOptions { CleanDrawing = true }.Overrides(NoEnvironment)["display.cleanDrawing"]);
+        Assert.NotEmpty(SettingsFile.Parse("""{ "display": { "cleanDrawing": "yes" } }""").Problems);
     }
 
     [Fact]
@@ -365,6 +434,8 @@ public class SettingsTemplateTests
              fromTemplate.Mt32Roms, fromTemplate.ConfigDrk, fromTemplate.ShowBanner, fromTemplate.PlayIntro, string.Join(' ', fromTemplate.CommandLine),
              fromTemplate.TextFont, fromTemplate.ScreenshotsFolder, fromTemplate.SdlLibrary, fromTemplate.ConsoleEnabled, fromTemplate.ConsoleFont,
              fromTemplate.ConsoleFontSize, fromTemplate.HdPack));
+        Assert.Equal(fromNothing.AudioPack, fromTemplate.AudioPack);
+        Assert.Equal(fromNothing.SoundFont, fromTemplate.SoundFont);
     }
 
     /// <summary>A resolution filled in beside the template's "scale": 1 replaces the scale, without a complaint.</summary>
@@ -391,12 +462,12 @@ public class SettingsTemplateTests
     [Fact]
     public void TheTemplateDocumentsEveryKey()
     {
-        foreach (var key in new[] { "gameFolder", "savesFolder", "scale", "resolution", "fullscreen", "hdPack", "card", "mt32Roms", "configDrk", "banner", "intro",
-                     "commandLine", "textFont", "screenshotsFolder", "library", "display", "sound", "startup", "sdl" })
+        foreach (var key in new[] { "gameFolder", "savesFolder", "scale", "resolution", "fullscreen", "hdPack", "cleanDrawing", "card", "mt32Roms", "configDrk", "banner", "intro",
+                     "commandLine", "textFont", "screenshotsFolder", "mods", "library", "display", "sound", "startup", "sdl" })
         {
             Assert.Contains($"\"{key}\":", SettingsFile.Template);
         }
-        foreach (var option in new[] { "--saves", "--scale", "--resolution", "--fullscreen", "--hd-pack", "--sound", "--mt32-roms", "--no-banner", "--no-intro", "--text-font", "--screenshots", "--sdl" })
+        foreach (var option in new[] { "--saves", "--scale", "--resolution", "--fullscreen", "--hd-pack", "--clean-drawing", "--sound", "--mt32-roms", "--no-banner", "--no-intro", "--text-font", "--screenshots", "--mod", "--sdl" })
         {
             Assert.Contains(option, SettingsFile.Template);
         }
