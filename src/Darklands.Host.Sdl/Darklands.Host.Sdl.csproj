@@ -35,8 +35,12 @@
   <ItemGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('linux'))">
     <!-- SDL 3.4.20 built from the official source release on Ubuntu 22.04 by tools/linux/build_sdl3.sh (zlib licence, see
          THIRD_PARTY_NOTICES.md), next to the program in a Linux publish: it is loaded before the system's, so systems without
-         SDL3 (Ubuntu 24.04 and older) run the game -->
-    <None Include="Native/linux-x64/libSDL3.so.0" Link="libSDL3.so.0" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+         SDL3 (Ubuntu 24.04 and older) run the game.
+         The library is per-architecture: linux-x64 for x64, linux-arm64 for aarch64 (both built by the same script; the arm64 one
+         on the build machine, Native/linux-arm64). A publish whose RID has no matching folder still builds, and then loads the
+         system's libSDL3.so.0 (SdlNative.CandidateLibraryPaths) instead. -->
+    <None Include="Native/$(RuntimeIdentifier)/libSDL3.so.0" Link="libSDL3.so.0" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Condition="Exists('Native/$(RuntimeIdentifier)/libSDL3.so.0')" />
     <!-- the icon as a PNG (the 256-pixel picture of DarklandsRP.ico) for the desktop menu's entry, which install-desktop-entries
          (beside the program, from src/Darklands.Host.Launcher/linux) writes into ~/.local/share/applications -->
     <None Include="Resources/DarklandsRP.png" Link="DarklandsRP.png" CopyToPublishDirectory="PreserveNewest" />
